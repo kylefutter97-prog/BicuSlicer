@@ -1176,8 +1176,8 @@ function wireContextMenu() {
 
 function setPickMode(on) {
   pickMode = on && !!selected;
-  $("lay-face").classList.toggle("on", pickMode);
-  $("lay-face").textContent = pickMode ? "Cancel" : "Pick face down";
+  $("tb-face").classList.toggle("on", pickMode);
+  $("tb-face").title = pickMode ? "Click the face that should go on the bed · click again or press Esc to cancel" : "Lay on face: click the face that should go on the bed (F)";
   const hint = $("hint");
   hint.hidden = !pickMode;
   hint.textContent = "Tap the face that should sit on the bed. Drag to turn the view.";
@@ -1732,7 +1732,7 @@ $("plate-toolbar").addEventListener("click", (e) => {
   ({
     shape: () => at(shapeItems()), arrange, "orient-all": orientAll, split: splitSelected, merge: mergeSelected, cut: openCut,
     mirror: () => at(mirrorItems()), volume: () => at(volumeItems()), ears: toggleEars,
-    paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()), calib: () => at(calibItems()),
+    paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()), calib: () => at(calibItems()), face: () => setPickMode(!pickMode),
   })[b.dataset.tool]?.();
 });
 
@@ -2761,7 +2761,7 @@ function updatePlateTabs() {
     const [st, what] = plateState(i);
     return `<button type="button" class="ptab${i === cur ? " on" : ""}" data-pi="${i}" title="Plate ${i + 1}${p.name ? `: ${esc(p.name)}` : ""} · ${what}${i === cur ? " · tap for plate options" : ""}">`
       + `<span class="pdot ${st}"></span>${i + 1}${p.name ? ` <span class="pname">${esc(p.name)}</span>` : ""}${i === cur ? ' <span class="caret">▾</span>' : ""}</button>`;
-  }).join("") + `<button type="button" class="ptab add" data-pi="add" title="Add a plate">+ Plate</button>`;
+  }).join("") + `<button type="button" class="ptab add" data-pi="add" title="Add a plate"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-plus"/></svg>Plate</button>`;
 }
 
 function addPlate() {
@@ -2865,7 +2865,6 @@ $("plate-tabs").addEventListener("click", (e) => {
   openMenu(r.left, r.bottom + 4, plateOptionsMenu());
 });
 
-$("lay-face").addEventListener("click", () => setPickMode(!pickMode));
 $("auto-orient").addEventListener("click", () => selected && autoOrient(selected));
 $("orient-reset").addEventListener("click", () => {
   if (!selected) return;

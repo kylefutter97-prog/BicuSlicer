@@ -513,3 +513,17 @@ dialog.cut-dlg { position: fixed; inset: auto 16px 16px auto; margin: 0; width: 
 .lg-chip button { border: 0; background: none; color: var(--text); font: inherit; padding: 4px 8px; cursor: pointer; }
 .lg-chip .lg-del { color: var(--muted); padding-left: 2px; }
 .empty #empty-calib { pointer-events: auto; }
+
+/* icons (Lucide, app/static/icons.svg) */
+.ic { width: 17px; height: 17px; flex: none; display: inline-block; vertical-align: -3px; }
+.tb { gap: 6px; }
+.tb .ic { width: 16px; height: 16px; }
+.btn .ic, .seg button .ic, .ptab .ic { margin-right: 6px; }
+.btn.ghost .ic { width: 16px; height: 16px; }
+.lg-row .btn .ic { width: 15px; height: 15px; margin-right: 4px; }
+.tb.on .ic { color: inherit; }
+.top .btn.ghost { display: inline-flex; align-items: center; white-space: nowrap; }
+@media (max-width: 560px) {
+  .top .btn.ghost .lbl { display: none; }            /* phones: icon buttons (title/aria-label say what they are) */
+  .top .btn.ghost .ic { margin-right: 0; width: 19px; height: 19px; }
+}

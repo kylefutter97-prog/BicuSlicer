@@ -88,6 +88,23 @@ try:
     mouse("mouseReleased", cx - 88, cy + 33, "right", 0); W(1)
     check("right-drag starting on a part doesn't open the menu", not menu_open())
 
+    # lay on face from the toolbar
+    face = el("tb-face")
+    d.find_element(By.TAG_NAME, "body").send_keys("\ue00c"); W()     # Escape: nothing selected
+    check("Lay on face waits for a selected part", not face.is_enabled())
+    d.find_elements(By.CSS_SELECTOR, "#objects li")[0].click(); W()
+    face.click(); W()
+    check("Lay on face: on the toolbar, turns on", "on" in face.get_attribute("class") and el("hint").is_displayed(), el("hint").text)
+    face.click(); W()
+    check("…and off again", "on" not in face.get_attribute("class"))
+    icons = d.execute_script("return [...document.querySelectorAll('#plate-toolbar .ic use')].length")
+    loaded = d.execute_script("return fetch('/static/icons.svg').then(r => r.ok && r.headers.get('content-type'))")
+    check("toolbar icons present and the sprite is served", icons >= 15 and "svg" in str(loaded), (icons, loaded))
+    d.save_screenshot(os.environ.get("OUT", "/out") + "/icons-desktop.png")
+    d.set_window_size(400, 860); W(1)
+    d.save_screenshot(os.environ.get("OUT", "/out") + "/icons-phone.png")
+    d.set_window_size(1400, 1000); W(0.5)
+
     errs = [e for e in d.get_log("browser") if e["level"] == "SEVERE"]
     check("no errors in the browser console", not errs, json.dumps(errs)[:400])
 finally:

@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=27">
+<link rel="stylesheet" href="/static/style.css?v=29">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -28,9 +28,9 @@
     <button type="button" data-mode="expert">Expert</button>
   </div>
   <div class="top-right">
-    <button id="open-projects" class="btn ghost" type="button">Projects</button>
-    <button id="open-printers" class="btn ghost" type="button">Printers</button>
-    <button id="open-profiles" class="btn ghost" type="button">Profiles</button>
+    <button id="open-projects" class="btn ghost" type="button" title="Projects" aria-label="Projects"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-folder-open"/></svg><span class="lbl">Projects</span></button>
+    <button id="open-printers" class="btn ghost" type="button" title="Printers" aria-label="Printers"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-printer"/></svg><span class="lbl">Printers</span></button>
+    <button id="open-profiles" class="btn ghost" type="button" title="Profiles" aria-label="Profiles"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-sliders-horizontal"/></svg><span class="lbl">Profiles</span></button>
     <button id="printer" class="pill" type="button" title="Printer status">
       <span class="dot"></span><span id="printer-text">Printer…</span>
     </button>
@@ -45,25 +45,26 @@
       <span id="plate-summary" class="muted"></span>
     </div>
     <div class="plate-toolbar" id="plate-toolbar" role="toolbar" aria-label="Plate tools" hidden>
-      <button class="tb" type="button" id="tb-undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
-      <button class="tb" type="button" id="tb-redo" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" aria-label="Redo" disabled>↷</button>
+      <button class="tb" type="button" id="tb-undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-undo-2"/></svg></button>
+      <button class="tb" type="button" id="tb-redo" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" aria-label="Redo" disabled><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-redo-2"/></svg></button>
       <span class="tb-sep"></span>
-      <label class="tb file-btn" title="Add models (Ctrl+I)">＋ Add<input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple></label>
-      <button class="tb" type="button" data-tool="shape" title="Add a box, cylinder, sphere or cone">Shape ▾</button>
+      <label class="tb file-btn" title="Add models (Ctrl+I)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-file-plus"/></svg>Add<input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple></label>
+      <button class="tb" type="button" data-tool="shape" title="Add a box, cylinder, sphere or cone"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-shapes"/></svg>Shape ▾</button>
       <span class="tb-sep"></span>
-      <button class="tb" type="button" data-tool="arrange" data-needs="parts" title="Arrange (A)">Arrange</button>
-      <button class="tb" type="button" data-tool="orient-all" data-needs="parts" title="Auto-orient every part">Orient all</button>
+      <button class="tb" type="button" data-tool="arrange" data-needs="parts" title="Arrange (A)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-layout-grid"/></svg>Arrange</button>
+      <button class="tb" type="button" data-tool="orient-all" data-needs="parts" title="Auto-orient every part"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-rotate-3d"/></svg>Orient all</button>
+      <button class="tb" type="button" id="tb-face" data-tool="face" data-needs="one" title="Lay on face: click the face that should go on the bed (F)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-arrow-down-to-line"/></svg>Lay on face</button>
       <span class="tb-sep"></span>
-      <button class="tb" type="button" data-tool="split" data-needs="one" title="Split into separate parts">Split</button>
-      <button class="tb" type="button" data-tool="merge" data-needs="many" title="Merge the selected parts (Shift-click to select several)">Merge</button>
-      <button class="tb" type="button" data-tool="cut" data-needs="one" title="Cut at a height">Cut</button>
-      <button class="tb" type="button" data-tool="mirror" data-needs="one" title="Mirror">Mirror ▾</button>
-      <button class="tb" type="button" data-tool="volume" data-needs="one" title="Add a modifier or negative part">Modifier ▾</button>
+      <button class="tb" type="button" data-tool="split" data-needs="one" title="Split into separate parts"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-ungroup"/></svg>Split</button>
+      <button class="tb" type="button" data-tool="merge" data-needs="many" title="Merge the selected parts (Shift-click to select several)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-group"/></svg>Merge</button>
+      <button class="tb" type="button" data-tool="cut" data-needs="one" title="Cut at a height"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-scissors"/></svg>Cut</button>
+      <button class="tb" type="button" data-tool="mirror" data-needs="one" title="Mirror"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-flip-horizontal-2"/></svg>Mirror ▾</button>
+      <button class="tb" type="button" data-tool="volume" data-needs="one" title="Add a modifier or negative part"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-boxes"/></svg>Modifier ▾</button>
       <span class="tb-sep"></span>
-      <button class="tb" type="button" id="tb-ears" data-tool="ears" data-needs="one" title="Brim ears: small tabs on sharp corners to hold the part down">Brim ears</button>
-      <button class="tb" type="button" id="tb-paint" data-tool="paint" data-needs="one" title="Paint supports or seams">Paint ▾</button>
-      <button class="tb" type="button" data-tool="calib" title="Calibration tests: temperature, flow, pressure advance, max flow, VFA, tolerance">Calibrate ▾</button>
-      <button class="tb" type="button" data-tool="more" title="More: rename, center, printable, fix, units, export">More ▾</button>
+      <button class="tb" type="button" id="tb-ears" data-tool="ears" data-needs="one" title="Brim ears: small tabs on sharp corners to hold the part down"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-ear"/></svg>Brim ears</button>
+      <button class="tb" type="button" id="tb-paint" data-tool="paint" data-needs="one" title="Paint supports or seams"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-paintbrush"/></svg>Paint ▾</button>
+      <button class="tb" type="button" data-tool="calib" title="Calibration tests: temperature, flow, pressure advance, max flow, VFA, tolerance"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-flask-conical"/></svg>Calibrate ▾</button>
+      <button class="tb" type="button" data-tool="more" title="More: rename, center, printable, fix, units, export"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-ellipsis"/></svg>More ▾</button>
     </div>
     <div class="plate-tabs" id="plate-tabs" role="tablist" aria-label="Plates" hidden></div>
     <div class="viewer-wrap">
@@ -74,7 +75,7 @@
           Add a model
         </label>
         <span class="muted small">STL, 3MF or OBJ · add as many as you like (export STEP designs as STL or 3MF first)</span>
-        <button class="btn" id="empty-calib" type="button">Or print a calibration test ▾</button>
+        <button class="btn" id="empty-calib" type="button"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-flask-conical"/></svg>Or print a calibration test ▾</button>
       </div>
       <div id="hint" class="hint" hidden></div>
       <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text"></span></div>
@@ -94,8 +95,8 @@
     <div id="preview-controls" class="preview-controls" hidden>
       <div class="pv-top">
         <div class="seg view-seg" role="group" aria-label="View">
-          <button type="button" data-view="model">Model</button>
-          <button type="button" data-view="preview">Layers</button>
+          <button type="button" data-view="model"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-box"/></svg>Model</button>
+          <button type="button" data-view="preview"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-layers"/></svg>Layers</button>
         </div>
         <label class="check-inline"><input type="checkbox" id="show-travel"> Travel</label>
       </div>
@@ -106,8 +107,8 @@
       </div>
       <div class="pv-info"><span id="layer-text"></span><span id="preview-stale" class="stale" hidden>Plate changed since this slice</span></div>
       <div class="lg-row" id="lg-row" hidden><span class="muted small">At this layer:</span>
-        <button class="btn small-btn" id="lg-pause" type="button" title="Pause the print before this layer (to insert nuts, magnets…)">⏸ Pause</button>
-        <button class="btn small-btn" id="lg-custom" type="button" title="Run your own G-code before this layer">G-code…</button></div>
+        <button class="btn small-btn" id="lg-pause" type="button" title="Pause the print before this layer (to insert nuts, magnets…)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-pause"/></svg>Pause</button>
+        <button class="btn small-btn" id="lg-custom" type="button" title="Run your own G-code before this layer"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-code"/></svg>G-code…</button></div>
       <div class="lg-list" id="lg-list" hidden></div>
       <div class="legend" id="legend"></div>
     </div>
@@ -116,12 +117,12 @@
     <div class="toolbar" id="plate-tools" hidden>
       <label class="btn file-btn">
         <input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple>
-        + Add
+        <svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-plus"/></svg>Add
       </label>
-      <button class="btn" id="save-project" type="button">Save</button>
-      <button class="btn" id="arrange" type="button">Arrange</button>
-      <button class="btn" id="view-reset" type="button">Fit view</button>
-      <button class="btn danger" id="clear" type="button">Clear</button>
+      <button class="btn" id="save-project" type="button"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-save"/></svg>Save</button>
+      <button class="btn" id="arrange" type="button"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-layout-grid"/></svg>Arrange</button>
+      <button class="btn" id="view-reset" type="button"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-scan"/></svg>Fit view</button>
+      <button class="btn danger" id="clear" type="button"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-trash-2"/></svg>Clear</button>
     </div>
     <p class="tip muted small" id="tip" hidden>Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom · press ? for keyboard shortcuts</p>
   </section>
@@ -158,7 +159,6 @@
       </div>
       <div class="group-label">Orientation</div>
       <div class="toolbar">
-        <button class="btn" id="lay-face" type="button">Pick face down</button>
         <button class="btn" id="auto-orient" type="button">Auto-orient</button>
         <button class="btn" id="orient-reset" type="button">Reset</button>
       </div>
@@ -541,6 +541,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=30"></script>
+<script type="module" src="/static/app.js?v=31"></script>
 </body>
 </html>
