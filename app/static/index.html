@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)">
+<meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
+<title>BicuSlicer</title>
+<link rel="stylesheet" href="/static/style.css?v=4">
+<script type="importmap">
+{ "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
+</script>
+</head>
+<body>
+<header class="top">
+  <h1>BicuSlicer</h1>
+  <button id="printer" class="pill" type="button" title="Printer status">
+    <span class="dot"></span><span id="printer-text">Printer…</span>
+  </button>
+</header>
+
+<main>
+  <section class="card plate-card">
+    <div class="card-head">
+      <h2>Plate</h2>
+      <span id="plate-summary" class="muted"></span>
+    </div>
+
+    <div class="viewer-wrap">
+      <div id="viewer" class="viewer"></div>
+      <div id="empty" class="empty">
+        <label class="primary file-btn">
+          <input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple>
+          Add a model
+        </label>
+        <span class="muted small">STL, 3MF or OBJ · add as many as you like (export STEP designs as STL or 3MF first)</span>
+      </div>
+      <div id="hint" class="hint" hidden></div>
+      <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text"></span></div>
+    </div>
+    <p id="plate-msg" class="msg warn" hidden></p>
+    <p id="plate-flash" class="msg" hidden></p>
+
+    <div class="toolbar" id="plate-tools" hidden>
+      <label class="btn file-btn">
+        <input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple>
+        + Add
+      </label>
+      <button class="btn" id="arrange" type="button">Arrange</button>
+      <button class="btn" id="view-reset" type="button">Fit view</button>
+      <button class="btn danger" id="clear" type="button">Clear</button>
+    </div>
+
+    <p class="tip muted small" id="tip" hidden>Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom</p>
+    <ul id="objects" class="objects"></ul>
+
+    <div id="obj-panel" class="obj-panel" hidden>
+      <div class="panel-head"><b id="obj-name"></b><span id="obj-size" class="muted small"></span></div>
+
+      <div class="group-label">Orientation</div>
+      <div class="toolbar">
+        <button class="btn" id="lay-face" type="button">Pick face down</button>
+        <button class="btn" id="auto-orient" type="button">Auto-orient</button>
+        <button class="btn" id="orient-reset" type="button">Reset</button>
+      </div>
+      <div class="rot-grid">
+        <span>X</span><button class="btn" data-rot="x,-1" type="button" aria-label="Rotate X -90">↺ 90°</button><button class="btn" data-rot="x,1" type="button" aria-label="Rotate X +90">↻ 90°</button>
+        <span>Y</span><button class="btn" data-rot="y,-1" type="button" aria-label="Rotate Y -90">↺ 90°</button><button class="btn" data-rot="y,1" type="button" aria-label="Rotate Y +90">↻ 90°</button>
+        <span>Z</span><button class="btn" data-rot="z,-1" type="button" aria-label="Rotate Z -45">↺ 45°</button><button class="btn" data-rot="z,1" type="button" aria-label="Rotate Z +45">↻ 45°</button>
+      </div>
+
+      <div class="row2">
+        <label class="field"><span>Scale %</span><input id="obj-scale" type="number" inputmode="decimal" min="1" max="2000" step="1" value="100"></label>
+        <label class="field"><span>Copies</span>
+          <div class="stepper"><button class="btn" id="copy-minus" type="button" aria-label="Remove a copy">−</button><b id="copy-count">1</b><button class="btn" id="copy-plus" type="button" aria-label="Add a copy">+</button></div>
+        </label>
+      </div>
+      <div class="toolbar">
+        <button class="btn danger" id="obj-delete" type="button">Remove</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>Settings</h2>
+    <label class="field"><span>Printer</span><select id="machine"></select></label>
+    <label class="field"><span>Quality</span><select id="process"></select></label>
+    <label class="field"><span>Filament</span><select id="filament"></select></label>
+
+    <div class="field"><span>Supports</span>
+      <div class="seg" data-name="supports">
+        <button type="button" data-v="preset" class="on">Preset</button>
+        <button type="button" data-v="off">Off</button>
+        <button type="button" data-v="normal">Normal</button>
+        <button type="button" data-v="tree">Tree</button>
+      </div>
+    </div>
+    <div class="field"><span>Brim</span>
+      <div class="seg" data-name="brim">
+        <button type="button" data-v="preset" class="on">Preset</button>
+        <button type="button" data-v="off">Off</button>
+        <button type="button" data-v="on">On</button>
+      </div>
+    </div>
+    <label class="field"><span>Infill</span>
+      <select id="infill">
+        <option value="preset">Preset</option>
+        <option>5</option><option>10</option><option>15</option><option>20</option><option>25</option>
+        <option>30</option><option>40</option><option>50</option><option>75</option><option>100</option>
+      </select>
+    </label>
+  </section>
+
+  <section class="card" id="result-card" hidden>
+    <h2>Result</h2>
+    <div id="result"></div>
+  </section>
+</main>
+
+<footer class="bar">
+  <button id="slice" class="primary" type="button" disabled>Slice</button>
+</footer>
+
+<dialog id="confirm">
+  <form method="dialog">
+    <p id="confirm-text"></p>
+    <div class="actions">
+      <button value="cancel" class="btn" type="submit">Cancel</button>
+      <button value="ok" class="primary" type="submit">Start print</button>
+    </div>
+  </form>
+</dialog>
+
+<script type="module" src="/static/app.js?v=4"></script>
+</body>
+</html>
