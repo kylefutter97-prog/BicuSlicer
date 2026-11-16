@@ -4,67 +4,16 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, strToU8 } from "three/addons/libs/fflate.module.js";
+import { $, esc, apiJson, confirmBox } from "./util.js";
+import { initSettings, S, machineValues } from "./settings.js";
 
-const $ = (id) => document.getElementById(id);
-const store = {
-  get(k) { try { return JSON.parse(localStorage.getItem("slice." + k)); } catch { return null; } },
-  set(k, v) { try { localStorage.setItem("slice." + k, JSON.stringify(v)); } catch { /* private mode */ } },
-};
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const DOWN = new THREE.Vector3(0, 0, -1);
 const GAP = 6;          // mm between parts when arranging
 const MAX_COPIES = 50;
 
-let presets = null;
 let printer = { idle: false };
 let currentJob = null;
-
-async function api(path, opts = {}) {
-  let r;
-  try {
-    r = await fetch(path, opts);
-  } catch {
-    // An expired Authentik session redirects to the login site, which fetch can't follow.
-    throw new Error("Couldn't reach the server. If you've been away a while, reload the page (you may need to sign in again).");
-  }
-  if (r.status === 401 || r.status === 403) throw new Error("Your sign-in has expired. Reload the page to sign in again.");
-  if (!r.ok) {
-    let msg = `${r.status} ${r.statusText}`;
-    try { msg = (await r.json()).error || msg; } catch { /* not JSON */ }
-    throw new Error(msg);
-  }
-  return r;
-}
-const apiJson = async (path, opts) => (await api(path, opts)).json();
-
-/* ================================================================ presets */
-
-function fillSelect(sel, items, chosen) {
-  sel.innerHTML = items.map((i) => `<option${i.name === chosen ? " selected" : ""}>${esc(i.name)}</option>`).join("");
-}
-
-async function loadPresets() {
-  const data = await apiJson("/api/presets");
-  presets = data.presets;
-  const last = store.get("presets") || {};
-  for (const kind of ["machine", "process", "filament"]) {
-    const names = presets[kind].map((i) => i.name);
-    fillSelect($(kind), presets[kind], names.includes(last[kind]) ? last[kind] : data.defaults[kind]);
-  }
-  const opts = store.get("options") || {};
-  for (const seg of document.querySelectorAll(".seg")) setSeg(seg, opts[seg.dataset.name] || "preset");
-  if (opts.infill) $("infill").value = opts.infill;
-  setBed();
-}
-
-function setSeg(seg, v) { for (const b of seg.querySelectorAll("button")) b.classList.toggle("on", b.dataset.v === v); }
-const segValue = (name) => document.querySelector(`.seg[data-name="${name}"] .on`)?.dataset.v || "preset";
-
-function saveChoices() {
-  store.set("presets", { machine: $("machine").value, process: $("process").value, filament: $("filament").value });
-  store.set("options", { supports: segValue("supports"), brim: segValue("brim"), infill: $("infill").value });
-}
 
 /* ================================================================ scene */
 
@@ -112,14 +61,14 @@ function resize() {
 }
 
 function setBed() {
-  const m = presets?.machine.find((i) => i.name === $("machine").value);
-  const pts = (m?.bed || []).map((p) => p.split("x").map(Number));
-  if (pts.length >= 3) {
+  const v = machineValues();
+  const pts = (v.printable_area || []).map((p) => String(p).split("x").map(Number));
+  if (pts.length >= 3 && pts.every((p) => p.length === 2 && p.every(Number.isFinite))) {
     const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
     bed.w = Math.max(...xs) - Math.min(...xs);
     bed.d = Math.max(...ys) - Math.min(...ys);
   }
-  bed.h = parseFloat(m?.height) || 300;
+  bed.h = parseFloat(v.printable_height) || 300;
   drawBed();
   if (models.length) { if (!layoutOk().fits) arrange(); else refresh(); }
 }
@@ -501,6 +450,7 @@ function refresh() {
   $("empty").hidden = has;
   $("plate-tools").hidden = !has;
   $("tip").hidden = !has;
+  $("parts-card").hidden = !has;
   if (!models.includes(selected)) selected = null;
   if (!selected) setPickMode(false);
   const ok = layoutOk();
@@ -634,7 +584,11 @@ async function poll(id) {
 
 async function slice() {
   if (!models.length || !layoutOk().fits) return;
-  saveChoices();
+  if (!S.selected.machine || !S.selected.process || !S.selected.filament) {
+    $("result-card").hidden = false;
+    $("result").innerHTML = `<p class="msg err">Choose a printer, filament and process first.</p>`;
+    return;
+  }
   const btn = $("slice");
   btn.disabled = true;
   btn.textContent = "Slicing…";
@@ -644,10 +598,8 @@ async function slice() {
   try {
     await new Promise((r) => setTimeout(r, 30));   // let the spinner paint before the heavy export
     const fd = new FormData();
-    for (const k of ["machine", "process", "filament"]) fd.append(k, $(k).value);
-    fd.append("supports", segValue("supports"));
-    fd.append("brim", segValue("brim"));
-    fd.append("infill", $("infill").value);
+    for (const k of ["machine", "process", "filament"]) fd.append(k, S.selected[k]);
+    fd.append("edits", JSON.stringify(S.edits));   // unsaved setting changes apply to this slice
     fd.append("arrange", "0");
     fd.append("orient", "0");
     fd.append("name", plateName());
@@ -667,12 +619,7 @@ async function plateAction(act, plate, btn) {
   const job = currentJob;
   if (act === "start") {
     const p = job.plates.find((x) => String(x.plate) === plate);
-    $("confirm-text").textContent = `Start printing ${p.uploaded} (${fmtTime(p.time_s)})? Make sure the bed is clear.`;
-    const dlg = $("confirm");
-    dlg.returnValue = "";
-    dlg.showModal();
-    await new Promise((r) => dlg.addEventListener("close", r, { once: true }));
-    if (dlg.returnValue !== "ok") return;
+    if (!(await confirmBox(`Start printing ${p.uploaded} (${fmtTime(p.time_s)})? Make sure the bed is clear.`, "Start print"))) return;
   }
   btn.disabled = true;
   const label = btn.textContent;
@@ -778,11 +725,6 @@ $("obj-delete").addEventListener("click", () => {
   selected = null;
   refresh();
 });
-for (const seg of document.querySelectorAll(".seg")) {
-  seg.addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) { setSeg(seg, b.dataset.v); saveChoices(); } });
-}
-$("machine").addEventListener("change", () => { setBed(); saveChoices(); });
-for (const id of ["process", "filament", "infill"]) $(id).addEventListener("change", saveChoices);
 $("slice").addEventListener("click", slice);
 $("result").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-act]");
@@ -794,7 +736,7 @@ initViewer();
 drawBed();
 fitView();
 refresh();
-loadPresets().then(fitView).catch((e) => {
+initSettings((what) => { if (what === "presets") setBed(); }).then(fitView).catch((e) => {
   $("result-card").hidden = false;
   $("result").innerHTML = `<p class="msg err">Couldn't load presets: ${esc(e.message)}</p>`;
 });

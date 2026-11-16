@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
 <title>BicuSlicer</title>
-<link rel="stylesheet" href="/static/style.css?v=4">
+<link rel="stylesheet" href="/static/style.css?v=5">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -14,18 +14,26 @@
 <body>
 <header class="top">
   <h1>BicuSlicer</h1>
-  <button id="printer" class="pill" type="button" title="Printer status">
-    <span class="dot"></span><span id="printer-text">Printer…</span>
-  </button>
+  <div class="seg mode-seg" role="group" aria-label="Settings detail">
+    <button type="button" data-mode="simple">Simple</button>
+    <button type="button" data-mode="advanced">Advanced</button>
+    <button type="button" data-mode="expert">Expert</button>
+  </div>
+  <div class="top-right">
+    <button id="open-profiles" class="btn ghost" type="button">Profiles</button>
+    <button id="printer" class="pill" type="button" title="Printer status">
+      <span class="dot"></span><span id="printer-text">Printer…</span>
+    </button>
+  </div>
 </header>
 
-<main>
-  <section class="card plate-card">
+<main class="layout">
+  <!-- ======================= plate (3D view) -->
+  <section class="card area-plate plate-card">
     <div class="card-head">
       <h2>Plate</h2>
       <span id="plate-summary" class="muted"></span>
     </div>
-
     <div class="viewer-wrap">
       <div id="viewer" class="viewer"></div>
       <div id="empty" class="empty">
@@ -40,7 +48,6 @@
     </div>
     <p id="plate-msg" class="msg warn" hidden></p>
     <p id="plate-flash" class="msg" hidden></p>
-
     <div class="toolbar" id="plate-tools" hidden>
       <label class="btn file-btn">
         <input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple>
@@ -50,13 +57,15 @@
       <button class="btn" id="view-reset" type="button">Fit view</button>
       <button class="btn danger" id="clear" type="button">Clear</button>
     </div>
-
     <p class="tip muted small" id="tip" hidden>Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom</p>
-    <ul id="objects" class="objects"></ul>
+  </section>
 
+  <!-- ======================= parts -->
+  <section class="card area-parts" id="parts-card" hidden>
+    <h2>Parts</h2>
+    <ul id="objects" class="objects"></ul>
     <div id="obj-panel" class="obj-panel" hidden>
       <div class="panel-head"><b id="obj-name"></b><span id="obj-size" class="muted small"></span></div>
-
       <div class="group-label">Orientation</div>
       <div class="toolbar">
         <button class="btn" id="lay-face" type="button">Pick face down</button>
@@ -68,69 +77,153 @@
         <span>Y</span><button class="btn" data-rot="y,-1" type="button" aria-label="Rotate Y -90">↺ 90°</button><button class="btn" data-rot="y,1" type="button" aria-label="Rotate Y +90">↻ 90°</button>
         <span>Z</span><button class="btn" data-rot="z,-1" type="button" aria-label="Rotate Z -45">↺ 45°</button><button class="btn" data-rot="z,1" type="button" aria-label="Rotate Z +45">↻ 45°</button>
       </div>
-
       <div class="row2">
         <label class="field"><span>Scale %</span><input id="obj-scale" type="number" inputmode="decimal" min="1" max="2000" step="1" value="100"></label>
         <label class="field"><span>Copies</span>
           <div class="stepper"><button class="btn" id="copy-minus" type="button" aria-label="Remove a copy">−</button><b id="copy-count">1</b><button class="btn" id="copy-plus" type="button" aria-label="Add a copy">+</button></div>
         </label>
       </div>
-      <div class="toolbar">
-        <button class="btn danger" id="obj-delete" type="button">Remove</button>
-      </div>
+      <div class="toolbar"><button class="btn danger" id="obj-delete" type="button">Remove</button></div>
     </div>
   </section>
 
-  <section class="card">
-    <h2>Settings</h2>
-    <label class="field"><span>Printer</span><select id="machine"></select></label>
-    <label class="field"><span>Quality</span><select id="process"></select></label>
-    <label class="field"><span>Filament</span><select id="filament"></select></label>
-
-    <div class="field"><span>Supports</span>
-      <div class="seg" data-name="supports">
-        <button type="button" data-v="preset" class="on">Preset</button>
-        <button type="button" data-v="off">Off</button>
-        <button type="button" data-v="normal">Normal</button>
-        <button type="button" data-v="tree">Tree</button>
+  <!-- ======================= presets + process settings -->
+  <section class="card area-settings">
+    <div class="pickers">
+      <div class="picker">
+        <label for="pick-machine">Printer <span class="badge" id="mod-machine" hidden></span></label>
+        <div class="picker-row"><select id="pick-machine"></select><button class="btn icon" id="edit-machine" type="button" title="Edit printer presets" aria-label="Edit printer presets">✎</button></div>
+      </div>
+      <div class="picker">
+        <label for="pick-filament">Filament <span class="badge" id="mod-filament" hidden></span></label>
+        <div class="picker-row"><select id="pick-filament"></select><button class="btn icon" id="edit-filament" type="button" title="Edit filament presets" aria-label="Edit filament presets">✎</button></div>
+      </div>
+      <div class="picker">
+        <label for="pick-process">Process <span class="badge" id="mod-process" hidden></span></label>
+        <div class="picker-row"><select id="pick-process"></select><button class="btn icon" id="edit-process" type="button" title="Manage process presets" aria-label="Manage process presets">✎</button></div>
       </div>
     </div>
-    <div class="field"><span>Brim</span>
-      <div class="seg" data-name="brim">
-        <button type="button" data-v="preset" class="on">Preset</button>
-        <button type="button" data-v="off">Off</button>
-        <button type="button" data-v="on">On</button>
+    <div class="process-bar" id="process-bar" hidden>
+      <span id="process-bar-text"></span>
+      <div class="actions">
+        <button class="btn" id="process-discard" type="button">Discard</button>
+        <button class="btn" id="process-saveas" type="button">Save as…</button>
+        <button class="btn primary-ish" id="process-save" type="button">Save</button>
       </div>
     </div>
-    <label class="field"><span>Infill</span>
-      <select id="infill">
-        <option value="preset">Preset</option>
-        <option>5</option><option>10</option><option>15</option><option>20</option><option>25</option>
-        <option>30</option><option>40</option><option>50</option><option>75</option><option>100</option>
-      </select>
-    </label>
+    <div id="process-editor"></div>
   </section>
 
-  <section class="card" id="result-card" hidden>
+  <!-- ======================= slice + result -->
+  <section class="card area-result" id="result-card" hidden>
     <h2>Result</h2>
     <div id="result"></div>
   </section>
+  <div class="area-slice slice-bar">
+    <button id="slice" class="primary" type="button" disabled>Slice</button>
+  </div>
 </main>
 
-<footer class="bar">
-  <button id="slice" class="primary" type="button" disabled>Slice</button>
-</footer>
+<!-- ======================= profile manager -->
+<dialog id="pm" class="sheet">
+  <div class="sheet-head">
+    <div class="seg" role="tablist">
+      <button type="button" data-pm-type="machine">Printers</button>
+      <button type="button" data-pm-type="filament">Filaments</button>
+      <button type="button" data-pm-type="process">Processes</button>
+    </div>
+    <button class="btn icon" id="pm-close" type="button" aria-label="Close">✕</button>
+  </div>
+  <div class="pm-body">
+    <div class="pm-side">
+      <div class="pm-tools">
+        <button class="btn" id="pm-new" type="button">New…</button>
+        <label class="btn file-btn">Import…<input id="pm-import" type="file" accept=".json,.zip,.orca_printer,.orca_filament,.orca_bundle" multiple></label>
+        <button class="btn" id="pm-export-mine" type="button" title="Download all your BicuSlicer presets as a zip">Export mine</button>
+        <button class="btn" id="pm-wizard" type="button">Add printers…</button>
+      </div>
+      <input id="pm-filter" class="search" type="search" placeholder="Filter presets">
+      <ul id="pm-list" class="pm-list"></ul>
+    </div>
+    <div class="pm-detail">
+      <div class="pm-detail-head">
+        <button class="btn icon pm-back" id="pm-back" type="button" aria-label="Back to the list">‹</button>
+        <div class="pm-names"><b id="pm-title"></b><span id="pm-sub" class="muted small"></span></div>
+      </div>
+      <div class="pm-actions">
+        <button class="btn primary-ish" id="pm-save" type="button">Save</button>
+        <button class="btn" id="pm-saveas" type="button">Save as…</button>
+        <button class="btn" id="pm-rename" type="button">Rename</button>
+        <button class="btn" id="pm-export" type="button">Export</button>
+        <button class="btn" id="pm-use" type="button">Use for slicing</button>
+        <button class="btn danger" id="pm-delete" type="button">Delete</button>
+      </div>
+      <p id="pm-status" class="muted small pm-status"></p>
+      <div id="pm-editor"></div>
+    </div>
+  </div>
+</dialog>
 
+<!-- ======================= first-run setup -->
+<dialog id="wiz" class="sheet wiz">
+  <div class="sheet-head"><b>Set up your printers</b><button class="btn icon" id="wiz-close" type="button" aria-label="Close">✕</button></div>
+  <div class="wiz-body">
+    <div data-step="intro">
+      <p>BicuSlicer slices with OrcaSlicer's engine. Pick your printer from OrcaSlicer's library of 70+ brands, or describe a custom one. You can add more later under <b>Profiles</b>.</p>
+      <div class="wiz-choices">
+        <button class="choice" type="button" data-go="vendor"><b>Choose from the library</b><span class="muted small">Voron, Prusa, Bambu Lab, Creality, Sovol, Elegoo, …</span></button>
+        <button class="choice" type="button" data-go="custom"><b>Custom printer</b><span class="muted small">Enter the bed size, nozzle and firmware</span></button>
+        <button class="choice" type="button" id="wiz-skip"><b>Use my existing presets</b><span class="muted small">Your OrcaSlicer / BicuSlicer presets are already available</span></button>
+      </div>
+    </div>
+    <div data-step="vendor" hidden>
+      <input id="wiz-filter" class="search" type="search" placeholder="Search brand or model">
+      <div id="wiz-vendors" class="wiz-vendors"></div>
+      <div class="wiz-foot"><button class="btn" type="button" data-go="intro">Back</button><span id="wiz-count" class="muted small"></span><button class="primary" id="wiz-vendor-done" type="button">Done</button></div>
+    </div>
+    <div data-step="custom" hidden>
+      <form id="wiz-custom-form" class="wiz-form">
+        <label class="field"><span>Name</span><input name="name" required maxlength="80" value="My printer"></label>
+        <div class="row3">
+          <label class="field"><span>Bed width (X) mm</span><input name="width" type="number" inputmode="decimal" min="20" max="2000" value="220" required></label>
+          <label class="field"><span>Bed depth (Y) mm</span><input name="depth" type="number" inputmode="decimal" min="20" max="2000" value="220" required></label>
+          <label class="field"><span>Max height (Z) mm</span><input name="height" type="number" inputmode="decimal" min="10" max="2000" value="250" required></label>
+        </div>
+        <div class="row2">
+          <label class="field"><span>Nozzle</span><select name="nozzle"><option>0.2</option><option selected>0.4</option><option>0.6</option><option>0.8</option></select></label>
+          <label class="field"><span>Firmware</span><select name="flavor"><option value="klipper">Klipper</option><option value="marlin">Marlin</option><option value="rrf">RepRapFirmware</option><option value="repetier">Repetier</option></select></label>
+        </div>
+        <p class="muted small">Starts from OrcaSlicer's generic profile for that firmware. Fine-tune speeds, retraction and start G-code afterwards under Profiles (Advanced or Expert mode).</p>
+        <div class="wiz-foot"><button class="btn" type="button" data-go="intro">Back</button><span></span><button class="primary" type="submit">Create printer</button></div>
+      </form>
+    </div>
+  </div>
+</dialog>
+
+<!-- ======================= small dialogs -->
+<dialog id="newp">
+  <form method="dialog">
+    <p><b id="newp-title">New preset</b></p>
+    <label class="field"><span>Name</span><input id="newp-name" maxlength="120" required></label>
+    <label class="field"><span>Start from</span><select id="newp-parent"></select></label>
+    <div class="actions"><button value="cancel" class="btn" type="submit" formnovalidate>Cancel</button><button value="ok" class="primary" type="submit">Create</button></div>
+  </form>
+</dialog>
+<dialog id="ask">
+  <form method="dialog">
+    <p id="ask-title"></p>
+    <input id="ask-input" class="ask-input" maxlength="120">
+    <div class="actions"><button value="cancel" class="btn" type="submit" formnovalidate>Cancel</button><button value="ok" id="ask-ok" class="primary" type="submit">OK</button></div>
+  </form>
+</dialog>
 <dialog id="confirm">
   <form method="dialog">
     <p id="confirm-text"></p>
-    <div class="actions">
-      <button value="cancel" class="btn" type="submit">Cancel</button>
-      <button value="ok" class="primary" type="submit">Start print</button>
-    </div>
+    <div class="actions"><button value="cancel" class="btn" type="submit">Cancel</button><button value="ok" id="confirm-ok" class="primary" type="submit">OK</button></div>
   </form>
 </dialog>
+<div id="toast" class="toast" role="status" hidden></div>
 
-<script type="module" src="/static/app.js?v=4"></script>
+<script type="module" src="/static/app.js?v=5"></script>
 </body>
 </html>

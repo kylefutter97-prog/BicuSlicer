@@ -10,9 +10,9 @@ services:
       # MOONRAKER_API_KEY: ""                  # only if Moonraker doesn't trust this host
       # PRINTER_UI_URL: http://printer.local/  # defaults to the Moonraker host
     volumes:
-      # OrcaSlicer data folder with your presets, read-only. With the linuxserver/orcaslicer desktop
-      # container this is <its /config>/.config/OrcaSlicer.
-      - /path/to/orcaslicer/config/.config/OrcaSlicer:/orca:ro
+      # Optional: an OrcaSlicer desktop data folder whose user presets you want to see, read-only.
+      # With the linuxserver/orcaslicer desktop container this is <its /config>/.config/OrcaSlicer.
+      # - /path/to/orcaslicer/config/.config/OrcaSlicer:/orca:ro
       - ./data:/data
       # - ./app:/app:ro                        # development: live code, restart to apply
     ports:

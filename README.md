@@ -12,8 +12,17 @@ Lay out a plate in the browser, slice it with the real OrcaSlicer engine using t
   - tap a face to put it on the bed;
   - run OrcaSlicer's own auto-orient and check the result in the 3D view;
   - rotate in fixed steps, scale, add copies, and auto-arrange.
-- **Your presets:** printer, quality and filament presets are read from your OrcaSlicer data folder (read-only). Edit a preset in the desktop app and it shows up here.
-- **Quick overrides:** supports (off / normal / tree), brim, and infill. Each one defaults to "Preset", which leaves your preset unchanged.
+- **OrcaSlicer's settings, with its Simple / Advanced / Expert modes:** every printer, filament and process setting, laid out in the same pages and groups as the desktop app, with search and help text. The list is generated from OrcaSlicer's own source for the version you run. Changes you haven't saved still apply when you slice.
+- **Profiles:** create, edit, rename, delete, import and export printer, filament and process presets.
+  - Your presets are kept in BicuSlicer's own store.
+  - Presets from an OrcaSlicer desktop data folder and OrcaSlicer's vendor library (70+ brands) appear read-only, and you can save copies to change them.
+  - Import takes OrcaSlicer `.json` presets and `.orca_printer` / `.orca_filament` / `.orca_bundle` / `.zip` bundles.
+  - Export gives standalone `.json` files that also load in OrcaSlicer.
+- **First-run setup:** choose printers from the vendor library, or enter a custom printer's bed size, nozzle and firmware.
+- **Desktop and phone layouts:**
+  - wide desktop screens get three columns (settings, the 3D view, then parts and results) filling the window;
+  - laptops and tablets get two;
+  - phones get one, with a fixed Slice button.
 - **Results:** print time, filament weight and length, layer count and cost.
 - **Printer:** send the G-code to Moonraker, then start the print with a separate, confirmed tap. Starting is refused unless Klipper is ready and the printer is idle. A status pill shows printer state and temperatures.
 
@@ -22,7 +31,8 @@ What the page shows is what gets sliced. The page bakes every placed part into o
 ## Requirements
 
 - Docker on an **x86-64** host. The image is built on [linuxserver/orcaslicer](https://docs.linuxserver.io/images/docker-orcaslicer/), which is amd64-only and about 7 GB.
-- An OrcaSlicer data folder with your user presets. The easiest source is the same linuxserver/orcaslicer container running the desktop app: its `/config/.config/OrcaSlicer`.
+- Optional: an OrcaSlicer desktop data folder, if you want its user presets available. For example, the linuxserver/orcaslicer desktop container's `/config/.config/OrcaSlicer`. Without one, start from the vendor library or a custom printer.
+- Internet access on first start, to fetch OrcaSlicer's settings catalogue and vendor profiles (see below).
 - A Klipper printer with Moonraker, reachable from the container.
 - About 1–2 GB of RAM while a slice runs. Jobs are sliced one at a time.
 
@@ -48,7 +58,7 @@ Open `http://<host>:8000`.
 | `MOONRAKER_API_KEY` | – | Only needed if Moonraker doesn't list this host in `trusted_clients` |
 | `PRINTER_UI_URL` | Moonraker's host | Link used by the status pill and "Open printer" |
 | `UPLOAD_FOLDER` | – (gcodes root) | Sub-folder in Moonraker's `gcodes` for uploads |
-| `ORCA_DIR` | `/orca` | OrcaSlicer data folder (mount it read-only) |
+| `ORCA_DIR` | `/orca` | Optional: an OrcaSlicer data folder whose user presets you want to see (mount it read-only) |
 | `DATA_DIR` | `/data` | Jobs and temporary files |
 | `KEEP_JOBS` | `20` | How many recent jobs to keep |
 | `SLICE_TIMEOUT` | `900` | Seconds before a slice is stopped |
@@ -57,16 +67,24 @@ Open `http://<host>:8000`.
 
 The OrcaSlicer version comes from the base image tag in the `Dockerfile`. Keep it the same as your desktop OrcaSlicer, so presets saved by one version load in the other.
 
+## Where the OrcaSlicer data comes from
+
+On first start, `app/tools/orca_data.py` downloads the following from OrcaSlicer's GitHub repository, for the tag matching the slicer in the image:
+- the settings catalogue, parsed from `PrintConfig.cpp`, `Preset.cpp` and `Tab.cpp`;
+- the vendor profiles (`resources/profiles`, JSON only).
+
+It saves them to `DATA_DIR/orca/<tag>/`. The CLI also exports OrcaSlicer's built-in defaults there. This data is OrcaSlicer's (AGPL-3.0), so it's fetched at runtime rather than included in this MIT-licensed repository. The container needs internet access once for this. Without it, slicing still works, but the settings editor and vendor library are unavailable.
+
 ## How it works
 
-- **Server:** `app/server.py`, a small [aiohttp](https://docs.aiohttp.org/) app. For each job it copies the OrcaSlicer data folder's `system/` profiles and `user/` presets into a private folder, applies the overrides to the chosen process preset, and runs:
+- **Server:** `app/server.py`, a small [aiohttp](https://docs.aiohttp.org/) app, plus `app/presets.py`, which resolves OrcaSlicer presets (`inherits` chains across your presets, the OrcaSlicer folder and the vendor library) without the GUI. For each job it writes standalone, fully resolved copies of the chosen printer, filament and process presets (with any unsaved changes applied) into a private folder, and runs:
 
   ```
   orca-slicer --datadir <job folder> --load-settings "machine.json;process.json" --load-filaments filament.json \
               --arrange 0 --orient 0 --slice 0 --export-statistics --outputdir out plate.3mf
   ```
 
-  Your real OrcaSlicer folder is never written to.
+  Your OrcaSlicer folder is never written to. BicuSlicer's own presets live in `DATA_DIR/presets/`, saved the way OrcaSlicer saves user presets: just the settings that differ from the parent, plus `inherits`.
 - **Auto-orient** (`POST /api/orient`): runs `orca-slicer --orient 1` on the single part and reads back the direction Orca chose to face down. The page then turns the part to match.
 - **Page:** `app/static/`, plain ES modules with [three.js](https://threejs.org/) for the 3D view. Three.js and [fflate](https://github.com/101arrowz/fflate) are vendored, so the page works offline.
 

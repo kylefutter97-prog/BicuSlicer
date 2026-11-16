@@ -1,0 +1,91 @@
+// Small shared helpers for the BicuSlicer page.
+
+export const $ = (id) => document.getElementById(id);
+
+export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+export const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem("bicuslicer." + k)); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem("bicuslicer." + k, JSON.stringify(v)); } catch { /* private mode */ } },
+};
+
+export async function api(path, opts = {}) {
+  let r;
+  try {
+    r = await fetch(path, opts);
+  } catch {
+    // An expired proxy sign-in redirects to the login site, which fetch can't follow.
+    throw new Error("Couldn't reach the server. If you've been away a while, reload the page (you may need to sign in again).");
+  }
+  if (r.status === 401 || r.status === 403) throw new Error("Your sign-in has expired. Reload the page to sign in again.");
+  if (!r.ok) {
+    let msg = `${r.status} ${r.statusText}`;
+    try { msg = (await r.json()).error || msg; } catch { /* not JSON */ }
+    throw new Error(msg);
+  }
+  return r;
+}
+export const apiJson = async (path, opts) => (await api(path, opts)).json();
+export const postJson = (path, body, method = "POST") =>
+  apiJson(path, { method, headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+
+export const presetUrl = (type, name) => `/api/presets/${type}/${encodeURIComponent(name)}`;
+
+export function download(url) {
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+export function saveBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+let toastTimer = null;
+export function toast(text, kind = "ok") {
+  const el = $("toast");
+  el.className = `toast ${kind}`;
+  el.textContent = text;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, kind === "err" ? 9000 : 4000);
+}
+
+// Ask for a line of text in a small dialog (prompt() is ugly and blocked in some webviews).
+export function ask(title, value = "", okLabel = "OK") {
+  return new Promise((resolve) => {
+    const dlg = $("ask");
+    $("ask-title").textContent = title;
+    const input = $("ask-input");
+    input.value = value;
+    $("ask-ok").textContent = okLabel;
+    dlg.returnValue = "";
+    dlg.showModal();
+    input.focus();
+    input.select();
+    dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" ? input.value.trim() : null), { once: true });
+  });
+}
+
+export function confirmBox(text, okLabel = "OK", danger = false) {
+  return new Promise((resolve) => {
+    const dlg = $("confirm");
+    $("confirm-text").textContent = text;
+    const ok = $("confirm-ok");
+    ok.textContent = okLabel;
+    ok.classList.toggle("danger-fill", danger);
+    dlg.returnValue = "";
+    dlg.showModal();
+    dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok"), { once: true });
+  });
+}

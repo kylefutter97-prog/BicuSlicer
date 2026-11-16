@@ -17,6 +17,8 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+import presets as P
+
 ORCA_BIN = os.environ.get("ORCA_BIN", "/opt/orcaslicer/bin/orca-slicer")
 ORCA_DIR = Path(os.environ.get("ORCA_DIR", "/orca"))           # OrcaSlicer data dir (read-only)
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
@@ -31,63 +33,135 @@ MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "300"))
 STATIC = Path(__file__).parent / "static"
 JOBS = DATA_DIR / "jobs"
 MODEL_EXT = {".stl", ".3mf", ".obj"}   # the Orca CLI cannot read STEP (GUI only)
-KINDS = ("machine", "process", "filament")
+KINDS = P.TYPES
+TOOLS = Path(__file__).parent / "tools"
+PRESET_DIR = DATA_DIR / "presets"
+SETTINGS_FILE = DATA_DIR / "settings.json"
 IDLE_PRINT_STATES = {"standby", "complete", "cancelled", "error"}
 
 slice_lock = asyncio.Lock()
 jobs: dict[str, dict] = {}   # in-memory job state; results are also written to meta.json
 
 
-# ---------------------------------------------------------------- presets
+# ---------------------------------------------------------------- orca data, settings, presets
 
-def user_preset_dir() -> Path:
-    base = ORCA_DIR / "user"
-    if (base / "default").is_dir():
-        return base / "default"
-    subs = sorted(p for p in base.iterdir() if p.is_dir()) if base.is_dir() else []
-    return subs[0] if subs else base / "default"
+orca = {"tag": None, "status": "starting", "error": None, "dir": None}
+lib: P.Library | None = None
 
 
-def load_presets() -> dict:
-    out = {}
-    for kind in KINDS:
-        items = []
-        for f in sorted((user_preset_dir() / kind).glob("*.json")):
+def orca_tag() -> str:
+    """'v2.5.1' from the CLI's banner ('OrcaSlicer-2.5.1:')."""
+    import subprocess
+    try:
+        out = subprocess.run([ORCA_BIN, "--help"], capture_output=True, text=True, timeout=60).stdout
+        m = re.search(r"OrcaSlicer-([\d.]+)", out)
+        return "v" + m.group(1) if m else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def load_settings() -> dict:
+    try:
+        return json.loads(SETTINGS_FILE.read_text())
+    except (OSError, ValueError):
+        return {"setup_done": False, "machines": []}
+
+
+def save_settings(st: dict) -> None:
+    SETTINGS_FILE.write_text(json.dumps(st, indent=1))
+
+
+def build_library() -> None:
+    global lib
+    system = orca["dir"] / "profiles" if orca["dir"] and (orca["dir"] / "profiles").is_dir() else None
+    lib = P.Library(PRESET_DIR, ORCA_DIR if ORCA_DIR.is_dir() else None, system)
+
+
+async def ensure_orca_data() -> None:
+    """Fetch Orca's settings catalogue + vendor profiles for this slicer version (once), and its defaults."""
+    tag = await asyncio.to_thread(orca_tag)
+    d = DATA_DIR / "orca" / tag
+    orca.update(tag=tag, dir=d)
+    try:
+        if not (d / "catalog.json").is_file() or not (d / "profiles").is_dir():
+            orca["status"] = "downloading"
+            proc = await asyncio.create_subprocess_exec(
+                "/lsiopy/bin/python3" if Path("/lsiopy/bin/python3").exists() else "python3",
+                str(TOOLS / "orca_data.py"), "--tag", tag, "--out", str(d),
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+            out, _ = await proc.communicate()
+            if proc.returncode != 0:
+                raise RuntimeError(out.decode("utf-8", "replace").strip().splitlines()[-1:] or "download failed")
+        if not (d / "defaults.json").is_file():
+            work = DATA_DIR / "tmp" / uuid.uuid4().hex
+            work.mkdir(parents=True)
             try:
-                j = json.loads(f.read_text())
-            except (OSError, ValueError):
-                continue
-            item = {"name": j.get("name", f.stem), "file": f.name}
-            if kind == "machine":
-                item["bed"] = j.get("printable_area")
-                item["height"] = j.get("printable_height")
-            items.append(item)
-        out[kind] = items
-    return out
+                p = await asyncio.create_subprocess_exec(ORCA_BIN, "--export-settings", str(work / "defaults.json"),
+                                                         cwd=str(work), env={**os.environ, "HOME": str(work)},
+                                                         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                await p.wait()
+                if (work / "defaults.json").is_file():
+                    shutil.move(str(work / "defaults.json"), d / "defaults.json")
+            finally:
+                shutil.rmtree(work, ignore_errors=True)
+        orca["status"] = "ready"
+    except Exception as e:
+        orca.update(status="failed", error=str(e)[:300])
+    await asyncio.to_thread(build_library)
 
 
-def pick_defaults(presets: dict) -> dict:
-    def first(items, prefer=""):
-        names = [i["name"] for i in items]
-        good = [n for n in names if not n.endswith("- Copy")]
-        for n in good:
+def need_lib() -> P.Library:
+    if lib is None:
+        raise web.HTTPServiceUnavailable(text="Still starting up")
+    return lib
+
+
+def machine_rows(st: dict) -> list[dict]:
+    enabled = set(st.get("machines", []))
+    rows = [r for r in need_lib().listing("machine") if r["source"] != "system" or r["name"] in enabled]
+    ok = []
+    for r in rows:
+        try:
+            v = lib.resolve("machine", r["name"])
+            r["bed"], r["height"] = v.get("printable_area"), v.get("printable_height")
+            ok.append(r)
+        except P.PresetError:
+            pass                              # broken preset (missing parent): hide it
+    return ok
+
+
+def preset_rows(t: str, machine: str | None, show_all: bool) -> list[dict]:
+    rows = []
+    for r in need_lib().listing(t):
+        if r["source"] == "system":
+            generic = t == "filament" and r.get("vendor") == "OrcaFilamentLibrary" and r["name"].startswith("Generic ") \
+                and r["name"].endswith("@System")
+            explicit = lib.explicit_compat(t, r["name"])
+            if explicit is None:
+                continue                      # broken vendor preset (missing parent): hide it
+            if not show_all and not generic:
+                if not explicit or not machine or not lib.compatible(t, r["name"], machine):
+                    continue
+        r["compatible"] = bool(machine) and lib.compatible(t, r["name"], machine)
+        if not show_all and machine and not r["compatible"]:
+            continue
+        rows.append(r)
+    return rows
+
+
+def pick(rows: list[dict], wanted: str | None, prefer: str = "") -> str | None:
+    names = [r["name"] for r in rows]
+    if wanted in names:
+        return wanted
+    # your own presets first (BicuSlicer, then OrcaSlicer desktop), then the vendor library
+    for src in ("user", "orca", "system"):
+        mine = [r["name"] for r in rows if r["source"] == src and not r["name"].endswith("- Copy")]
+        for n in mine:
             if prefer and prefer.lower() in n.lower():
                 return n
-        return (good or names or [None])[0]
-    machine = first(presets["machine"])
-    stem = (machine or "").split()[0] if machine else ""
-    return {
-        "machine": machine,
-        "process": first(presets["process"], stem),
-        "filament": first(presets["filament"], stem),
-    }
-
-
-def preset_file(kind: str, name: str) -> Path:
-    for item in load_presets()[kind]:
-        if item["name"] == name:
-            return user_preset_dir() / kind / item["file"]
-    raise web.HTTPBadRequest(text=f"Unknown {kind} preset: {name}")
+        if mine:
+            return mine[0]
+    return names[0] if names else None
 
 
 # ---------------------------------------------------------------- jobs
@@ -126,48 +200,28 @@ def get_job(job_id: str) -> dict:
     return job
 
 
-def build_datadir(job_dir: Path, process_name: str, overrides: dict) -> Path:
-    """A private copy of the Orca data dir: system profiles + user presets, with the
-    chosen process preset's overrides applied. The real config is never written to."""
+def build_datadir(job_dir: Path, picks: dict, edits: dict) -> tuple[Path, dict]:
+    """A private Orca data dir holding standalone (fully resolved) copies of the three chosen presets,
+    with unsaved edits from the page applied. Nothing outside the job folder is written."""
     dd = job_dir / "orca"
-    shutil.copytree(ORCA_DIR / "system", dd / "system")
-    conf = ORCA_DIR / "OrcaSlicer.conf"
-    if conf.is_file():
-        shutil.copy2(conf, dd / "OrcaSlicer.conf")
-    src = user_preset_dir()
-    for kind in KINDS:
-        (dd / "user/default" / kind).mkdir(parents=True, exist_ok=True)
-        for f in (src / kind).glob("*"):
-            if f.suffix in (".json", ".info"):
-                shutil.copy2(f, dd / "user/default" / kind / f.name)
-    if overrides:
-        pf = dd / "user/default/process" / preset_file("process", process_name).name
-        j = json.loads(pf.read_text())
-        j.update(overrides)
-        pf.write_text(json.dumps(j, indent=4))
-    return dd
-
-
-def overrides_from(form: dict) -> dict:
-    o = {}
-    supports = form.get("supports", "preset")
-    if supports == "off":
-        o["enable_support"] = "0"
-    elif supports in ("normal", "tree"):
-        o["enable_support"] = "1"
-        o["support_type"] = "normal(auto)" if supports == "normal" else "tree(auto)"
-    brim = form.get("brim", "preset")
-    if brim == "off":
-        o["brim_type"] = "no_brim"
-    elif brim == "on":
-        o["brim_type"] = "auto_brim"
-    infill = form.get("infill", "preset")
-    if infill != "preset":
-        n = int(infill)
-        if not 0 <= n <= 100:
-            raise web.HTTPBadRequest(text="Infill must be 0–100")
-        o["sparse_infill_density"] = f"{n}%"
-    return o
+    (dd / "system").mkdir(parents=True)
+    files = {}
+    for t in KINDS:
+        name = picks[t]
+        flat = need_lib().flattened(t, name, edits.get(t) or {})
+        if t != "machine":
+            # compatibility was checked on the page; standalone copies have no parents to match
+            flat["compatible_printers"] = []
+            flat["compatible_printers_condition"] = ""
+            if t == "filament":
+                flat["compatible_prints"] = []
+                flat["compatible_prints_condition"] = ""
+        d = dd / "user" / "default" / t
+        d.mkdir(parents=True, exist_ok=True)
+        f = d / f"{name}.json"
+        f.write_text(json.dumps(flat, indent=4))
+        files[t] = f
+    return dd, files
 
 
 def gcode_filament_mm(gcode: Path) -> float | None:
@@ -194,15 +248,11 @@ async def run_slice(job: dict, form: dict) -> None:
             job["status"] = "slicing"
             job["started"] = time.time()
             save_meta(job)
-            m = preset_file("machine", form["machine"])
-            p = preset_file("process", form["process"])
-            f = preset_file("filament", form["filament"])
-            dd = await asyncio.to_thread(build_datadir, job_dir, form["process"], job["overrides"])
-            u = dd / "user/default"
+            dd, files = await asyncio.to_thread(build_datadir, job_dir, {t: form[t] for t in KINDS}, job["edits"])
             out.mkdir(exist_ok=True)
             cmd = [ORCA_BIN, "--datadir", str(dd),
-                   "--load-settings", f"{u / 'machine' / m.name};{u / 'process' / p.name}",
-                   "--load-filaments", str(u / "filament" / f.name),
+                   "--load-settings", f"{files['machine']};{files['process']}",
+                   "--load-filaments", str(files["filament"]),
                    # The page sends a ready-made plate (3MF with each model placed and oriented): arrange=0 keeps it as laid out.
                    "--arrange", "0" if form.get("arrange") == "0" else "1",
                    "--orient", "1" if form.get("orient") == "1" else "0"]
@@ -300,10 +350,201 @@ async def index(_):
     return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
 
 
+@routes.get("/api/state")
+async def api_state(_):
+    st = load_settings()
+    return web.json_response({
+        "orca": {k: orca[k] for k in ("tag", "status", "error")},
+        "setup_done": bool(st.get("setup_done")),
+        "has_orca_presets": bool(lib and any(lib.orca[t] for t in KINDS)),
+        "has_user_presets": bool(lib and any(lib.user[t] for t in KINDS)),
+        "machines_enabled": st.get("machines", []),
+    })
+
+
+@routes.get("/api/catalog")
+async def api_catalog(_):
+    f = orca["dir"] / "catalog.json" if orca["dir"] else None
+    if not f or not f.is_file():
+        raise web.HTTPServiceUnavailable(text=f"Settings catalogue not available yet ({orca['status']})")
+    return web.FileResponse(f, headers={"Cache-Control": "max-age=3600"})
+
+
+@routes.get("/api/defaults")
+async def api_defaults(_):
+    f = orca["dir"] / "defaults.json" if orca["dir"] else None
+    if not f or not f.is_file():
+        return web.json_response({})
+    return web.FileResponse(f, headers={"Cache-Control": "max-age=3600"})
+
+
 @routes.get("/api/presets")
-async def api_presets(_):
-    presets = await asyncio.to_thread(load_presets)
-    return web.json_response({"presets": presets, "defaults": pick_defaults(presets)})
+async def api_presets(request):
+    """Preset lists for the three pickers. ?machine= filters process/filament by compatibility; ?all=1 shows everything."""
+    st = load_settings()
+    q = request.query
+    show_all = q.get("all") == "1"
+    machines = await asyncio.to_thread(machine_rows, st)
+    machine = pick(machines, q.get("machine"))
+    process = await asyncio.to_thread(preset_rows, "process", machine, show_all)
+    filament = await asyncio.to_thread(preset_rows, "filament", machine, show_all)
+    return web.json_response({
+        "presets": {"machine": machines, "process": process, "filament": filament},
+        "selected": {"machine": machine, "process": pick(process, q.get("process"), "0.20mm"),
+                     "filament": pick(filament, q.get("filament"), "PLA")},
+    })
+
+
+def preset_kind(request) -> str:
+    t = request.match_info["type"]
+    if t not in KINDS:
+        raise web.HTTPNotFound()
+    return t
+
+
+@routes.get("/api/presets/{type}/{name}")
+async def api_preset(request):
+    t, name = preset_kind(request), request.match_info["name"]
+    L = need_lib()
+    try:
+        source, raw = L.find(t, name)
+        values = L.resolve(t, name)
+        parent = L.parent_values(t, name)
+    except P.PresetError as e:
+        raise web.HTTPNotFound(text=str(e))
+    return web.json_response({
+        "type": t, "name": name, "source": source.split(":")[0], "vendor": source.split(":", 1)[1] if ":" in source else None,
+        "editable": source == "user", "inherits": raw.get("inherits") or "",
+        "own": [k for k in raw if k not in P.META_KEYS],
+        "values": values, "parent": parent, "ancestors": L.ancestors(t, name)[1:],
+    })
+
+
+@routes.post("/api/presets/{type}")
+async def api_preset_save(request):
+    """Create, update or rename a BicuSlicer preset. Body: {name, inherits, values, replace?}.
+    'values' is the full set of settings wanted; only differences from 'inherits' are stored."""
+    t = preset_kind(request)
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    L = need_lib()
+    try:
+        if body.get("replace") is None and (name in L.user[t] or name in L.orca[t] or (t, name) in L.system_meta):
+            if not body.get("overwrite"):
+                raise P.PresetError(f"A {t} preset named '{name}' already exists")
+        preset = await asyncio.to_thread(need_lib().save_user, t, name, str(body.get("inherits") or ""),
+                                         dict(body.get("values") or {}), body.get("replace"))
+    except P.PresetError as e:
+        raise web.HTTPBadRequest(text=str(e))
+    return web.json_response({"saved": preset["name"]})
+
+
+@routes.delete("/api/presets/{type}/{name}")
+async def api_preset_delete(request):
+    t, name = preset_kind(request), request.match_info["name"]
+    try:
+        await asyncio.to_thread(need_lib().delete_user, t, name)
+    except P.PresetError as e:
+        raise web.HTTPBadRequest(text=str(e))
+    return web.json_response({"deleted": name})
+
+
+@routes.get("/api/presets/{type}/{name}/export")
+async def api_preset_export(request):
+    t, name = preset_kind(request), request.match_info["name"]
+    try:
+        flat = need_lib().flattened(t, name)
+    except P.PresetError as e:
+        raise web.HTTPNotFound(text=str(e))
+    fname = re.sub(r'[^A-Za-z0-9._@ +-]+', "_", name) + ".json"
+    return web.Response(body=json.dumps(flat, indent=4), content_type="application/json",
+                        headers={"Content-Disposition": f'attachment; filename="{fname}"'})
+
+
+@routes.post("/api/presets-export")
+async def api_presets_export(request):
+    body = await request.json()
+    items = [(i[0], i[1]) for i in body.get("items", []) if isinstance(i, list) and len(i) == 2 and i[0] in KINDS]
+    if not items:
+        raise web.HTTPBadRequest(text="Nothing to export")
+    try:
+        data = await asyncio.to_thread(need_lib().export_bundle, items)
+    except P.PresetError as e:
+        raise web.HTTPBadRequest(text=str(e))
+    return web.Response(body=data, content_type="application/zip",
+                        headers={"Content-Disposition": 'attachment; filename="bicuslicer-presets.zip"'})
+
+
+@routes.post("/api/presets-import")
+async def api_presets_import(request):
+    reader = await request.multipart()
+    results = []
+    async for part in reader:
+        if part.name == "file" and part.filename:
+            data = await part.read(decode=False)
+            if len(data) > 50_000_000:
+                raise web.HTTPBadRequest(text="That file is too big")
+            try:
+                results += await asyncio.to_thread(need_lib().import_file, part.filename, data)
+            except P.PresetError as e:
+                results.append({"file": part.filename, "error": str(e)})
+    return web.json_response({"results": results})
+
+
+@routes.get("/api/vendors")
+async def api_vendors(_):
+    """Printer models in Orca's vendor library, with their machine presets (one per nozzle size)."""
+    L = need_lib()
+    out = {}
+    for (t, name), meta in L.system_meta.items():
+        if t != "machine" or meta["instantiation"] != "true":
+            continue
+        v = out.setdefault(meta["vendor"], {"vendor": meta["vendor"], "name": L.vendors.get(meta["vendor"], {}).get("name", meta["vendor"]), "models": {}})
+        model = meta.get("model") or name
+        v["models"].setdefault(model, []).append({"preset": name, "nozzle": meta.get("variant")})
+    rows = []
+    for v in sorted(out.values(), key=lambda x: x["name"].lower()):
+        rows.append({"vendor": v["vendor"], "name": v["name"],
+                     "models": [{"model": m, "presets": sorted(p, key=lambda x: str(x["nozzle"]))} for m, p in sorted(v["models"].items())]})
+    return web.json_response(rows)
+
+
+@routes.post("/api/setup")
+async def api_setup(request):
+    """First-run choices: enabled vendor printers, plus an optional custom printer."""
+    body = await request.json()
+    st = load_settings()
+    L = need_lib()
+    machines = [m for m in body.get("machines", []) if ("machine", m) in L.system_meta]
+    st["machines"] = sorted(set(machines) | (set(st.get("machines", [])) if body.get("add") else set()))
+    created = None
+    c = body.get("custom")
+    if c:
+        try:
+            w, d, h = (float(c[k]) for k in ("width", "depth", "height"))
+            nozzle = float(c.get("nozzle") or 0.4)
+            assert 20 <= w <= 2000 and 20 <= d <= 2000 and 10 <= h <= 2000 and 0.1 <= nozzle <= 2
+        except (KeyError, ValueError, TypeError, AssertionError):
+            raise web.HTTPBadRequest(text="Check the bed size (20–2000 mm) and nozzle (0.1–2 mm)")
+        flavor = {"klipper": "MyKlipper", "marlin": "MyMarlin", "rrf": "MyRRF", "repetier": "MyRepetier"}.get(c.get("flavor"), "MyKlipper")
+        noz = f"{nozzle:g}"
+        base = next((n for n in (f"{flavor} {noz} nozzle", f"{flavor} 0.4 nozzle", "MyKlipper 0.4 nozzle")
+                     if ("machine", n) in L.system_meta), None)
+        if not base:
+            raise web.HTTPServiceUnavailable(text="The vendor library isn't downloaded yet")
+        values = L.resolve("machine", base)
+        values.update({"printable_area": [f"0x0", f"{w:g}x0", f"{w:g}x{d:g}", f"0x{d:g}"],
+                       "printable_height": f"{h:g}", "nozzle_diameter": [noz] * len(values.get("nozzle_diameter") or [1])})
+        name = str(c.get("name") or "My printer").strip()
+        try:
+            await asyncio.to_thread(L.save_user, "machine", name, base, values)
+        except P.PresetError as e:
+            raise web.HTTPBadRequest(text=str(e))
+        created = name
+    if body.get("done", True):
+        st["setup_done"] = True
+    save_settings(st)
+    return web.json_response({"ok": True, "created": created, "machines": st["machines"]})
 
 
 def printer_ui_url() -> str:
@@ -336,6 +577,8 @@ async def api_slice(request: web.Request):
                     while chunk := await part.read_chunk(1 << 20):
                         fh.write(chunk)
                 form["original"] = part.filename
+            elif part.name == "edits":
+                form["edits"] = await part.text()
             elif part.name:
                 form[part.name] = (await part.text())[:200]
         if not model_name:
@@ -345,16 +588,24 @@ async def api_slice(request: web.Request):
         for kind in KINDS:
             if not form.get(kind):
                 raise web.HTTPBadRequest(text=f"Choose a {kind} preset")
-            preset_file(kind, form[kind])
-        overrides = overrides_from(form)
+            try:
+                need_lib().find(kind, form[kind])
+            except P.PresetError as e:
+                raise web.HTTPBadRequest(text=str(e))
+        try:
+            edits = json.loads(form.get("edits") or "{}")
+            assert isinstance(edits, dict) and all(isinstance(edits.get(t, {}), dict) for t in KINDS)
+        except (ValueError, AssertionError):
+            raise web.HTTPBadRequest(text="Bad settings data")
+        edits = {t: edits.get(t) or {} for t in KINDS}
     except Exception:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise
     job = {"id": job_id, "status": "queued", "created": time.time(), "model": model_name,
            "name": safe_stem(form["original"]), "original": form["original"],
            "machine": form["machine"], "process": form["process"], "filament": form["filament"],
-           "options": {k: form.get(k) for k in ("supports", "brim", "infill", "scale", "orient", "arrange")},
-           "overrides": overrides}
+           "options": {k: form.get(k) for k in ("scale", "orient", "arrange")},
+           "edits": edits}
     jobs[job_id] = job
     save_meta(job)
     prune_jobs()
@@ -488,8 +739,14 @@ async def errors_as_text(request, handler):
         raise
 
 
+async def on_startup(app):
+    await asyncio.to_thread(build_library)          # user + OrcaSlicer presets work straight away
+    app["orca_task"] = asyncio.get_running_loop().create_task(ensure_orca_data())
+
+
 def main():
     JOBS.mkdir(parents=True, exist_ok=True)
+    PRESET_DIR.mkdir(parents=True, exist_ok=True)
     shutil.rmtree(DATA_DIR / "tmp", ignore_errors=True)   # leftovers from orient calls
     # jobs that were mid-slice when the container stopped can't finish
     for meta in JOBS.glob("*/meta.json"):
@@ -502,6 +759,7 @@ def main():
             pass
     app = web.Application(client_max_size=MAX_UPLOAD_MB * 1024 * 1024, middlewares=[errors_as_text])
     app.add_routes(routes)
+    app.on_startup.append(on_startup)
     app.router.add_static("/static/", STATIC, append_version=False)
     web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), access_log=None)
 
