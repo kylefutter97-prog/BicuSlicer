@@ -567,3 +567,4 @@ dialog.cut-dlg { position: fixed; inset: auto 16px 16px auto; margin: 0; width: 
 .pv-tile small { font-size: 11px; color: var(--muted); }
 .pv-tile:disabled { opacity: .5; cursor: default; }
 .pv-more { display: flex; gap: 8px; justify-content: flex-end; }
+#paint-fuzzy-warn .link { border: 0; background: none; color: var(--accent); font: inherit; padding: 0 2px; cursor: pointer; text-decoration: underline; }

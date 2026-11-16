@@ -74,7 +74,7 @@ function parseMesh(body, scale) {
     for (const v of body.matchAll(/<vertex\b([^>]*)\/?>/g)) { const a = attrs(v[1]); vx.push(+a.x, +a.y, +a.z); }
   }
   const tris = [];
-  const paint = { supports: null, seam: null, color: false };
+  const paint = { supports: null, seam: null, fuzzy: null, color: false };
   const tre = /<triangle\b([^>]*?)\/?>/g;
   let k = 0;
   while ((m = tre.exec(body))) {
@@ -83,9 +83,10 @@ function parseMesh(body, scale) {
     if (!v1 || !v2 || !v3) continue;
     tris.push(+v1[1], +v2[1], +v3[1]);
     if (s.length > 30) {
-      const ps = /\bpaint_supports="([0-9A-Fa-f]+)"/.exec(s), pm = /\bpaint_seam="([0-9A-Fa-f]+)"/.exec(s);
+      const ps = /\bpaint_supports="([0-9A-Fa-f]+)"/.exec(s), pm = /\bpaint_seam="([0-9A-Fa-f]+)"/.exec(s), pf = /\bpaint_fuzzy_skin="([0-9A-Fa-f]+)"/.exec(s);
       if (ps) (paint.supports ||= [])[k] = ps[1].toUpperCase();
       if (pm) (paint.seam ||= [])[k] = pm[1].toUpperCase();
+      if (pf) (paint.fuzzy ||= [])[k] = pf[1].toUpperCase();
       if (/\b(paint_color|mmu_segmentation)="/.test(s)) paint.color = true;
     }
     k++;
@@ -234,11 +235,11 @@ export function readProject3mf(files) {
         if (!ls.length) continue;
         const total = ls.reduce((n, l) => n + l.mesh.pos.length, 0);
         const pos = new Float32Array(total);
-        const paint = { supports: null, seam: null };
+        const paint = { supports: null, seam: null, fuzzy: null };
         let off = 0, tri = 0;
         for (const l of ls) {
           pos.set(transformPositions(l.mesh.pos, l.t), off);
-          for (const k of ["supports", "seam"]) {
+          for (const k of ["supports", "seam", "fuzzy"]) {
             const src = l.mesh.paint[k];
             if (src) { paint[k] ||= []; src.forEach((v, i) => { if (v) paint[k][tri + i] = v; }); }
           }

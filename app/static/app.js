@@ -293,11 +293,11 @@ function partsFromObject(ob, allowed, notes, layers = {}) {
     const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
     const total = normals.reduce((n, q) => n + q.pos.length, 0);
     const pos = new Float32Array(total);
-    const raw = { supports: null, seam: null };
+    const raw = { supports: null, seam: null, fuzzy: null };
     let off = 0, tri = 0;
     for (const q of normals) {
       pos.set(transformPositions(q.pos, R), off);
-      for (const k of ["supports", "seam"]) if (q.paint[k]) { raw[k] ||= new Array(total / 9); q.paint[k].forEach((v, i) => { if (v) raw[k][tri + i] = v; }); }
+      for (const k of PAINT_KINDS) if (q.paint[k]) { raw[k] ||= new Array(total / 9); q.paint[k].forEach((v, i) => { if (v) raw[k][tri + i] = v; }); }
       off += q.pos.length; tri += q.pos.length / 9;
     }
     const geo = geoFrom(pos, det < 0);
@@ -311,9 +311,9 @@ function partsFromObject(ob, allowed, notes, layers = {}) {
     m.ranges = (layers.ranges || []).map((r) => ({ id: nextId++, from: r.from, to: r.to,
       overrides: Object.fromEntries(Object.entries(r.settings).filter(([k]) => k === "layer_height" || (allowed.has(k) && k !== "extruder"))) }));
     m.printable = ob.items[idx[0]].printable;
-    if (raw.supports || raw.seam) {
+    if (PAINT_KINDS.some((k) => raw[k])) {
       const states = (a) => (a ? Uint8Array.from({ length: total / 9 }, (_, i) => (a[i] ? paintState(a[i]) : 0)) : null);
-      m.paint = { supports: states(raw.supports), seam: states(raw.seam) };
+      m.paint = Object.fromEntries(PAINT_KINDS.map((k) => [k, states(raw[k])]));
       if (det > 0) m.paintRaw = raw;      // kept exactly as painted, for the slicer
     }
     for (const q of ob.parts) {
@@ -340,7 +340,7 @@ function importDialog(name, proj, diff) {
   const dlg = $("import-dlg");
   const parts = proj.objects.reduce((n, o) => n + o.items.length, 0);
   const nPlates = Math.max(1, proj.plates.length);
-  const painted = proj.objects.some((o) => o.parts.some((p) => p.paint.supports || p.paint.seam));
+  const painted = proj.objects.some((o) => o.parts.some((p) => p.paint.supports || p.paint.seam || p.paint.fuzzy));
   const mods = proj.objects.reduce((n, o) => n + o.parts.filter((p) => p.subtype !== "normal_part").length, 0);
   const own = proj.objects.filter((o) => Object.keys(o.settings).length || o.parts.some((p) => Object.keys(p.settings).length)).length;
   const made = [proj.settings?.printer_settings_id, proj.settings?.print_settings_id].filter(Boolean).map(String);
@@ -349,7 +349,7 @@ function importDialog(name, proj, diff) {
     `${parts} part${parts === 1 ? "" : "s"} on ${nPlates} plate${nPlates === 1 ? "" : "s"}`,
     mods ? `${mods} modifier or negative part${mods === 1 ? "" : "s"}` : "",
     own ? `${own} part${own === 1 ? " has" : "s have"} their own settings` : "",
-    painted ? "Painted supports or seams" : "",
+    painted ? "Painted supports, seams or fuzzy skin" : "",
     made.length ? `Made with ${made.map(esc).join(" · ")}${proj.app ? ` in ${esc(proj.app)}` : ""}` : proj.app ? `Made in ${esc(proj.app)}` : "",
     ...proj.notes.map((n) => `<span class="warn-text">${esc(n)}</span>`),
   ].filter(Boolean).map((x) => `<li>${x}</li>`).join("");
@@ -646,13 +646,13 @@ function takeSnapshot() {
         paintRaw: m.paintRaw || null,
         layers: JSON.stringify([m.vlh, m.ranges]),
         paintRev: m.paintRev || 0,
-        paint: m.paint ? { fine: !!m.paint.fine, supports: keepOrCopy(m.paint.supports, op?.supports), seam: keepOrCopy(m.paint.seam, op?.seam) } : null,
+        paint: m.paint ? { fine: !!m.paint.fine, ...Object.fromEntries(PAINT_KINDS.map((k) => [k, keepOrCopy(m.paint[k], op?.[k])])) } : null,
       };
     }),
   };
   snap.key = JSON.stringify(snap.plates) + JSON.stringify(snap.models.map((sm) => [sm.id, sm.name, sm.geo.uuid, sm.quat, sm.scale, sm.copies, sm.overrides, sm.printable,
     sm.volumes.map((v) => [v.id, v.name, v.kind, v.shape, v.size, v.pos, v.overrides, v.geo.uuid]),
-    sm.paint && [sm.paint.fine, arrId(sm.paint.supports), arrId(sm.paint.seam)], arrId(sm.paintRaw), sm.layers]));
+    sm.paint && [sm.paint.fine, ...PAINT_KINDS.map((k) => arrId(sm.paint[k]))], arrId(sm.paintRaw), sm.layers]));
   return snap;
 }
 
@@ -720,7 +720,7 @@ function restoreSnapshot(s) {
       m.paintRaw = sm.paintRaw;
       [m.vlh, m.ranges] = JSON.parse(sm.layers);
       // painting changes the arrays in place, so the part gets its own copies
-      m.paint = sm.paint ? { fine: sm.paint.fine, supports: sm.paint.supports?.slice() ?? null, seam: sm.paint.seam?.slice() ?? null } : null;
+      m.paint = sm.paint ? { fine: sm.paint.fine, ...Object.fromEntries(PAINT_KINDS.map((k) => [k, sm.paint[k]?.slice() ?? null])) } : null;
       models.push(m);
       setCopies(m, sm.copies.length);
       updateBox(m);
@@ -1248,7 +1248,7 @@ function refresh() {
   $("objects").innerHTML = models.map((m) => `
     <li class="${sel.has(m) && !selectedVolume ? "sel" : ""}${ok.off.has(m) || ok.tall.has(m) ? " bad" : ""}${m.printable === false ? " ghost" : ""}" data-id="${m.id}">
       <span class="name">${esc(m.name)}${m.printable === false ? ' <span class="muted small">(not printed)</span>' : ""}</span>
-      <span class="muted small">${plates.length > 1 ? `<span class="part-badge" title="On plate ${onPlates(m)}">P${onPlates(m)}</span> ` : ""}${m.overrides.brim_type === "brim_ears" ? '<span class="part-badge" title="Brim ears">ears</span> ' : ""}${m.paint && (m.paint.supports || m.paint.seam) ? '<span class="part-badge" title="Painted">🖌</span> ' : ""}${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
+      <span class="muted small">${plates.length > 1 ? `<span class="part-badge" title="On plate ${onPlates(m)}">P${onPlates(m)}</span> ` : ""}${m.overrides.brim_type === "brim_ears" ? '<span class="part-badge" title="Brim ears">ears</span> ' : ""}${isPainted(m) ? '<span class="part-badge" title="Painted">🖌</span> ' : ""}${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
     </li>${m.volumes.map((v) => `
     <li class="vol${v === selectedVolume ? " sel" : ""}" data-id="${m.id}" data-vol="${v.id}">
       <span class="name">↳ ${esc(v.name)}</span><span class="muted small">${v.kind === "negative" ? "negative part" : "modifier"}${Object.keys(v.overrides).length ? ` · ⚙ ${Object.keys(v.overrides).length}` : ""}</span>
@@ -1307,9 +1307,12 @@ function meshXml(geo, matrix, paint, raw = null) {
     const a = tris[t], b = flip ? tris[t + 2] : tris[t + 1], c = flip ? tris[t + 1] : tris[t + 2];
     if (a === b || b === c || a === c) continue;
     const k = t / 3;
-    const ps = raw?.supports?.[k] || (paint?.supports ? MO.paintCode(paint.supports[k]) : "");
-    const pm = raw?.seam?.[k] || (paint?.seam ? MO.paintCode(paint.seam[k]) : "");
-    tx.push(`<triangle v1="${a}" v2="${b}" v3="${c}"${ps ? ` paint_supports="${ps}"` : ""}${pm ? ` paint_seam="${pm}"` : ""}/>`);
+    let attrs = "";
+    for (const kind of PAINT_KINDS) {
+      const code = raw?.[kind]?.[k] || (paint?.[kind] ? MO.paintCode(paint[kind][k]) : "");
+      if (code) attrs += ` ${PAINT_ATTR[kind]}="${code}"`;
+    }
+    tx.push(`<triangle v1="${a}" v2="${b}" v3="${c}"${attrs}/>`);
   }
   return `<mesh><vertices>${vx.join("")}</vertices><triangles>${tx.join("")}</triangles></mesh>`;
 }
@@ -1679,6 +1682,7 @@ const paintItems = () => [
   { head: "Paint on the part" },
   { label: "Supports (enforce / block)", run: () => startPaint("supports"), disabled: !selected },
   { label: "Seam (here / avoid)", run: () => startPaint("seam"), disabled: !selected },
+  { label: "Fuzzy skin", run: () => startPaint("fuzzy"), disabled: !selected },
 ];
 const moreItems = () => [
   { label: "Rename…", run: renameSelected, disabled: !selected },
@@ -1713,6 +1717,7 @@ function partMenu() {
     { label: "Brim ears", check: selected?.overrides.brim_type === "brim_ears", run: toggleEars },
     { label: "Paint supports…", run: () => startPaint("supports") },
     { label: "Paint seam…", run: () => startPaint("seam") },
+    { label: "Paint fuzzy skin…", run: () => startPaint("fuzzy") },
     { label: "Printable", check: selected?.printable !== false, run: togglePrintable },
     { sep: true },
     { label: "Fix model", run: fixSelected, disabled: many },
@@ -2085,8 +2090,23 @@ const paint = { on: false, model: null, target: "supports", tool: 1, radius: 3, 
 const PAINT_COLOURS = {
   supports: { 0: [0.55, 0.58, 0.65], 1: [0.18, 0.75, 0.35], 2: [0.9, 0.25, 0.3] },
   seam: { 0: [0.55, 0.58, 0.65], 1: [0.3, 0.55, 1.0], 2: [0.95, 0.6, 0.15] },
+  fuzzy: { 0: [0.55, 0.58, 0.65], 1: [0.72, 0.38, 0.95] },
 };
 let paintMat = null;
+const PAINT_KINDS = ["supports", "seam", "fuzzy"];
+const PAINT_ATTR = { supports: "paint_supports", seam: "paint_seam", fuzzy: "paint_fuzzy_skin" };
+const PAINT_UI = {
+  supports: { title: "Paint supports", t1: "Enforce", t2: "Block", note: "Green = always support here, red = never. With supports set to \"manual\" in the print settings, supports go only where you've painted green." },
+  seam: { title: "Paint seam", t1: "Seam here", t2: "Avoid", note: "Blue = put the seam here, orange = keep the seam away." },
+  fuzzy: { title: "Paint fuzzy skin", t1: "Fuzzy", t2: null, note: "Purple = fuzzy skin here. Its look comes from the fuzzy skin settings (thickness, point distance)." },
+};
+const isPainted = (m) => !!m.paint && PAINT_KINDS.some((k) => m.paint[k]);
+
+/** OrcaSlicer only applies painted fuzzy skin when the part's fuzzy skin setting isn't "Disabled". */
+function fuzzyDisabled(m) {
+  const raw = "fuzzy_skin" in m.overrides ? m.overrides.fuzzy_skin : processValue("fuzzy_skin");
+  return String((Array.isArray(raw) ? raw[0] : raw) ?? "disabled_fuzzy") === "disabled_fuzzy";
+}
 
 function startPaint(target) {
   const m = selected;
@@ -2107,7 +2127,7 @@ function startPaint(target) {
         m.geo = r.geo;
         m.paintRaw = null;      // a project's painting continues at the detail shown (finer than that is approximated)
         for (const mesh of m.meshes) mesh.geometry = r.geo;
-        m.paint = { supports: remap(old?.supports), seam: remap(old?.seam), fine: true };
+        m.paint = { ...Object.fromEntries(PAINT_KINDS.map((k) => [k, remap(old?.[k])])), fine: true };
       }
       const tris = m.geo.getAttribute("position").count / 3;
       m.paint[target] ||= new Uint8Array(tris);
@@ -2120,13 +2140,14 @@ function startPaint(target) {
       paintMat ||= new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.02 });
       for (const mesh of m.meshes) mesh.material = paintMat;
       $("paint-panel").hidden = false;
-      $("paint-title").textContent = target === "supports" ? "Paint supports" : "Paint seam";
-      $("paint-t1").textContent = target === "supports" ? "Enforce" : "Seam here";
-      $("paint-t2").textContent = target === "supports" ? "Block" : "Avoid";
+      const ui = PAINT_UI[target];
+      $("paint-title").textContent = ui.title;
+      $("paint-t1").textContent = ui.t1;
+      $("paint-t2").hidden = !ui.t2;
+      if (ui.t2) $("paint-t2").textContent = ui.t2;
       $("paint-overhangs").hidden = target !== "supports";
-      $("paint-note").textContent = target === "supports"
-        ? "Green = always support here, red = never. With supports set to \"manual\" in the print settings, supports go only where you've painted green."
-        : "Blue = put the seam here, orange = keep the seam away.";
+      $("paint-note").textContent = ui.note;
+      $("paint-fuzzy-warn").hidden = !(target === "fuzzy" && fuzzyDisabled(m));
       setPaintTool(1);
       setPickMode(false);
       refresh();
@@ -2141,8 +2162,7 @@ function stopPaint() {
   $("paint-panel").hidden = true;
   if (m) {
     const any = (a) => a && a.some((x) => x);
-    if (!any(m.paint?.supports)) m.paint.supports = null;
-    if (!any(m.paint?.seam)) m.paint.seam = null;
+    for (const k of PAINT_KINDS) if (m.paint && !any(m.paint[k])) m.paint[k] = null;
   }
   refresh();
 }
@@ -2271,7 +2291,7 @@ function pasteModel() {
   m.overrides = JSON.parse(JSON.stringify(src.overrides || {}));
   m.printable = src.printable !== false;
   m.volumes = (src.volumes || []).map((v) => ({ ...v, id: nextId++, size: v.size.clone(), pos: v.pos.clone(), overrides: { ...v.overrides }, geo: v.geo.clone() }));
-  if (src.paint) m.paint = { supports: src.paint.supports?.slice() || null, seam: src.paint.seam?.slice() || null };
+  if (src.paint) m.paint = { fine: src.paint.fine, ...Object.fromEntries(PAINT_KINDS.map((k) => [k, src.paint[k]?.slice() || null])) };
   m.paintRaw = src.paintRaw || null;
   m.vlh = src.vlh ? JSON.parse(JSON.stringify(src.vlh)) : null;
   if (m.vlh?.mode === "imported") m.vlh.pose = poseKey(m);
@@ -2467,8 +2487,8 @@ async function saveProject(asNew) {
       mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale.toArray(), overrides: m.overrides, printable: m.printable !== false,
       volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides,
         ...(v.shape === "mesh" ? { vmid: extraMeshes.push(v.base) - 1 + models.length, base_size: v.baseSize.toArray() } : {}) })),
-      paint: m.paint ? { supports: m.paint.supports ? b64(m.paint.supports) : null, seam: m.paint.seam ? b64(m.paint.seam) : null } : null,
-      paint_raw: m.paintRaw ? { supports: sparse(m.paintRaw.supports), seam: sparse(m.paintRaw.seam) } : null,
+      paint: m.paint ? Object.fromEntries(PAINT_KINDS.map((k) => [k, m.paint[k] ? b64(m.paint[k]) : null])) : null,
+      paint_raw: m.paintRaw ? Object.fromEntries(PAINT_KINDS.map((k) => [k, sparse(m.paintRaw[k])])) : null,
       layer_height: m.vlh ? { ...m.vlh, pose: undefined, pose_ok: m.vlh.mode !== "imported" || m.vlh.pose === poseKey(m) } : null,
       height_ranges: m.ranges.map((r) => ({ from: r.from, to: r.to, overrides: r.overrides })),
       // [x, y, plate]: x and y on that plate
@@ -2531,10 +2551,10 @@ async function openProject(id) {
       // painted triangles line up with the saved mesh only if it wasn't recentred differently: the mesh is stored centred
       const tris = geo.getAttribute("position").count / 3;
       const unb = (x) => { const a = x ? unb64(x) : null; return a && a.length === tris ? a : null; };
-      if (pm.paint) m.paint = { supports: unb(pm.paint.supports), seam: unb(pm.paint.seam) };
+      if (pm.paint) m.paint = Object.fromEntries(PAINT_KINDS.map((k) => [k, unb(pm.paint[k])]));
       if (pm.paint_raw) {
         const arr = (o) => { if (!o) return null; const a = new Array(tris); for (const [i, v] of Object.entries(o)) if (+i < tris) a[+i] = v; return a; };
-        m.paintRaw = { supports: arr(pm.paint_raw.supports), seam: arr(pm.paint_raw.seam) };
+        m.paintRaw = Object.fromEntries(PAINT_KINDS.map((k) => [k, arr(pm.paint_raw[k])]));
       }
       if (pm.layer_height && (pm.layer_height.mode !== "imported" || pm.layer_height.pose_ok)) {
         m.vlh = { ...pm.layer_height };
@@ -2963,6 +2983,16 @@ $("vol-add").addEventListener("click", async () => {
 for (const b of document.querySelectorAll("[data-paint-tool]")) b.addEventListener("click", () => setPaintTool(Number(b.dataset.paintTool)));
 $("paint-radius").addEventListener("input", (e) => { paint.radius = parseFloat(e.target.value) || 3; $("paint-radius-val").textContent = `${paint.radius} mm`; });
 $("paint-overhangs").addEventListener("click", paintOverhangs);
+$("paint-fuzzy-on").addEventListener("click", () => {
+  const m = paint.model;
+  if (!m) return;
+  m.overrides.fuzzy_skin = "none";          // OrcaSlicer's "Painted only": fuzzy skin just where it's painted
+  $("paint-fuzzy-warn").hidden = true;
+  partEditor.render();
+  plateChanged();
+  refresh();
+  flash("Painted fuzzy skin is on for this part (Fuzzy skin: Painted only).", "ok");
+});
 $("paint-clear").addEventListener("click", () => { const m = paint.model; if (!m) return; m.paint[paint.target].fill(0); recolour(m); m.paintRev = (m.paintRev || 0) + 1; plateChanged(); });
 $("paint-done").addEventListener("click", stopPaint);
 $("open-projects").addEventListener("click", () => openProjects().catch((e) => toast(e.message, "err")));

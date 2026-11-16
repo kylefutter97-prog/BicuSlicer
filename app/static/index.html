@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=31">
+<link rel="stylesheet" href="/static/style.css?v=32">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -88,6 +88,8 @@
         </div>
         <label class="paint-radius">Brush <input type="range" id="paint-radius" min="0.5" max="20" step="0.5" value="3"><span id="paint-radius-val">3 mm</span></label>
         <div class="paint-actions"><button class="btn" id="paint-overhangs" type="button">Paint overhangs</button><button class="btn" id="paint-clear" type="button">Clear all</button></div>
+        <div class="msg warn small" id="paint-fuzzy-warn" hidden>Fuzzy skin is disabled for this part, so painted fuzzy skin won't take effect.
+          <button class="link" id="paint-fuzzy-on" type="button">Turn on painted fuzzy skin for this part</button></div>
         <p class="muted small" id="paint-note"></p>
         <p class="muted small">Drag on the part to paint; drag elsewhere to turn the view.</p>
       </div>
@@ -573,6 +575,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=33"></script>
+<script type="module" src="/static/app.js?v=34"></script>
 </body>
 </html>
