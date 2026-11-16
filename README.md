@@ -78,7 +78,7 @@ Open `http://<host>:8000`.
 - **First start:** BicuSlicer downloads OrcaSlicer's settings list and vendor profiles (about 25 MB, a few minutes). A setup window then asks for your printer.
 - **Connect your printer:** add it under **Printers**.
 - **Your data:** it lives in the `bicuslicer-data` Docker volume, so it survives updates.
-- **Updating:** run `docker compose pull && docker compose up -d`.
+- **Updating:** run `docker compose pull && docker compose up -d`. New OrcaSlicer versions are tested automatically and proposed as pull requests; see [docs/UPDATING.md](docs/UPDATING.md).
 
 > **There is no login.** Anyone who can reach the port can slice and start prints. Run it on a trusted network, or put it behind an
 > authenticating reverse proxy (Authentik, Authelia, oauth2-proxy, Caddy/nginx basic auth…). Don't expose it to the internet as-is.

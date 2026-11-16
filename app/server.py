@@ -121,9 +121,19 @@ async def ensure_orca_data() -> None:
             finally:
                 shutil.rmtree(work, ignore_errors=True)
         orca["status"] = "ready"
+        prune_orca_data(d)
     except Exception as e:
         orca.update(status="failed", error=str(e)[:300])
     await asyncio.to_thread(build_library)
+
+
+def prune_orca_data(current: Path) -> None:
+    """Keep the data for this OrcaSlicer version and the most recent other one (so going back an image version is
+    instant); delete older ones. Each version's settings list and vendor profiles take ~70 MB."""
+    others = sorted((p for p in current.parent.iterdir() if p.is_dir() and p != current and not p.name.endswith(".tmp")),
+                    key=lambda p: p.stat().st_mtime, reverse=True)
+    for old in others[1:]:
+        shutil.rmtree(old, ignore_errors=True)
 
 
 def need_lib() -> P.Library:

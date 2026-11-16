@@ -1,0 +1,142 @@
+# Keeps BicuSlicer's bundled OrcaSlicer up to date, with a human in the loop.
+#
+# Every Monday (or when started by hand) it looks for a newer stable OrcaSlicer release. If there is one, it
+# builds BicuSlicer with it, starts it, runs tools/smoke_test.py (real slices checked in the G-code) and
+# tools/settings_diff.py (what changed in OrcaSlicer's settings), and opens a pull request that bumps
+# ORCA_VERSION with both reports. The PR is a draft if anything failed. Merge it, then tag a release (vX.Y.Z)
+# to publish the image (see docs/UPDATING.md).
+#
+# Started by hand you can also test any version without opening a PR (a dry run), e.g. the current one.
+# One-time setting for PRs: Settings → Actions → General → "Allow GitHub Actions to create and approve pull requests".
+name: OrcaSlicer update
+
+on:
+  schedule:
+    - cron: "17 5 * * 1"          # Mondays 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "OrcaSlicer version to test, e.g. 2.6.0 (blank = latest stable release)"
+        default: ""
+      open_pr:
+        description: "Open a pull request (untick for a dry run)"
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: orca-update
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Which version?
+        id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          WANT: ${{ inputs.version }}
+        run: |
+          current=$(sed -n 's/^ARG ORCA_VERSION=//p' Dockerfile | head -1)
+          target="${WANT#v}"
+          if [ -z "$target" ]; then
+            target=$(gh api repos/OrcaSlicer/OrcaSlicer/releases/latest --jq .tag_name)
+            target="${target#v}"
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "target=$target" >> "$GITHUB_OUTPUT"
+          skip=""
+          if [ -z "$WANT" ] && [ "$target" = "$current" ]; then skip="OrcaSlicer $current is already the latest stable release."; fi
+          if [ -z "$skip" ] && [ "$target" != "$current" ] && git ls-remote --exit-code origin "refs/heads/orca-$target" >/dev/null 2>&1; then
+            skip="A branch for OrcaSlicer $target already exists (orca-$target): see its pull request."
+          fi
+          echo "skip=$skip" >> "$GITHUB_OUTPUT"
+          echo "### OrcaSlicer update check" >> "$GITHUB_STEP_SUMMARY"
+          echo "Current: **$current** · checking: **$target**" >> "$GITHUB_STEP_SUMMARY"
+          [ -n "$skip" ] && echo "$skip" >> "$GITHUB_STEP_SUMMARY" || true
+
+      - name: Build BicuSlicer with OrcaSlicer ${{ steps.v.outputs.target }}
+        if: steps.v.outputs.skip == ''
+        run: docker build --build-arg ORCA_VERSION=${{ steps.v.outputs.target }} -t bicuslicer:candidate .
+
+      - name: Start it
+        if: steps.v.outputs.skip == ''
+        run: docker run -d --name candidate -p 8000:8000 -v candidate-data:/data bicuslicer:candidate
+
+      - name: Smoke test (real slices)
+        id: smoke
+        if: steps.v.outputs.skip == ''
+        continue-on-error: true
+        run: python3 tools/smoke_test.py --url http://localhost:8000 --wait 1500 --report smoke.md
+
+      - name: Settings diff ${{ steps.v.outputs.current }} → ${{ steps.v.outputs.target }}
+        id: diff
+        if: steps.v.outputs.skip == ''
+        continue-on-error: true
+        run: python3 tools/settings_diff.py --old v${{ steps.v.outputs.current }} --new v${{ steps.v.outputs.target }} --report diff.md
+
+      - name: Reports
+        if: steps.v.outputs.skip == ''
+        run: |
+          [ -f smoke.md ] || echo "### Smoke test: didn't run ❌" > smoke.md
+          [ -f diff.md ] || echo "### Settings diff: didn't run ❌" > diff.md
+          cat smoke.md diff.md >> "$GITHUB_STEP_SUMMARY"
+          docker logs candidate > bicuslicer.log 2>&1 || true
+
+      - uses: actions/upload-artifact@v4
+        if: steps.v.outputs.skip == ''
+        with:
+          name: orca-${{ steps.v.outputs.target }}-reports
+          path: |
+            smoke.md
+            diff.md
+            bicuslicer.log
+
+      - name: Open the pull request
+        if: steps.v.outputs.skip == '' && steps.v.outputs.target != steps.v.outputs.current && inputs.open_pr != false
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CUR: ${{ steps.v.outputs.current }}
+          NEW: ${{ steps.v.outputs.target }}
+          SMOKE_OK: ${{ steps.smoke.outcome == 'success' }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -c "orca-$NEW"
+          # the version appears in the Dockerfile, the image workflow's defaults and the docs
+          python3 - "$CUR" "$NEW" <<'PY'
+          import pathlib, sys
+          cur, new = sys.argv[1], sys.argv[2]
+          for f in ["Dockerfile", ".github/workflows/docker.yml", "README.md", "THIRD_PARTY_NOTICES.md"]:
+              p = pathlib.Path(f)
+              if p.exists():
+                  p.write_text(p.read_text().replace(cur, new))
+          PY
+          git commit -am "OrcaSlicer $CUR → $NEW"
+          git push origin "orca-$NEW"
+          {
+            echo "Bumps the bundled OrcaSlicer from **$CUR** to **$NEW** ([release notes](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v$NEW))."
+            echo
+            if [ "$SMOKE_OK" = "true" ]; then echo "The smoke test passed with the new version."; else echo "> ❌ **The smoke test failed**: see below and the workflow's artifacts before merging."; fi
+            echo
+            echo "**After merging:** tag a release (e.g. \`git tag -a v0.X.0 -m 'OrcaSlicer $NEW' && git push origin v0.X.0\`) to publish the image. See docs/UPDATING.md."
+            echo
+            cat smoke.md
+            echo
+            head -c 50000 diff.md
+            [ "$(wc -c < diff.md)" -gt 50000 ] && echo && echo "_…the settings diff is longer: full report in the workflow run's artifacts._"
+          } > pr.md
+          draft=""
+          [ "$SMOKE_OK" = "true" ] || draft="--draft"
+          gh pr create --base "${{ github.event.repository.default_branch }}" --head "orca-$NEW" --title "OrcaSlicer $NEW" --body-file pr.md $draft
+
+      - name: Stop
+        if: always()
+        run: docker rm -f candidate >/dev/null 2>&1 || true
