@@ -806,6 +806,16 @@ async def api_start(request):
 
 
 @web.middleware
+async def static_revalidate(request, handler):
+    """Make browsers re-check the page's own scripts and styles on each load (cheap: ETag -> 304),
+    so updates show up without a hard refresh. The vendored libraries can be cached normally."""
+    resp = await handler(request)
+    if request.path.startswith("/static/") and not request.path.startswith("/static/vendor/"):
+        resp.headers["Cache-Control"] = "no-cache"
+    return resp
+
+
+@web.middleware
 async def errors_as_text(request, handler):
     try:
         return await handler(request)
@@ -834,7 +844,7 @@ def main():
                 meta.write_text(json.dumps(j, indent=1))
         except (OSError, ValueError):
             pass
-    app = web.Application(client_max_size=MAX_UPLOAD_MB * 1024 * 1024, middlewares=[errors_as_text])
+    app = web.Application(client_max_size=MAX_UPLOAD_MB * 1024 * 1024, middlewares=[static_revalidate, errors_as_text])
     app.add_routes(routes)
     app.on_startup.append(on_startup)
     app.router.add_static("/static/", STATIC, append_version=False)

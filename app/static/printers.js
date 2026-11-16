@@ -182,7 +182,7 @@ export async function openPrinters(addNew = false) {
 
 export function initPrinters(opts) {
   ({ getMachine, machineNames, onStatus } = { ...{ getMachine, machineNames, onStatus }, ...opts });
-  $("printer").addEventListener("click", () => openPrinters().catch((e) => toast(e.message, "err")));
+  for (const id of ["printer", "open-printers"]) $(id).addEventListener("click", () => openPrinters().catch((e) => toast(e.message, "err")));
   $("pr-close").addEventListener("click", () => $("printers").close());
   $("pr-add").addEventListener("click", () => showForm(null));
   $("pr-cancel").addEventListener("click", backToList);
