@@ -105,14 +105,14 @@ class Editor {
       const open = this.query || this.opts.allOpen || !openState.has("closed:" + id);
       return `<details class="group" ${open ? "open" : ""} data-group="${esc(id)}">
         <summary>${this.query ? `<span class="muted">${esc(p.page)} ›</span> ` : ""}${esc(g.title)}</summary>
-        ${g.options.map((k) => this.field(k)).join("")}
+        ${this.rows(g.options)}
       </details>`;
     }).join("")).join("");
     main.innerHTML = `${tabs}
       <div class="editor-body">${body || `<p class="muted small">${this.query ? "No settings match." : "Nothing to show in this mode."}</p>`}</div>`;
   }
 
-  field(key) {
+  parts(key) {
     const o = S.catalog.options[key];
     const { detail, edits } = this.get();
     const v = valueOf(detail, edits, key);
@@ -154,15 +154,53 @@ class Editor {
         ctl = `<input id="${id}" type="text" data-key="${key}" value="${esc(sv ?? "")}" ${ro}>`;
     }
     const wide = o.type === "string" && o.multiline;
-    const help = o.tooltip ? `<button type="button" class="help" data-help="${key}" aria-label="About this setting">?</button>` : "";
     const reset = unsaved ? `<button type="button" class="reset" data-reset="${key}" title="Undo this change" aria-label="Undo this change">↺</button>`
       : own && detail.parent && key in detail.parent && !this.opts.readonly && detail.editable
         ? `<button type="button" class="reset own" data-parent="${key}" title="Use the value from ${esc(detail.inherits)}" aria-label="Use the inherited value">⤺</button>` : "";
-    return `<div class="opt${wide ? " wide" : ""}${unsaved ? " unsaved" : own ? " own" : ""}" data-opt="${key}">
-      <label for="${id}" class="opt-label">${label}${help}</label>
-      <div class="ctl">${ctl}${o.type !== "percent" ? unit : ""}${reset}</div>
-      ${o.tooltip ? `<p class="tip-text" hidden>${esc(o.tooltip)}<br><code>${key}</code></p>` : ""}
+    return { o, id, label, wide, unsaved, own, ctl: `${ctl}${o.type !== "percent" ? unit : ""}${reset}` };
+  }
+
+  field(key) {
+    const p = this.parts(key);
+    const help = p.o.tooltip ? `<button type="button" class="help" aria-label="About this setting">?</button>` : "";
+    return `<div class="opt${p.wide ? " wide" : ""}${p.unsaved ? " unsaved" : p.own ? " own" : ""}" data-opt="${key}">
+      <label for="${p.id}" class="opt-label">${p.label}${help}</label>
+      <div class="ctl">${p.ctl}</div>
+      ${p.o.tooltip ? `<p class="tip-text" hidden>${esc(p.o.tooltip)}<br><code>${key}</code></p>` : ""}
     </div>`;
+  }
+
+  // One setting inside a named row: its own short label (e.g. "First layer") above the control.
+  sub(key) {
+    const p = this.parts(key);
+    return `<div class="sub${p.unsaved ? " unsaved" : p.own ? " own" : ""}" data-opt="${key}">
+      <label for="${p.id}" class="sub-label">${p.label}</label><div class="ctl">${p.ctl}</div></div>`;
+  }
+
+  // OrcaSlicer's named rows (e.g. "Cool Plate": first layer + other layers): one label, controls side by side.
+  lineRow(keys) {
+    const first = S.catalog.options[keys[0]];
+    const tip = first.line_tooltip || first.tooltip;
+    const edits = this.get().edits || {};
+    const state = keys.some((k) => k in edits) ? " unsaved" : "";
+    return `<div class="opt line${state}" data-line="${keys.join(",")}">
+      <span class="opt-label">${esc(first.line)}${tip ? `<button type="button" class="help" aria-label="About this setting">?</button>` : ""}</span>
+      <div class="ctls">${keys.map((k) => this.sub(k)).join("")}</div>
+      ${tip ? `<p class="tip-text" hidden>${esc(tip)}<br><code>${keys.join(", ")}</code></p>` : ""}
+    </div>`;
+  }
+
+  rows(keys) {
+    // consecutive settings that OrcaSlicer shows in one named row are rendered together
+    const out = [];
+    for (let i = 0; i < keys.length;) {
+      const line = S.catalog.options[keys[i]].line;
+      let j = i + 1;
+      while (line && j < keys.length && S.catalog.options[keys[j]].line === line) j++;
+      out.push(j - i > 1 ? this.lineRow(keys.slice(i, j)) : this.field(keys[i]));
+      i = j;
+    }
+    return out.join("");
   }
 
   onInput(e, commit) {
@@ -192,17 +230,16 @@ class Editor {
     }
     const nv = o.type === "points" ? v : withScalar(old, v);
     this.set(k, same(nv, old) ? undefined : nv);
-    const row = this.root.querySelector(`[data-opt="${k}"]`);
-    if (row) row.outerHTML = this.field(k);
+    this.refreshField(k);
   }
 
   onClick(e) {
     const tab = e.target.closest("[data-page]");
     if (tab) { this.page = Number(tab.dataset.page); this.render(); this.root.querySelector(".editor-body")?.scrollTo?.(0, 0); return; }
-    const help = e.target.closest("[data-help]");
+    const help = e.target.closest(".help");
     if (help) {
       e.preventDefault();
-      const t = this.root.querySelector(`[data-opt="${help.dataset.help}"] .tip-text`);
+      const t = help.closest(".opt")?.querySelector(".tip-text");
       if (t) t.hidden = !t.hidden;
       return;
     }
@@ -224,8 +261,11 @@ class Editor {
   }
 
   refreshField(k) {
-    const row = this.root.querySelector(`[data-opt="${k}"]`);
-    if (row) row.outerHTML = this.field(k);
+    const el = this.root.querySelector(`[data-opt="${k}"]`);
+    if (!el) return;
+    const line = el.closest("[data-line]");
+    if (line) line.outerHTML = this.lineRow(line.dataset.line.split(","));
+    else el.outerHTML = this.field(k);
   }
 }
 

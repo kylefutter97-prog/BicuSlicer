@@ -96,7 +96,12 @@ async def ensure_orca_data() -> None:
             out, _ = await proc.communicate()
             if proc.returncode != 0:
                 raise RuntimeError(out.decode("utf-8", "replace").strip().splitlines()[-1:] or "download failed")
-        if not (d / "scopes.json").is_file():
+        def scopes_ok():
+            try:
+                return "lines" in json.loads((d / "scopes.json").read_text())
+            except (OSError, ValueError):
+                return False
+        if not scopes_ok():
             # which settings may be set per part (OrcaSlicer's object/region config classes)
             proc = await asyncio.create_subprocess_exec(sys.executable or "python3", str(TOOLS / "orca_scopes.py"), "--tag", tag,
                                                         "--out", str(d), stdout=asyncio.subprocess.DEVNULL,
@@ -396,6 +401,11 @@ async def api_catalog(_):
             scopes = json.loads(sc.read_text())
             allowed = set(scopes.get("object", [])) | set(scopes.get("region", []))
             part = [k for k in cat.get("type_options", {}).get("process", []) if k in allowed and k in cat["options"]]
+            # OrcaSlicer's named rows (e.g. "Cool Plate" = first-layer + other-layers bed temperature)
+            for k, ln in (scopes.get("lines") or {}).items():
+                if k in cat["options"]:
+                    cat["options"][k]["line"] = ln.get("label")
+                    cat["options"][k]["line_tooltip"] = ln.get("tooltip") or None
         cat["part_options"] = part          # process settings OrcaSlicer allows per part
         _catalog_cache.update(key=key, body=json.dumps(cat).encode())
     return web.Response(body=_catalog_cache["body"], content_type="application/json",
