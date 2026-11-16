@@ -582,3 +582,17 @@ dialog.cut-dlg { position: fixed; inset: auto 16px 16px auto; margin: 0; width: 
 .cut-conn { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .cut-conn > label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
 .cut-dlg .calib-fields label { display: grid; gap: 4px; font-size: 13px; color: var(--muted); }
+
+/* filament slots */
+.fil-slots { display: grid; gap: 6px; margin-top: 6px; }
+.fil-slot { display: grid; grid-template-columns: 22px 34px minmax(0, 1fr) auto; gap: 6px; align-items: center; }
+.fil-slot select { min-width: 0; }
+.fil-slot .fil-same { grid-column: 3 / span 2; }
+.fil-n { font-weight: 700; color: var(--muted); text-align: center; }
+.fil-slot input[type=color] { width: 34px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 6px; background: none; cursor: pointer; }
+.fil-slots .link { justify-self: start; border: 0; background: none; color: var(--accent); font: inherit; font-size: 13.5px; padding: 2px 0; cursor: pointer; }
+.fil-swatch { display: inline-block; width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(0,0,0,.25); vertical-align: -2px; margin-right: 4px; }
+.fil-pick-row { display: flex; align-items: center; gap: 6px; }
+.fil-pick-row select { flex: 1; min-width: 0; }
+.fil-use { display: flex; flex-wrap: wrap; gap: 4px 12px; margin: 4px 0 0; }
+.paint-tools button .fil-swatch { margin-right: 4px; }

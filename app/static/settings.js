@@ -299,6 +299,7 @@ export async function refreshLists(keepEdits = false) {
   S.selected = r.selected;
   for (const t of TYPES) if (changed.includes(t) && !keepEdits) S.edits[t] = {};
   await Promise.all(TYPES.map(loadDetail));
+  loadSlots();          // filament slots are kept per printer
   renderPickers();
   if (changed.includes("machine") || !S.bedType) chooseBed();
   renderBed();
@@ -320,6 +321,7 @@ function optionList(rows, chosen) {
 function editsCount(t) { return Object.keys(S.edits[t]).length; }
 
 function renderPickers() {
+  renderSlots();
   for (const t of TYPES) {
     const sel = $(`pick-${t}`);
     sel.innerHTML = S.lists[t].length ? optionList(S.lists[t], S.selected[t]) : `<option value="">No ${TYPE_LABEL[t].toLowerCase()} presets</option>`;
@@ -747,6 +749,7 @@ async function loadCatalog() {
 
 export async function initSettings(changeCb) {
   onChange = changeCb;
+  wireSlots();
   processEditor = new Editor($("process-editor"), "process", () => ({ detail: S.detail.process, edits: S.edits.process }), (k, v) => {
     if (v === undefined) delete S.edits.process[k]; else S.edits.process[k] = v;
     renderPickers();
@@ -926,3 +929,76 @@ export function applyProcessEdits(changes) {
 }
 
 export const settingLabel = (k) => S.catalog?.options?.[k]?.full_label || S.catalog?.options?.[k]?.label || k;
+
+/* ================================================================ filament slots (multi-colour, like OrcaSlicer's filament list) */
+// Slot 1 is the filament picked above; more slots make a multi-colour plate. Remembered per printer in this browser,
+// and saved with projects. Parts, modifiers, colour painting and filament changes at a layer refer to slots 1, 2, ...
+
+const SLOT_COLOURS = ["#2266FF", "#E23C3C", "#F2C12E", "#2FAE62", "#8A4FFF", "#FF8A00", "#1B1B1B", "#F5F5F5"];
+const slotsKey = () => `filaments:${S.selected.machine || ""}`;
+S.extraFilaments = [];
+S.slot1Colour = null;
+
+function loadSlots() {
+  const v = store.get(slotsKey()) || {};
+  S.extraFilaments = Array.isArray(v.extra) ? v.extra.filter((x) => x && x.preset) : [];
+  S.slot1Colour = v.c1 || null;
+}
+function saveSlots() { store.set(slotsKey(), { extra: S.extraFilaments, c1: S.slot1Colour }); }
+const colourOf = (v) => { const c = String(Array.isArray(v) ? v[0] : v || ""); return /^#[0-9a-f]{6}/i.test(c) ? c.slice(0, 7) : null; };
+
+/** The filament slots: [{ preset, colour }], slot 1 first. */
+export function filamentSlots() {
+  const c1 = S.slot1Colour || colourOf(valueOf(S.detail.filament, S.edits.filament, "filament_colour")) || SLOT_COLOURS[0];
+  return [{ preset: S.selected.filament, colour: c1 }, ...S.extraFilaments];
+}
+
+/** Replace the slots (opening a project). */
+export function setFilamentSlots(list) {
+  if (!Array.isArray(list) || !list.length) return;
+  S.slot1Colour = colourOf(list[0].colour);
+  S.extraFilaments = list.slice(1).map((f, i) => ({ preset: f.preset && S.lists.filament.some((r) => r.name === f.preset) ? f.preset : S.selected.filament,
+    colour: colourOf(f.colour) || SLOT_COLOURS[(i + 1) % SLOT_COLOURS.length] }));
+  saveSlots();
+  renderSlots();
+  onChange("filaments");
+}
+
+function renderSlots() {
+  const el = $("fil-slots");
+  if (!el) return;
+  const slots = filamentSlots();
+  el.innerHTML = (slots.length > 1 ? slots.map((f, i) => `<div class="fil-slot" data-i="${i}">
+      <span class="fil-n">${i + 1}</span><input type="color" value="${esc(f.colour)}" data-colour="${i}" aria-label="Colour of filament ${i + 1}">
+      ${i === 0 ? `<span class="muted small fil-same">the filament above</span>`
+        : `<select data-preset="${i}" aria-label="Filament ${i + 1}">${optionList(S.lists.filament, f.preset)}</select><button class="btn icon" type="button" data-remove="${i}" aria-label="Remove filament ${i + 1}">✕</button>`}
+    </div>`).join("") : "")
+    + `<button class="link" type="button" id="fil-add">+ Add a filament${slots.length > 1 ? "" : " (multi-colour)"}</button>`;
+}
+
+function wireSlots() {
+  const el = $("fil-slots");
+  el.addEventListener("click", (e) => {
+    if (e.target.closest("#fil-add")) {
+      if (S.extraFilaments.length >= 15) return;
+      S.extraFilaments.push({ preset: S.selected.filament, colour: SLOT_COLOURS[(S.extraFilaments.length + 1) % SLOT_COLOURS.length] });
+      saveSlots(); renderSlots(); onChange("filaments");
+      return;
+    }
+    const rm = e.target.closest("[data-remove]");
+    if (rm) {
+      const i = Number(rm.dataset.remove);
+      S.extraFilaments.splice(i - 1, 1);
+      saveSlots(); renderSlots(); onChange("filaments", { removed: i + 1 });
+    }
+  });
+  el.addEventListener("change", (e) => {
+    const c = e.target.dataset.colour, pr = e.target.dataset.preset;
+    if (c !== undefined) {
+      const i = Number(c);
+      if (i === 0) S.slot1Colour = e.target.value; else S.extraFilaments[i - 1].colour = e.target.value;
+    } else if (pr !== undefined) S.extraFilaments[Number(pr) - 1].preset = e.target.value;
+    else return;
+    saveSlots(); onChange("filaments");
+  });
+}

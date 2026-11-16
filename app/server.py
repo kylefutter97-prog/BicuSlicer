@@ -236,9 +236,14 @@ def get_job(job_id: str) -> dict:
     return job
 
 
-def build_datadir(job_dir: Path, picks: dict, edits: dict) -> tuple[Path, dict]:
+COLOUR = re.compile(r"^#[0-9A-Fa-f]{6}$")
+
+
+def build_datadir(job_dir: Path, picks: dict, edits: dict, filaments: list | None = None) -> tuple[Path, dict]:
     """A private Orca data dir holding standalone (fully resolved) copies of the three chosen presets,
-    with unsaved edits from the page applied. Nothing outside the job folder is written."""
+    with unsaved edits from the page applied. Nothing outside the job folder is written.
+    filaments: the plate's filament slots [{preset, colour}] when there are several (slot 1 = the picked filament);
+    files["filaments"] lists one standalone filament file per slot, in order."""
     dd = job_dir / "orca"
     (dd / "system").mkdir(parents=True)
     files = {}
@@ -257,9 +262,20 @@ def build_datadir(job_dir: Path, picks: dict, edits: dict) -> tuple[Path, dict]:
         if not ALLOW_POST_PROCESS:
             # removed, not emptied: OrcaSlicer's default is no scripts, and an explicit [] crashes the 2.5.1 CLI
             flat.pop("post_process", None)
+        if t == "filament" and filaments and COLOUR.match(str(filaments[0].get("colour") or "")):
+            flat["filament_colour"] = [filaments[0]["colour"]]
         f = d / f"{name}.json"
         f.write_text(json.dumps(flat, indent=4))
         files[t] = f
+    files["filaments"] = [files["filament"]]
+    for k, slot in enumerate((filaments or [])[1:], start=2):
+        over = {"filament_colour": [slot["colour"]]} if COLOUR.match(str(slot.get("colour") or "")) else {}
+        flat = need_lib().flattened("filament", slot["preset"], over, out_name=f"{slot['preset']} (filament {k})")
+        flat.update(compatible_printers=[], compatible_printers_condition="", compatible_prints=[], compatible_prints_condition="")
+        flat.pop("post_process", None)
+        f = dd / "user" / "default" / "filament" / f"filament {k}.json"
+        f.write_text(json.dumps(flat, indent=4))
+        files["filaments"].append(f)
     return dd, files
 
 
@@ -324,6 +340,25 @@ def inject_thumbnails(gcode: Path, thumbs: dict) -> int:
     return len(blocks)
 
 
+def gcode_multi_stats(gcode: Path) -> dict:
+    """Filament changes and grams per filament, from OrcaSlicer's G-code summary (multi-material plates)."""
+    out = {}
+    try:
+        size = gcode.stat().st_size
+        with gcode.open("rb") as fh:
+            fh.seek(max(0, size - 300_000))
+            tail = fh.read().decode("utf-8", "replace")
+        m = re.search(r"; total filament change = (\d+)", tail)
+        if m:
+            out["filament_changes"] = int(m.group(1))
+        m = re.search(r"; filament used \[g\] = ([\d., ]+)", tail)
+        if m:
+            out["filament_g_each"] = [float(x) for x in m.group(1).split(",") if x.strip()]
+    except (OSError, ValueError):
+        pass
+    return out
+
+
 def gcode_filament_mm(gcode: Path) -> float | None:
     """Orca writes '; filament used [mm] = N' in the G-code's summary block (start or end)."""
     pattern = re.compile(r"; filament used \[mm\] = ([\d.]+)")
@@ -350,11 +385,22 @@ async def run_slice(job: dict, form: dict) -> None:
             save_meta(job)
             if job["model"].endswith(".3mf"):
                 await asyncio.to_thread(clean_3mf, job_dir / job["model"])
-            dd, files = await asyncio.to_thread(build_datadir, job_dir, {t: form[t] for t in KINDS}, job["edits"])
+            edits = job["edits"]
+            fils = job.get("filaments") or []
+            if len(fils) > 1:
+                # several filaments on one nozzle: OrcaSlicer's multi-material mode. With no changer set up (no "change
+                # filament" G-code), each change is a manual swap: M600, as OrcaSlicer's manual filament change does.
+                m = need_lib().resolve("machine", form["machine"])
+                mach = {**m, **edits.get("machine", {})}
+                if not str(mach.get("change_filament_gcode") or "").strip():
+                    edits = {**edits, "machine": {**edits.get("machine", {}), "single_extruder_multi_material": "1",
+                                                  "manual_filament_change": "1", "change_filament_gcode": "M600"}}
+                    job["manual_swaps"] = True
+            dd, files = await asyncio.to_thread(build_datadir, job_dir, {t: form[t] for t in KINDS}, edits, fils)
             out.mkdir(exist_ok=True)
             cmd = [ORCA_BIN, "--datadir", str(dd),
                    "--load-settings", f"{files['machine']};{files['process']}",
-                   "--load-filaments", str(files["filament"]),
+                   "--load-filaments", ";".join(str(f) for f in files["filaments"]),
                    # The page sends a ready-made plate (3MF with each model placed and oriented): arrange=0 keeps it as laid out.
                    "--arrange", "0" if form.get("arrange") == "0" else "1",
                    "--orient", "1" if form.get("orient") == "1" else "0"]
@@ -396,7 +442,7 @@ async def run_slice(job: dict, form: dict) -> None:
                 stats = json.loads(sf.read_text()).get("summary", {})
             plates.append({"plate": n, "file": g.name, "time_s": stats.get("time"),
                            "weight_g": stats.get("weight"), "layers": stats.get("layer_count"),
-                           "cost": stats.get("filament_cost"), "filament_mm": gcode_filament_mm(g),
+                           "cost": stats.get("filament_cost"), "filament_mm": gcode_filament_mm(g), **gcode_multi_stats(g),
                            "size": g.stat().st_size, "uploaded": None})
         if not plates:
             msg = result.get("error_string") or "Slicing failed"
@@ -1042,6 +1088,8 @@ async def api_slice(request: web.Request):
                 form["original"] = part.filename
             elif part.name == "edits":
                 form["edits"] = await part.text()
+            elif part.name == "filaments":
+                form["filaments"] = await part.text()
             elif part.name == "thumbs":
                 raw = await part.read(decode=False)
                 if len(raw) < 4_000_000:
@@ -1065,6 +1113,20 @@ async def api_slice(request: web.Request):
         except (ValueError, AssertionError):
             raise web.HTTPBadRequest(text="Bad settings data")
         edits = {t: edits.get(t) or {} for t in KINDS}
+        filaments = []
+        if form.get("filaments"):
+            try:
+                filaments = json.loads(form["filaments"])
+                assert isinstance(filaments, list) and 0 < len(filaments) <= 16
+                filaments = [{"preset": str(f.get("preset") or ""), "colour": str(f.get("colour") or "")} for f in filaments]
+            except (ValueError, AssertionError, AttributeError):
+                raise web.HTTPBadRequest(text="Bad filament list")
+            filaments[0]["preset"] = form["filament"]
+            for f in filaments[1:]:
+                try:
+                    need_lib().find("filament", f["preset"])
+                except P.PresetError as e:
+                    raise web.HTTPBadRequest(text=str(e))
     except Exception:
         shutil.rmtree(job_dir, ignore_errors=True)
         raise
@@ -1072,7 +1134,7 @@ async def api_slice(request: web.Request):
            "name": safe_stem(form["original"]), "original": form["original"],
            "machine": form["machine"], "process": form["process"], "filament": form["filament"],
            "options": {k: form.get(k) for k in ("scale", "orient", "arrange")},
-           "edits": edits}
+           "edits": edits, "filaments": filaments if len(filaments) > 1 else []}
     jobs[job_id] = job
     save_meta(job)
     prune_jobs()

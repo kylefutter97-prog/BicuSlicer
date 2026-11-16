@@ -263,12 +263,14 @@ export function resultEdits(result, answer, ctx) {
   return null;
 }
 
-/** custom_gcode_per_layer.xml for one plate. */
-export function customGcodeXml(items) {
+/** custom_gcode_per_layer.xml for one plate. colours: filament slot colours (for filament changes); multi: several filaments. */
+export function customGcodeXml(items, colours = [], multi = false) {
   if (!items?.length) return "";
   const a = (s) => String(s).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/\r?\n/g, "&#10;");
   const rows = [...items].sort((x, y) => x.z - y.z).map((g) => g.type === "pause"
     ? `<layer top_z="${g.z}" type="1" extruder="1" color="" extra="" gcode=""/>`
-    : `<layer top_z="${g.z}" type="4" extruder="1" color="" extra="${a(g.gcode)}" gcode="${a(g.gcode)}"/>`);
-  return `<?xml version="1.0" encoding="utf-8"?>\n<custom_gcodes_per_layer>\n<plate>\n<plate_info id="1"/>\n${rows.join("\n")}\n<mode value="SingleExtruder"/>\n</plate>\n</custom_gcodes_per_layer>\n`;
+    : g.type === "filament"         // OrcaSlicer's "change filament" at a layer (a tool change)
+      ? `<layer top_z="${g.z}" type="2" extruder="${g.extruder}" color="${a(colours[g.extruder - 1] || "")}" extra="" gcode="tool_change"/>`
+      : `<layer top_z="${g.z}" type="4" extruder="1" color="" extra="${a(g.gcode)}" gcode="${a(g.gcode)}"/>`);
+  return `<?xml version="1.0" encoding="utf-8"?>\n<custom_gcodes_per_layer>\n<plate>\n<plate_info id="1"/>\n${rows.join("\n")}\n<mode value="${multi ? "MultiAsSingle" : "SingleExtruder"}"/>\n</plate>\n</custom_gcodes_per_layer>\n`;
 }

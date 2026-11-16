@@ -6,7 +6,7 @@ import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, unzipSync, strToU8 } from "three/addons/libs/fflate.module.js";
 import { readProject3mf, paintState, projectPlateOrigin, transformPositions } from "./project3mf.js";
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
-import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, filamentValue, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
+import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, filamentValue, filamentSlots, setFilamentSlots, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview } from "./preview.js";
 import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
@@ -285,17 +285,21 @@ function geoFrom(pos, flip) {
   return g;
 }
 
-const partSettings = (o, allowed) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => allowed.has(k) && k !== "extruder"));
+const partSettings = (o, allowed) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => allowed.has(k) || k === "extruder"));
 
 /** One object of a 3MF -> BicuSlicer parts: copies that share a rotation and scale become one part with copies. */
 function partsFromObject(ob, allowed, notes, layers = {}) {
   const out = [];
   const groups = new Map();
   ob.items.forEach((it, i) => { const k = it.transform.slice(0, 9).map((x) => x.toFixed(6)).join(","); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
-  const normals = ob.parts.filter((p) => p.subtype === "normal_part");
-  if (!normals.length) return out;
+  // multi-colour objects: parts in another filament than the first become raised parts with that filament
+  const allNormals = ob.parts.filter((p) => p.subtype === "normal_part");
+  if (!allNormals.length) return out;
+  const firstSlot = slotOf(allNormals[0].settings) || slotOf(ob.settings) || 1;
+  const normals = allNormals.filter((p) => (slotOf(p.settings) || firstSlot) === firstSlot);
+  const colourParts = allNormals.filter((p) => !normals.includes(p));
   for (const p of ob.parts) if (!["normal_part", "modifier_part", "negative_part"].includes(p.subtype)) notes.add(`${p.subtype.replace(/_/g, " ")}s aren't supported yet, so they were left out.`);
-  if (normals.length > 1 && normals.some((p) => Object.keys(partSettings(p.settings, allowed)).length))
+  if (normals.length > 1 && normals.some((p) => Object.keys(partSettings(p.settings, allowed)).filter((k) => k !== "extruder").length))
     notes.add(`${ob.name}: settings of its separate parts apply to the whole part here.`);
   for (const idx of groups.values()) {
     const t0 = ob.items[idx[0]].transform;
@@ -326,15 +330,16 @@ function partsFromObject(ob, allowed, notes, layers = {}) {
       m.paint = Object.fromEntries(PAINT_KINDS.map((k) => [k, states(raw[k])]));
       if (det > 0) m.paintRaw = raw;      // kept exactly as painted, for the slicer
     }
-    for (const q of ob.parts) {
-      if (q.subtype !== "modifier_part" && q.subtype !== "negative_part") continue;
+    if (firstSlot > 1) m.overrides.extruder = String(firstSlot);
+    for (const q of [...colourParts, ...ob.parts.filter((x) => x.subtype === "modifier_part" || x.subtype === "negative_part")]) {
       const vg = geoFrom(transformPositions(q.pos, R), det < 0);
       const vc = centered(vg);
       vg.computeBoundingBox();
       const size = vg.boundingBox.getSize(new THREE.Vector3());
-      const v = { id: nextId++, kind: q.subtype === "negative_part" ? "negative" : "modifier", shape: "mesh",
-        name: q.name || (q.subtype === "negative_part" ? "Negative part" : "Modifier"), size: size.clone(),
-        pos: new THREE.Vector3(vc.x - c.x, vc.y - c.y, vc.z - minZ), overrides: q.subtype === "modifier_part" ? partSettings(q.settings, allowed) : {},
+      const kind = q.subtype === "negative_part" ? "negative" : q.subtype === "modifier_part" ? "modifier" : "part";
+      const v = { id: nextId++, kind, shape: "mesh",
+        name: q.name || (kind === "negative" ? "Negative part" : kind === "part" ? "Part" : "Modifier"), size: size.clone(),
+        pos: new THREE.Vector3(vc.x - c.x, vc.y - c.y, vc.z - minZ), overrides: kind !== "negative" ? partSettings(q.settings, allowed) : {},
         base: vg, baseSize: size.clone() };
       v.geo = volumeGeo(v);
       m.volumes.push(v);
@@ -440,6 +445,23 @@ async function openProject3mf(name, proj) {
       arrange(pi);
     }
     if (choice.settings) applyProcessEdits({ ...diff.quality, ...(choice.speeds ? diff.speed : {}) });
+    // a multi-colour project: as many filament slots as its parts and painting use, in its colours (or stock ones)
+    let need = 1;
+    for (const ob of proj.objects) {
+      need = Math.max(need, slotOf(ob.settings));
+      for (const q of ob.parts) {
+        need = Math.max(need, slotOf(q.settings));
+        if (q.paint.color) for (const h of q.paint.color) if (h) need = Math.max(need, paintState(h));
+      }
+    }
+    const pc = Array.isArray(proj.settings?.filament_colour) ? proj.settings.filament_colour : [];
+    need = Math.max(need, pc.length > 1 ? pc.length : 1);
+    if (need > 1 && filamentSlots().length < need) {
+      const STOCK = ["#2266FF", "#E23C3C", "#F2C12E", "#2FAE62", "#8A4FFF", "#FF8A00", "#1B1B1B", "#F5F5F5"];
+      setFilamentSlots(Array.from({ length: need }, (_, i) => ({ preset: filamentSlots()[i]?.preset || S.selected.filament,
+        colour: pc[i] || filamentSlots()[i]?.colour || STOCK[i % STOCK.length] })));
+      notes.add(`It uses ${need} filaments: filament slots 1–${need} are set up${pc.length > 1 ? " in its colours" : ""} (your filament preset in each).`);
+    }
     selected = null; multi.clear(); selectedVolume = null;
     if (choice.replace) cur = 0;
     drawBed();
@@ -529,9 +551,95 @@ function volumeGeo(v) {
   return MO.bake(g, new THREE.Matrix4().makeScale(s.x, s.y, s.z));
 }
 
+/* ---- filaments (multi-colour): slot 1, 2, ...; parts, modifiers, painting and layer changes refer to them */
+
+const multiColour = () => filamentSlots().length > 1;
+const slotOf = (o) => { const n = parseInt(Array.isArray(o?.extruder) ? o.extruder[0] : o?.extruder, 10); return Number.isFinite(n) && n >= 1 ? n : 0; };
+const partSlot = (m) => Math.min(filamentSlots().length, slotOf(m.overrides) || 1);
+const slotColour = (n) => (filamentSlots()[n - 1] || filamentSlots()[0]).colour;
+const filamentMats = new Map();
+function filamentMat(colour, sel) {
+  const key = colour + (sel ? "+" : "");
+  if (!filamentMats.has(key)) {
+    filamentMats.set(key, new THREE.MeshStandardMaterial({ color: colour, roughness: 0.6, metalness: 0.04,
+      emissive: sel ? new THREE.Color(css("--accent")) : new THREE.Color(0), emissiveIntensity: sel ? 0.28 : 0 }));
+  }
+  return filamentMats.get(key);
+}
+
+/** Filaments plate pi's parts use, not counting changes at a layer. OrcaSlicer applies a change at a layer only when
+ *  this is one filament (its "multi as single" mode); a plate that already mixes filaments ignores them. */
+function partFilaments(pi) {
+  const used = usedFilaments(pi, false);
+  return used;
+}
+
+/** The filament slots plate pi uses (parts, raised parts, modifiers, colour painting, filament changes at layers). */
+function usedFilaments(pi, withLayerChanges = true) {
+  const used = new Set();
+  const n = filamentSlots().length;
+  for (const m of modelsOn(pi)) {
+    if (m.printable === false) continue;
+    used.add(partSlot(m));
+    for (const v of m.volumes) if (v.kind !== "negative" && slotOf(v.overrides)) used.add(Math.min(n, slotOf(v.overrides)));
+    const pc = m.paint?.color;
+    if (pc) for (let i = 0; i < pc.length; i++) if (pc[i]) used.add(Math.min(n, pc[i]));
+  }
+  if (withLayerChanges && partFilaments(pi).size < 2) for (const g of plates[pi]?.gcodes || []) if (g.type === "filament") used.add(Math.min(n, g.extruder));
+  return used;
+}
+
+/** Where plate pi's prime tower goes (plate mm, lower-left corner), when it uses several filaments and the print settings want one. */
+function towerSpot(pi) {
+  if (usedFilaments(pi).size < 2) return null;
+  const raw = (k) => { const v = processValue(k); return Array.isArray(v) ? v[0] : v; };
+  if (!/^(1|true)$/.test(String(raw("enable_prime_tower") ?? "1"))) return null;
+  const w = Math.max(10, parseFloat(raw("prime_tower_width")) || 60), d = 25 + 8 * Math.max(0, usedFilaments(pi).size - 2), margin = 6;
+  const ox = plateX(pi), rects = [];
+  for (const m of models) for (const x of m.meshes) if (plateOf(x) === pi && m.local) {
+    const f = footprint(m, x);
+    rects.push([f.x0 - ox - margin, f.y0 - margin, f.x1 - ox + margin, f.y1 + margin]);
+  }
+  let best = null;
+  for (let y = bed.d - d - margin; y >= margin; y -= 2) for (let x = bed.w - w - margin; x >= margin; x -= 2) {
+    if (rects.some((r) => x < r[2] && r[0] < x + w && y < r[3] && r[1] < y + d)) continue;
+    const score = x + y * 1.2;           // OrcaSlicer-like: back right when there's room
+    if (!best || score > best.score) best = { x, y, w, d, score };
+  }
+  return best || { none: true, w, d };
+}
+
+let towerMeshes = [];
+function drawTowers() {
+  for (const t of towerMeshes) { view.scene.remove(t); t.geometry.dispose(); }
+  towerMeshes = [];
+  if (!view.scene || !multiColour() || viewMode !== "model") return;
+  plates.forEach((p, i) => {
+    const t = towerSpot(i);
+    if (!t || t.none) return;
+    const h = Math.max(1, ...modelsOn(i).map((m) => m.size.z)) ;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(t.w, t.d, h), view.mats.ghost);
+    mesh.position.set(plateX(i) + t.x + t.w / 2, t.y + t.d / 2, h / 2);
+    mesh.userData.tower = true;
+    view.scene.add(mesh);
+    towerMeshes.push(mesh);
+  });
+}
+
+/** OrcaSlicer's paint string for one painted triangle in state s (1..33: supports/seam use 1, 2; colours use filament slots). */
+function paintCodeN(s) {
+  if (!s) return "";
+  const hex = "0123456789ABCDEF";
+  const nib = s < 3 ? [s << 2] : s < 18 ? [12, s - 3] : [12, 15, s - 18];
+  return nib.reverse().map((x) => hex[x]).join("");
+}
+
 const VOL_KIND = { negative: "negative part", modifier: "modifier", part: "raised part" };
-function volMat(v, sel) {
-  if (v.kind === "part") return sel ? view.mats.selected : view.mats.normal;      // raised text etc.: part of the print
+function volMat(v, sel, m) {
+  if (v.kind === "part") {     // raised text etc.: part of the print
+    if (multiColour()) return filamentMat(slotColour(slotOf(v.overrides) || (m ? partSlot(m) : 1)), sel);
+    return sel ? view.mats.selected : view.mats.normal;
+  }
   if (v.kind === "negative") return sel ? view.mats.negativeSel : view.mats.negative;
   return sel ? view.mats.modifierSel : view.mats.modifier;
 }
@@ -542,7 +650,7 @@ function syncVolumes(m) {
     for (const vm of m.volMeshes || []) view.scene.remove(vm);
     m.volMeshes = [];
     for (const mesh of m.meshes) for (const v of m.volumes) {
-      const vm = new THREE.Mesh(v.geo, volMat(v, false));
+      const vm = new THREE.Mesh(v.geo, volMat(v, false, m));
       vm.userData = { model: m, volume: v, copy: mesh };
       vm.renderOrder = 2;
       m.volMeshes.push(vm);
@@ -553,7 +661,7 @@ function syncVolumes(m) {
     const v = vm.userData.volume, c = vm.userData.copy;
     vm.position.set(c.position.x + v.pos.x, c.position.y + v.pos.y, v.pos.z);
     vm.visible = viewMode === "model";
-    vm.material = volMat(v, v === selectedVolume || (selected === m && !selectedVolume && v.kind === "part"));
+    vm.material = volMat(v, v === selectedVolume || (selected === m && !selectedVolume && v.kind === "part"), m);
   }
 }
 
@@ -806,6 +914,7 @@ function setViewMode(mode) {
   $("pv-layers").hidden = $("legend").hidden = mode !== "preview";
   $("layer-text").hidden = mode !== "preview";
   $("lg-row").hidden = mode !== "preview";
+  $("lg-filament").hidden = !multiColour();
   if (mode !== "preview") $("lg-list").hidden = true; else renderLayerGcodes();
   if (mode === "preview") setPickMode(false);
   $("tip").textContent = mode === "preview"
@@ -841,8 +950,12 @@ function renderLayerInfo() {
 
 function renderLayerGcodes() {
   const bp = plates[cur];
+  const mixed = bp && partFilaments(cur).size > 1;
+  $("lg-filament").disabled = mixed;
+  $("lg-filament").title = mixed ? "This plate already prints with several filaments; OrcaSlicer only changes filament at a layer when the rest of the plate uses one."
+    : "Print with another filament from this layer on (a manual swap on one nozzle)";
   const list = [...(bp?.gcodes || [])].sort((a, b) => a.z - b.z);
-  $("lg-list").innerHTML = list.map((g) => `<span class="lg-chip" data-z="${g.z}"><button type="button" class="lg-go" title="Go to this layer">${g.type === "pause" ? "⏸ Pause" : "G-code"} · ${(+g.z).toFixed(2)} mm${g.note ? ` · ${esc(g.note)}` : ""}</button><button type="button" class="lg-del" aria-label="Remove">✕</button></span>`).join("");
+  $("lg-list").innerHTML = list.map((g) => `<span class="lg-chip" data-z="${g.z}"><button type="button" class="lg-go" title="Go to this layer">${g.type === "pause" ? "⏸ Pause" : g.type === "filament" ? `<span class="fil-swatch" style="background:${slotColour(g.extruder)}"></span>Filament ${g.extruder}${mixed ? " (not applied: the plate mixes filaments)" : ""}` : "G-code"} · ${(+g.z).toFixed(2)} mm${g.note ? ` · ${esc(g.note)}` : ""}</button><button type="button" class="lg-del" aria-label="Remove">✕</button></span>`).join("");
   $("lg-list").hidden = !list.length || viewMode !== "preview";
 }
 
@@ -852,10 +965,17 @@ function layerZ() {
   return p?.loaded && viewMode === "preview" && previewPlateId === plates[cur]?.id ? +p.data.z[p.layer].toFixed(3) : null;
 }
 
-async function addLayerGcode(type) {
+async function addLayerGcode(type, extruder = 0) {
   const z = layerZ(), bp = plates[cur];
   if (z == null || !bp) return;
   let gcode = "";
+  if (type === "filament") {
+    bp.gcodes = bp.gcodes.filter((g) => !(g.z === z && g.type === "filament")).concat([{ z, type, extruder }]);
+    plateChanged(true);
+    renderLayerGcodes();
+    flash(`Filament ${extruder} from the layer at ${z.toFixed(2)} mm. Slice again to include it.`, "ok");
+    return;
+  }
   if (type === "custom") {
     gcode = await ask(`G-code to run before the layer at ${z.toFixed(2)} mm`, bp.gcodes.find((g) => g.z === z && g.type === "custom")?.gcode || "M117 Hello", "Add");
     if (!gcode) return;
@@ -1261,8 +1381,10 @@ function refresh() {
   const sel = new Set(selection());
   for (const m of models) {
     for (const mesh of m.meshes) {
+      const mc = multiColour();
       mesh.material = m.printable === false ? view.mats.ghost : ok.off.has(m) || ok.tall.has(m) ? view.mats.bad
-        : sel.has(m) ? (paint.on && m === selected ? mesh.material : view.mats.selected) : view.mats.normal;
+        : paint.on && m === paint.model ? mesh.material
+          : mc ? filamentMat(slotColour(partSlot(m)), sel.has(m)) : sel.has(m) ? view.mats.selected : view.mats.normal;
     }
     syncVolumes(m);
   }
@@ -1270,13 +1392,14 @@ function refresh() {
   $("plate-tabs").hidden = !has && plates.length < 2;
   updateToolbar();
   updatePlateTabs();
+  drawTowers();
   const parts = models.reduce((n, m) => n + m.meshes.length, 0);
   $("plate-summary").textContent = has ? `${parts} part${parts === 1 ? "" : "s"}${plates.length > 1 ? ` · ${plates.length} plates` : ""}` : "";
   const onPlates = (m) => [...new Set(m.meshes.map((x) => plateOf(x) + 1))].sort((a, b) => a - b).join(",");
   $("objects").innerHTML = models.map((m) => `
     <li class="${sel.has(m) && !selectedVolume ? "sel" : ""}${ok.off.has(m) || ok.tall.has(m) ? " bad" : ""}${m.printable === false ? " ghost" : ""}" data-id="${m.id}">
       <span class="name">${esc(m.name)}${m.printable === false ? ' <span class="muted small">(not printed)</span>' : ""}</span>
-      <span class="muted small">${plates.length > 1 ? `<span class="part-badge" title="On plate ${onPlates(m)}">P${onPlates(m)}</span> ` : ""}${m.overrides.brim_type === "brim_ears" ? '<span class="part-badge" title="Brim ears">ears</span> ' : ""}${isPainted(m) ? '<span class="part-badge" title="Painted">🖌</span> ' : ""}${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
+      <span class="muted small">${multiColour() ? `<span class="fil-swatch" style="background:${slotColour(partSlot(m))}" title="Filament ${partSlot(m)}"></span>` : ""}${plates.length > 1 ? `<span class="part-badge" title="On plate ${onPlates(m)}">P${onPlates(m)}</span> ` : ""}${m.overrides.brim_type === "brim_ears" ? '<span class="part-badge" title="Brim ears">ears</span> ' : ""}${isPainted(m) ? '<span class="part-badge" title="Painted">🖌</span> ' : ""}${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
     </li>${m.volumes.map((v) => `
     <li class="vol${v === selectedVolume ? " sel" : ""}" data-id="${m.id}" data-vol="${v.id}">
       <span class="name">↳ ${esc(v.name)}</span><span class="muted small">${VOL_KIND[v.kind] || v.kind}${Object.keys(v.overrides).length ? ` · ⚙ ${Object.keys(v.overrides).length}` : ""}</span>
@@ -1295,6 +1418,7 @@ function refresh() {
     if (partEditor.model !== selected) { partEditor.model = selected; partEditor.render(); }
     renderLayerPanel();
     $("obj-edit-text").hidden = !selected.text;
+    fillFilamentSelect($("obj-filament"), partSlot(selected), false);
     const n = Object.keys(selected.overrides).length;
     $("part-count").textContent = n ? `· ${n}` : "";
     $("part-add").disabled = !partOptionsAvailable();
@@ -1338,7 +1462,7 @@ function meshXml(geo, matrix, paint, raw = null) {
     const k = t / 3;
     let attrs = "";
     for (const kind of PAINT_KINDS) {
-      const code = raw?.[kind]?.[k] || (paint?.[kind] ? MO.paintCode(paint[kind][k]) : "");
+      const code = raw?.[kind]?.[k] || (paint?.[kind] ? paintCodeN(paint[kind][k]) : "");
       if (code) attrs += ` ${PAINT_ATTR[kind]}="${code}"`;
     }
     tx.push(`<triangle v1="${a}" v2="${b}" v3="${c}"${attrs}/>`);
@@ -1397,7 +1521,7 @@ function build3mf(pi = cur) {
     "3D/3dmodel.model": strToU8(model),
     "Metadata/model_settings.config": strToU8(`<?xml version="1.0" encoding="UTF-8"?>\n<config>\n${configs.join("\n")}\n</config>\n`),
     ...(profiles.length ? { "Metadata/layer_heights_profile.txt": strToU8(profiles.join("\n") + "\n") } : {}),
-    ...(plates[pi]?.gcodes?.length ? { "Metadata/custom_gcode_per_layer.xml": strToU8(CAL.customGcodeXml(plates[pi].gcodes)) } : {}),
+    ...(plates[pi]?.gcodes?.length ? { "Metadata/custom_gcode_per_layer.xml": strToU8(CAL.customGcodeXml(plates[pi].gcodes, filamentSlots().map((f) => f.colour), multiColour())) } : {}),
     ...(Object.keys(rangesBy).length ? { "Metadata/layer_config_ranges.xml": strToU8(LH.rangesXml(rangesBy)) } : {}),
   }, { level: 6 });
   return new Blob([zip], { type: "model/3mf" });
@@ -1416,7 +1540,7 @@ function plateKey(pi) {
   const p = plates[pi];
   if (!p) return "";
   const ox = plateX(pi);
-  return JSON.stringify([settingsVersion, S.bedType, p.bedType, p.seq, p.spiral, p.gcodes, models.map((m) => {
+  return JSON.stringify([settingsVersion, S.bedType, p.bedType, p.seq, p.spiral, p.gcodes, multiColour() ? filamentSlots() : 0, models.map((m) => {
     if (m.printable === false) return null;
     const c = m.meshes.filter((x) => plateOf(x) === pi).map((x) => [+(x.position.x - ox).toFixed(3), +x.position.y.toFixed(3)]);
     return c.length ? [m.id, m.geo.uuid, m.quat.toArray(), m.scale.toArray(), c, m.overrides, m.paintRev || 0, arrId(m.paintRaw), m.vlh, m.ranges,
@@ -1458,6 +1582,8 @@ function renderJobInner(job) {
   const warn = (job.warnings || []).filter(Boolean).map((w) => `<p class="msg warn">${esc(w)}</p>`).join("");
   out.innerHTML = warn + job.plates.map((p) => {
     const title = job.plates.length > 1 ? `<h3>Plate ${p.plate}</h3>` : "";
+    const fils = p.filament_g_each?.length > 1 ? `<p class="small fil-use">${p.filament_g_each.map((g, i) => g > 0 ? `<span><span class="fil-swatch" style="background:${slotColour(i + 1)}"></span>${i + 1}: ${g.toFixed(1)} g</span>` : "").join(" ")}</p>` : "";
+    const swaps = p.filament_changes ? `<p class="msg ${job.manual_swaps ? "warn" : "ok"} small">${p.filament_changes} filament change${p.filament_changes === 1 ? "" : "s"}${job.manual_swaps ? ": the printer pauses (M600) for you to swap the filament each time" : ""}.</p>` : "";
     const sent = p.uploaded ? `<p class="msg ok">On ${esc(p.uploaded_name || "the printer")} as <b>${esc(p.uploaded)}</b>${p.started ? " · print started" : ""}</p>` : "";
     // sending and starting live on the main button; the card keeps the details
     const action = p.started && printerStatus().id ? `<button class="btn" data-act="watch" type="button">Watch the print</button>` : "";
@@ -1468,6 +1594,7 @@ function renderJobInner(job) {
         <div class="stat"><b>${p.layers ?? "–"}</b><span>layers</span></div>
         <div class="stat"><b>${p.cost != null ? p.cost.toFixed(2) : "–"}</b><span>filament cost</span></div>
       </div>
+      ${fils}${swaps}
       ${sent}
       <div class="actions">
         <button class="btn" data-act="preview" data-plate="${p.plate}" type="button">Layers</button>
@@ -1518,8 +1645,12 @@ async function slice(pi = cur, quiet = false) {
     const plateEdits = { curr_bed_type: bp.bedType || S.bedType || undefined, print_sequence: bp.seq || undefined, spiral_mode: bp.spiral || undefined };
     for (const k of Object.keys(plateEdits)) if (plateEdits[k] === undefined) delete plateEdits[k];
     // spiral vase: what OrcaSlicer's desktop app switches for you (its CLI refuses anything else)
+    const tower = towerSpot(pi);
+    if (tower?.none) { resultMsg(bp, `<p class="msg err">There's no room on this plate for the prime tower (${tower.w} × ${tower.d} mm): move parts, or turn the prime tower off in the print settings.</p>`); return; }
+    if (tower) Object.assign(plateEdits, { wipe_tower_x: [String(tower.x)], wipe_tower_y: [String(tower.y)] });
     if (bp.spiral === "1") Object.assign(plateEdits, { wall_loops: "1", sparse_infill_density: "0%", top_shell_layers: "0", enable_support: "0", enforce_support_layers: "0" });
     fd.append("edits", JSON.stringify({ ...S.edits, process: { ...S.edits.process, ...plateEdits } }));
+    if (multiColour()) fd.append("filaments", JSON.stringify(filamentSlots()));
     fd.append("arrange", "0");
     fd.append("orient", "0");
     fd.append("name", plateName(pi));
@@ -1712,6 +1843,7 @@ const paintItems = () => [
   { label: "Supports (enforce / block)", run: () => startPaint("supports"), disabled: !selected },
   { label: "Seam (here / avoid)", run: () => startPaint("seam"), disabled: !selected },
   { label: "Fuzzy skin", run: () => startPaint("fuzzy"), disabled: !selected },
+  { label: "Colours (filaments)", run: () => startPaint("color"), disabled: !selected || !multiColour() },
 ];
 const moreItems = () => [
   { label: "Rename…", run: renameSelected, disabled: !selected },
@@ -1748,6 +1880,7 @@ function partMenu() {
     { label: "Paint supports…", run: () => startPaint("supports") },
     { label: "Paint seam…", run: () => startPaint("seam") },
     { label: "Paint fuzzy skin…", run: () => startPaint("fuzzy") },
+    ...(multiColour() ? [{ label: "Paint colours…", run: () => startPaint("color") }] : []),
     { label: "Printable", check: selected?.printable !== false, run: togglePrintable },
     { sep: true },
     { label: "Fix model", run: fixSelected, disabled: many },
@@ -1931,6 +2064,16 @@ function addVolume(kind, shape) {
   flash(kind === "negative" ? "Negative part added: it is cut away from the part when slicing." : "Modifier added: its settings apply inside it.", "ok");
 }
 
+function fillFilamentSelect(sel, current, allowDefault, hide = false) {
+  const wrap = sel.closest(".fil-pick");
+  wrap.hidden = hide || !multiColour();
+  if (wrap.hidden) return;
+  sel.innerHTML = (allowDefault ? `<option value="0">Same as the part</option>` : "")
+    + filamentSlots().map((f, i) => `<option value="${i + 1}"${i + 1 === current ? " selected" : ""}>${i + 1} · ${esc(f.preset || "")}</option>`).join("");
+  if (allowDefault && !current) sel.value = "0";
+  wrap.querySelector(".fil-swatch").style.background = current ? slotColour(current) : "transparent";
+}
+
 function renderVolumePanel() {
   const v = selectedVolume, el = $("vol-panel");
   el.hidden = !v;
@@ -1939,6 +2082,7 @@ function renderVolumePanel() {
   $("vol-kind").textContent = { negative: "Negative part: cut away from the part", modifier: "Modifier: these settings apply inside it",
     part: "Raised part: printed as part of it" }[v.kind] || "";
   $("vol-edit-text").hidden = !v.text;
+  fillFilamentSelect($("vol-filament"), slotOf(v.overrides), true, v.kind === "negative");
   const set = (id, val) => { if (!focusedInput(id)) $(id).value = +val.toFixed(2); };
   set("v-sx", v.size.x); set("v-sy", v.size.y); set("v-sz", v.size.z);
   set("v-px", v.pos.x); set("v-py", v.pos.y); set("v-pz", v.pos.z);
@@ -2061,6 +2205,19 @@ function setVlh(v) {
 }
 
 const rangeEditor = createPartEditor($("range-settings"), () => selRange?.overrides || null, () => { plateChanged(); refresh(); });
+
+/** A filament slot was removed: what used it goes back to filament 1, later slots move down one. */
+function removeSlot(n) {
+  const fix = (o) => { const s = slotOf(o); if (!s) return; if (s === n) delete o.extruder; else if (s > n) o.extruder = String(s - 1); };
+  for (const m of models) {
+    fix(m.overrides);
+    for (const v of m.volumes) fix(v.overrides);
+    const pc = m.paint?.color;
+    if (pc) { for (let i = 0; i < pc.length; i++) if (pc[i] === n) pc[i] = 0; else if (pc[i] > n) pc[i]--; m.paintRev = (m.paintRev || 0) + 1; }
+    if (m.paintRaw?.color) m.paintRaw = { ...m.paintRaw, color: null };
+  }
+  for (const p of plates) p.gcodes = (p.gcodes || []).filter((g) => !(g.type === "filament" && g.extruder === n)).map((g) => (g.type === "filament" && g.extruder > n ? { ...g, extruder: g.extruder - 1 } : g));
+}
 
 /* ---- text (OrcaSlicer's Text tool): a new part, or raised / engraved / a modifier on a part's face */
 
@@ -2463,13 +2620,28 @@ const PAINT_COLOURS = {
   fuzzy: { 0: [0.55, 0.58, 0.65], 1: [0.72, 0.38, 0.95] },
 };
 let paintMat = null;
-const PAINT_KINDS = ["supports", "seam", "fuzzy"];
-const PAINT_ATTR = { supports: "paint_supports", seam: "paint_seam", fuzzy: "paint_fuzzy_skin" };
+const PAINT_KINDS = ["supports", "seam", "fuzzy", "color"];
+const PAINT_ATTR = { supports: "paint_supports", seam: "paint_seam", fuzzy: "paint_fuzzy_skin", color: "paint_color" };
 const PAINT_UI = {
   supports: { title: "Paint supports", t1: "Enforce", t2: "Block", note: "Green = always support here, red = never. With supports set to \"manual\" in the print settings, supports go only where you've painted green." },
   seam: { title: "Paint seam", t1: "Seam here", t2: "Avoid", note: "Blue = put the seam here, orange = keep the seam away." },
   fuzzy: { title: "Paint fuzzy skin", t1: "Fuzzy", t2: null, note: "Purple = fuzzy skin here. Its look comes from the fuzzy skin settings (thickness, point distance)." },
+  color: { title: "Paint colours", note: "Paint with a filament; Erase goes back to the part's own filament. On one nozzle each colour change in a layer is a filament swap." },
 };
+const hexRgb = (h) => { const c = new THREE.Color(h); return [c.r, c.g, c.b]; };
+function paintPalette(target, m) {
+  if (target !== "color") return PAINT_COLOURS[target];
+  const pal = { 0: hexRgb(slotColour(partSlot(m))) };
+  filamentSlots().forEach((f, i) => { pal[i + 1] = hexRgb(f.colour); });
+  return pal;
+}
+function renderPaintTools(target) {
+  const ui = PAINT_UI[target];
+  $("paint-tools").innerHTML = target === "color"
+    ? filamentSlots().map((f, i) => `<button type="button" data-paint-tool="${i + 1}"><span class="fil-swatch" style="background:${f.colour}"></span>${i + 1}</button>`).join("")
+      + `<button type="button" data-paint-tool="0">Erase</button>`
+    : `<button type="button" data-paint-tool="1">${esc(ui.t1)}</button>${ui.t2 ? `<button type="button" data-paint-tool="2">${esc(ui.t2)}</button>` : ""}<button type="button" data-paint-tool="0">Erase</button>`;
+}
 const isPainted = (m) => !!m.paint && PAINT_KINDS.some((k) => m.paint[k]);
 
 /** OrcaSlicer only applies painted fuzzy skin when the part's fuzzy skin setting isn't "Disabled". */
@@ -2482,6 +2654,7 @@ function startPaint(target) {
   const m = selected;
   if (!m) return;
   if (paint.on) stopPaint();
+  if (viewMode === "preview") setViewMode("model");       // painting happens on the model, not on the layers
   busy("Preparing the surface for painting…");
   setTimeout(() => {
     try {
@@ -2512,9 +2685,7 @@ function startPaint(target) {
       $("paint-panel").hidden = false;
       const ui = PAINT_UI[target];
       $("paint-title").textContent = ui.title;
-      $("paint-t1").textContent = ui.t1;
-      $("paint-t2").hidden = !ui.t2;
-      if (ui.t2) $("paint-t2").textContent = ui.t2;
+      renderPaintTools(target);
       $("paint-overhangs").hidden = target !== "supports";
       $("paint-note").textContent = ui.note;
       $("paint-fuzzy-warn").hidden = !(target === "fuzzy" && fuzzyDisabled(m));
@@ -2543,7 +2714,7 @@ function setPaintTool(t) {
 }
 
 function recolour(m, only = null) {
-  const col = m.geo.getAttribute("color"), arr = col.array, st = m.paint[paint.target], pal = PAINT_COLOURS[paint.target];
+  const col = m.geo.getAttribute("color"), arr = col.array, st = m.paint[paint.target], pal = paintPalette(paint.target, m);
   const one = (t) => { const c = pal[st[t]] || pal[0]; for (let k = 0; k < 3; k++) arr.set(c, t * 9 + k * 3); };
   if (only) for (const t of only) one(t); else for (let t = 0; t < st.length; t++) one(t);
   col.needsUpdate = true;
@@ -2852,7 +3023,7 @@ async function saveProject(asNew) {
   const sparse = (a) => (a ? Object.fromEntries(a.flatMap((v, i) => (v ? [[i, v]] : []))) : null);
   const meta = {
     id: asNew ? undefined : project?.id, name,
-    presets: { ...S.selected, bed_type: S.bedType }, edits: S.edits,
+    presets: { ...S.selected, bed_type: S.bedType, filaments: multiColour() ? filamentSlots() : null }, edits: S.edits,
     plates: plates.map((p) => ({ name: p.name, bed_type: p.bedType, print_sequence: p.seq, spiral_mode: p.spiral, gcodes: p.gcodes, calib: p.calib })),
     models: models.map((m, i) => ({
       mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale.toArray(), overrides: m.overrides, printable: m.printable !== false,
@@ -2892,6 +3063,7 @@ async function openProject(id) {
     $("projects").close();
     clearPlate();
     const missing = await applyProjectPresets(meta.presets, meta.edits);
+    if (Array.isArray(meta.presets?.filaments) && meta.presets.filaments.length > 1) setFilamentSlots(meta.presets.filaments);
     if (!view.renderer) initViewer();
     if (Array.isArray(meta.plates) && meta.plates.length) {
       plates.length = 0;
@@ -3353,7 +3525,7 @@ $("vol-add").addEventListener("click", async () => {
   refresh();
 });
 // painting panel
-for (const b of document.querySelectorAll("[data-paint-tool]")) b.addEventListener("click", () => setPaintTool(Number(b.dataset.paintTool)));
+$("paint-tools").addEventListener("click", (e) => { const b = e.target.closest("[data-paint-tool]"); if (b) setPaintTool(Number(b.dataset.paintTool)); });
 $("paint-radius").addEventListener("input", (e) => { paint.radius = parseFloat(e.target.value) || 3; $("paint-radius-val").textContent = `${paint.radius} mm`; });
 $("paint-overhangs").addEventListener("click", paintOverhangs);
 $("paint-fuzzy-on").addEventListener("click", () => {
@@ -3440,9 +3612,14 @@ initPrinters({
   machineNames: () => S.lists.machine.map((m) => m.name),
   onStatus: () => { if (curJob()?.status === "done") renderJob(curJob()); },
 });
-initSettings((what) => {
+initSettings((what, info) => {
   if (what === "presets") { setBed(); refreshPrinter(); }
   if (what === "presets" || what === "edits") { settingsVersion++; plateChanged(); }
+  if (what === "filaments") {
+    if (info?.removed) removeSlot(info.removed);
+    plateChanged();
+    refresh();
+  }
 }).then(fitView).catch((e) => {
   $("result-card").hidden = false;
   $("result").innerHTML = `<p class="msg err">Couldn't load presets: ${esc(e.message)}</p>`;
@@ -3531,6 +3708,26 @@ $("cut-clear-points").addEventListener("click", () => { if (cut) { cut.points = 
 $("vol-edit-text").addEventListener("click", editText);
 $("lg-pause").addEventListener("click", () => addLayerGcode("pause"));
 $("lg-custom").addEventListener("click", () => addLayerGcode("custom"));
+$("lg-filament").addEventListener("click", (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  openMenu(r.left, r.bottom + 4, [{ head: "From this layer, print with" },
+    ...filamentSlots().map((f, i) => ({ label: `Filament ${i + 1} · ${f.preset}`, run: () => addLayerGcode("filament", i + 1) }))]);
+});
+$("obj-filament").addEventListener("change", (e) => {
+  if (!selected) return;
+  for (const m of selection()) m.overrides.extruder = e.target.value;
+  partEditor.render();
+  plateChanged();
+  refresh();
+});
+$("vol-filament").addEventListener("change", (e) => {
+  const v = selectedVolume;
+  if (!v) return;
+  if (e.target.value === "0") delete v.overrides.extruder; else v.overrides.extruder = e.target.value;
+  volEditor.render?.();
+  plateChanged();
+  refresh();
+});
 $("lg-list").addEventListener("click", (e) => {
   const chip = e.target.closest(".lg-chip");
   const bp = plates[cur];

@@ -74,7 +74,7 @@ function parseMesh(body, scale) {
     for (const v of body.matchAll(/<vertex\b([^>]*)\/?>/g)) { const a = attrs(v[1]); vx.push(+a.x, +a.y, +a.z); }
   }
   const tris = [];
-  const paint = { supports: null, seam: null, fuzzy: null, color: false };
+  const paint = { supports: null, seam: null, fuzzy: null, color: null };
   const tre = /<triangle\b([^>]*?)\/?>/g;
   let k = 0;
   while ((m = tre.exec(body))) {
@@ -87,7 +87,8 @@ function parseMesh(body, scale) {
       if (ps) (paint.supports ||= [])[k] = ps[1].toUpperCase();
       if (pm) (paint.seam ||= [])[k] = pm[1].toUpperCase();
       if (pf) (paint.fuzzy ||= [])[k] = pf[1].toUpperCase();
-      if (/\b(paint_color|mmu_segmentation)="/.test(s)) paint.color = true;
+      const pc = /\b(?:paint_color|mmu_segmentation)="([0-9A-Fa-f]+)"/.exec(s);
+      if (pc) (paint.color ||= [])[k] = pc[1].toUpperCase();
     }
     k++;
   }
@@ -180,7 +181,7 @@ export function paintState(hex) {
 }
 
 const NOT_SETTINGS = new Set(["name", "matrix", "source_file", "source_object_id", "source_volume_id", "source_offset_x", "source_offset_y",
-  "source_offset_z", "source_in_inches", "source_in_meters", "extruder", "volume_type", "modifier_type", "mesh_stat"]);
+  "source_offset_z", "source_in_inches", "source_in_meters", "volume_type", "modifier_type", "mesh_stat"]);   // "extruder" is kept: the part's filament
 
 /**
  * Read a 3MF. Returns { isProject, app, title, objects, plates, bed, settings, extra, notes }.
@@ -235,15 +236,14 @@ export function readProject3mf(files) {
         if (!ls.length) continue;
         const total = ls.reduce((n, l) => n + l.mesh.pos.length, 0);
         const pos = new Float32Array(total);
-        const paint = { supports: null, seam: null, fuzzy: null };
+        const paint = { supports: null, seam: null, fuzzy: null, color: null };
         let off = 0, tri = 0;
         for (const l of ls) {
           pos.set(transformPositions(l.mesh.pos, l.t), off);
-          for (const k of ["supports", "seam", "fuzzy"]) {
+          for (const k of ["supports", "seam", "fuzzy", "color"]) {
             const src = l.mesh.paint[k];
             if (src) { paint[k] ||= []; src.forEach((v, i) => { if (v) paint[k][tri + i] = v; }); }
           }
-          if (l.mesh.paint.color) notes.add("Colour painting (multi-material) isn't used: BicuSlicer prints with one filament.");
           off += l.mesh.pos.length; tri += l.mesh.count;
         }
         const subtype = pc?.subtype || "normal_part";

@@ -44,7 +44,8 @@ try:
         if "Fuzzy" in b.text:
             b.click(); break
     time.sleep(2)
-    check("fuzzy skin paint panel: one paint tool and the eraser", el("paint-title").text == "Paint fuzzy skin" and not el("paint-t2").is_displayed(), el("paint-title").text)
+    tools = [b.text for b in d.find_elements(By.CSS_SELECTOR, "#paint-tools button")]
+    check("fuzzy skin paint panel: one paint tool and the eraser", el("paint-title").text == "Paint fuzzy skin" and tools == ["Fuzzy", "Erase"], (el("paint-title").text, tools))
     check("warns that fuzzy skin is disabled for the part", el("paint-fuzzy-warn").is_displayed(), el("paint-fuzzy-warn").text[:80])
     el("paint-fuzzy-on").click(); time.sleep(0.6)
     check("one tap turns on painted fuzzy skin (Painted only) for the part", not el("paint-fuzzy-warn").is_displayed() and any("⚙ 1" in x for x in items()), items())

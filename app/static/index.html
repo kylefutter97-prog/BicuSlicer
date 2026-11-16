@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=34">
+<link rel="stylesheet" href="/static/style.css?v=35">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -82,11 +82,7 @@
       <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text"></span></div>
       <div id="paint-panel" class="paint-panel" hidden>
         <div class="paint-head"><b id="paint-title">Paint</b><button class="btn" id="paint-done" type="button">Done</button></div>
-        <div class="seg paint-tools">
-          <button type="button" data-paint-tool="1" id="paint-t1">Enforce</button>
-          <button type="button" data-paint-tool="2" id="paint-t2">Block</button>
-          <button type="button" data-paint-tool="0">Erase</button>
-        </div>
+        <div class="seg paint-tools" id="paint-tools"></div>
         <label class="paint-radius">Brush <input type="range" id="paint-radius" min="0.5" max="20" step="0.5" value="3"><span id="paint-radius-val">3 mm</span></label>
         <div class="paint-actions"><button class="btn" id="paint-overhangs" type="button">Paint overhangs</button><button class="btn" id="paint-clear" type="button">Clear all</button></div>
         <div class="msg warn small" id="paint-fuzzy-warn" hidden>Fuzzy skin is disabled for this part, so painted fuzzy skin won't take effect.
@@ -111,7 +107,8 @@
       <div class="pv-info"><span id="layer-text"></span><span id="preview-stale" class="stale" hidden>Plate changed since this slice</span></div>
       <div class="lg-row" id="lg-row" hidden><span class="muted small">At this layer:</span>
         <button class="btn small-btn" id="lg-pause" type="button" title="Pause the print before this layer (to insert nuts, magnets…)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-pause"/></svg>Pause</button>
-        <button class="btn small-btn" id="lg-custom" type="button" title="Run your own G-code before this layer"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-code"/></svg>G-code…</button></div>
+        <button class="btn small-btn" id="lg-custom" type="button" title="Run your own G-code before this layer"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-code"/></svg>G-code…</button>
+        <button class="btn small-btn" id="lg-filament" type="button" hidden title="Print with another filament from this layer on (a manual swap on one nozzle)">Change filament…</button></div>
       <div class="lg-list" id="lg-list" hidden></div>
       <div class="legend" id="legend"></div>
     </div>
@@ -198,6 +195,7 @@
           <div class="toolbar"><button class="btn" id="range-add-setting" type="button">+ Add setting</button><button class="btn danger" id="range-remove" type="button">Remove range</button></div>
         </div>
       </div>
+      <label class="fil-pick field" hidden><span>Filament</span><div class="fil-pick-row"><span class="fil-swatch"></span><select id="obj-filament"></select></div></label>
       <div class="group-label">Settings for this part <span class="muted" id="part-count"></span></div>
       <div id="part-settings" class="part-settings"></div>
       <div class="toolbar"><button class="btn" id="obj-edit-text" type="button" hidden>Edit text…</button><button class="btn" id="part-add" type="button">+ Add setting</button><button class="btn danger" id="obj-delete" type="button">Remove part</button></div>
@@ -219,6 +217,7 @@
         <span class="unit">mm</span>
       </div>
       <p class="muted small">Position: X and Y from the part's centre, Z the height of its centre above the bed.</p>
+      <label class="fil-pick field" hidden><span>Filament</span><div class="fil-pick-row"><span class="fil-swatch"></span><select id="vol-filament"></select></div></label>
       <div id="vol-settings-wrap">
         <div class="group-label">Settings inside it</div>
         <div id="vol-settings" class="part-settings"></div>
@@ -239,6 +238,7 @@
         <label for="pick-filament">Filament <span class="badge" id="mod-filament" hidden></span></label>
         <div class="picker-row"><select id="pick-filament"></select><button class="btn icon" id="edit-filament" type="button" title="Edit filament presets" aria-label="Edit filament presets">✎</button></div>
         <p class="bed-info small" id="bed-info"></p>
+        <div class="fil-slots" id="fil-slots"></div>
       </div>
       <div class="picker">
         <label for="pick-process">Print settings <span class="badge" id="mod-process" hidden></span></label>
@@ -617,6 +617,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=37"></script>
+<script type="module" src="/static/app.js?v=38"></script>
 </body>
 </html>
