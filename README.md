@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/banner.svg" alt="BicuSlicer" width="496"></p>
+
 # BicuSlicer
 
 A phone-friendly web front end for the [OrcaSlicer](https://github.com/OrcaSlicer/OrcaSlicer) slicing engine, for Klipper printers.

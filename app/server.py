@@ -351,6 +351,17 @@ async def host_call(coro):
 routes = web.RouteTableDef()
 
 
+@routes.get("/favicon.ico")
+async def favicon(_):
+    return web.FileResponse(STATIC / "brand" / "favicon.ico", headers={"Cache-Control": "max-age=86400"})
+
+
+@routes.get("/manifest.webmanifest")
+async def manifest(_):
+    return web.Response(body=(STATIC / "manifest.webmanifest").read_bytes(), content_type="application/manifest+json",
+                        headers={"Cache-Control": "no-cache"})
+
+
 @routes.get("/")
 async def index(_):
     return web.FileResponse(STATIC / "index.html", headers={"Cache-Control": "no-cache"})
