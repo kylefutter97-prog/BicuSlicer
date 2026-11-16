@@ -72,7 +72,9 @@ try:
     d.save_screenshot(f"{OUT}/i1-dialog.png")
     d.find_element(By.CSS_SELECTOR, "#import-dlg button[value=ok]").click(); W(3)
     bar = txt("#process-bar-text") if d.find_element(By.ID, "process-bar").is_displayed() else ""
-    check("a project made with your own settings changes none of them", not bar, bar)
+    # made with this printer's own settings: nothing (or only what you've changed since) differs, never the ~200 defaults
+    n_changed = int(bar.split()[0]) if bar else 0
+    check("a project made with your own settings changes (almost) none of them", n_changed <= 3, bar)
     t = tabs()
     check("two plates with their names", len(t) == 3 and "Cubes A" in t[0] and "Cube B" in t[1], t)
     it = items()

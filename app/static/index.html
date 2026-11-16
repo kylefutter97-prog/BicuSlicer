@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=25">
+<link rel="stylesheet" href="/static/style.css?v=26">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -62,6 +62,7 @@
       <span class="tb-sep"></span>
       <button class="tb" type="button" id="tb-ears" data-tool="ears" data-needs="one" title="Brim ears: small tabs on sharp corners to hold the part down">Brim ears</button>
       <button class="tb" type="button" id="tb-paint" data-tool="paint" data-needs="one" title="Paint supports or seams">Paint ▾</button>
+      <button class="tb" type="button" data-tool="calib" title="Calibration tests: temperature, flow, pressure advance, max flow, VFA, tolerance">Calibrate ▾</button>
       <button class="tb" type="button" data-tool="more" title="More: rename, center, printable, fix, units, export">More ▾</button>
     </div>
     <div class="plate-tabs" id="plate-tabs" role="tablist" aria-label="Plates" hidden></div>
@@ -103,6 +104,10 @@
         <button class="btn icon" id="layer-up" type="button" aria-label="Next layer">+</button>
       </div>
       <div class="pv-info"><span id="layer-text"></span><span id="preview-stale" class="stale" hidden>Plate changed since this slice</span></div>
+      <div class="lg-row" id="lg-row" hidden><span class="muted small">At this layer:</span>
+        <button class="btn small-btn" id="lg-pause" type="button" title="Pause the print before this layer (to insert nuts, magnets…)">⏸ Pause</button>
+        <button class="btn small-btn" id="lg-custom" type="button" title="Run your own G-code before this layer">G-code…</button></div>
+      <div class="lg-list" id="lg-list" hidden></div>
       <div class="legend" id="legend"></div>
     </div>
     <p id="plate-msg" class="msg warn" hidden></p>
@@ -438,6 +443,27 @@
   </form>
 </dialog>
 
+<dialog id="calib-dlg">
+  <form method="dialog" class="plate-dlg calib-dlg">
+    <p><b id="calib-title"></b></p>
+    <p class="muted small" id="calib-about"></p>
+    <div id="calib-fields" class="calib-fields"></div>
+    <p class="small calib-legend" id="calib-legend"></p>
+    <p class="muted small">It goes on an empty plate (a new one if this plate has parts), with your printer, filament and print settings.</p>
+    <div class="actions"><button value="cancel" type="submit" formnovalidate>Cancel</button><button value="ok" class="primary" id="calib-ok" type="submit">Create</button></div>
+  </form>
+</dialog>
+
+<dialog id="calres-dlg">
+  <form method="dialog" class="plate-dlg calib-dlg">
+    <p><b id="calres-title"></b></p>
+    <ul class="imp-summary small" id="calres-legend"></ul>
+    <div id="calres-field" class="calib-fields"></div>
+    <p class="small" id="calres-out"></p>
+    <div class="actions"><button value="cancel" type="submit" formnovalidate>Cancel</button><button value="ok" class="primary" id="calres-ok" type="submit">Apply to filament</button></div>
+  </form>
+</dialog>
+
 <dialog id="plate-dlg">
   <form method="dialog" class="plate-dlg">
     <p><b id="plate-dlg-title">Plate</b> <span class="muted small">settings for this plate only</span></p>
@@ -514,6 +540,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=27"></script>
+<script type="module" src="/static/app.js?v=28"></script>
 </body>
 </html>

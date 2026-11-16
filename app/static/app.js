@@ -6,10 +6,11 @@ import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, unzipSync, strToU8 } from "three/addons/libs/fflate.module.js";
 import { readProject3mf, paintState, projectPlateOrigin, transformPositions } from "./project3mf.js";
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
-import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
+import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, filamentValue, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview } from "./preview.js";
 import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
+import * as CAL from "./calibration.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -26,7 +27,10 @@ let settingsVersion = 0;      // bumped when presets or setting edits change: ev
 // Plates sit side by side, like OrcaSlicer's: plate i's bed starts at x = plateX(i). A copy of a part belongs to
 // the plate its centre is over, so dragging it across moves it to that plate. Each plate is sliced on its own.
 let nextPlateId = 1;
-function newPlate() { return { id: nextPlateId++, name: "", bedType: "", seq: "", spiral: "", job: null, jobKey: null }; }
+function newPlate() {
+  // gcodes: G-code at chosen heights [{ z, type: "pause" | "custom", gcode, note }]; calib: the calibration test it holds
+  return { id: nextPlateId++, name: "", bedType: "", seq: "", spiral: "", gcodes: [], calib: null, job: null, jobKey: null };
+}
 const plates = [newPlate()];
 let cur = 0;                  // the current plate (index)
 const curJob = () => plates[cur]?.job || null;
@@ -614,7 +618,7 @@ function takeSnapshot() {
   const keepOrCopy = (cur, old) => (!cur ? null : sameBytes(cur, old) ? old : cur.slice());
   const snap = {
     sel: selected?.id ?? null, selVol: selectedVolume?.id ?? null, multi: [...multi].map((m) => m.id), cur,
-    plates: plates.map((p) => ({ id: p.id, name: p.name, bedType: p.bedType, seq: p.seq, spiral: p.spiral })),
+    plates: plates.map((p) => ({ id: p.id, name: p.name, bedType: p.bedType, seq: p.seq, spiral: p.spiral, gcodes: JSON.stringify(p.gcodes || []), calib: JSON.stringify(p.calib || null) })),
     models: models.map((m) => {
       const op = prevPaint.get(m.id);
       return {
@@ -681,7 +685,10 @@ function restoreSnapshot(s) {
     multi.clear();
     const oldPlates = new Map(plates.map((p) => [p.id, p]));      // slices stay with their plate
     plates.length = 0;
-    for (const sp of s.plates) { const o = oldPlates.get(sp.id); plates.push({ ...sp, job: o?.job || null, jobKey: o?.jobKey || null }); }
+    for (const sp of s.plates) {
+      const o = oldPlates.get(sp.id);
+      plates.push({ ...sp, gcodes: JSON.parse(sp.gcodes), calib: JSON.parse(sp.calib), job: o?.job || null, jobKey: o?.jobKey || null });
+    }
     if (cur >= plates.length) cur = plates.length - 1;
     for (const sm of s.models) {
       const m = newModelRecord(sm.name, sm.geo);
@@ -761,13 +768,15 @@ function setViewMode(mode) {
   for (const b of document.querySelectorAll("[data-view]")) b.classList.toggle("on", b.dataset.view === mode);
   $("pv-layers").hidden = $("legend").hidden = mode !== "preview";
   $("layer-text").hidden = mode !== "preview";
+  $("lg-row").hidden = mode !== "preview";
+  if (mode !== "preview") $("lg-list").hidden = true; else renderLayerGcodes();
   if (mode === "preview") setPickMode(false);
   $("tip").textContent = mode === "preview"
     ? "Drag to turn the view · pinch or scroll to zoom · slide to step through the layers"
     : "Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom · press ? for keyboard shortcuts";
 }
 
-function plateChanged() {
+function plateChanged(keepView = false) {
   // the plate or settings no longer match the last slice
   plateVersion++;
   scheduleHistory();
@@ -779,7 +788,7 @@ function plateChanged() {
   const pi = plates.findIndex((p) => p.id === previewPlateId);
   if (pi >= 0 && jobIsCurrent(pi)) return;
   $("preview-stale").hidden = false;
-  if (viewMode === "preview") setViewMode("model");
+  if (viewMode === "preview" && !keepView) setViewMode("model");
 }
 
 function renderLayerInfo() {
@@ -788,6 +797,36 @@ function renderLayerInfo() {
   $("layer").max = p.layers;
   $("layer").value = p.layer + 1;
   $("layer-text").textContent = `Layer ${p.layer + 1} of ${p.layers} · Z ${p.data.z[p.layer].toFixed(2)} mm`;
+  renderLayerGcodes();
+}
+
+/* ---- pause / G-code at a layer (OrcaSlicer's layer slider menu) */
+
+function renderLayerGcodes() {
+  const bp = plates[cur];
+  const list = [...(bp?.gcodes || [])].sort((a, b) => a.z - b.z);
+  $("lg-list").innerHTML = list.map((g) => `<span class="lg-chip" data-z="${g.z}"><button type="button" class="lg-go" title="Go to this layer">${g.type === "pause" ? "⏸ Pause" : "G-code"} · ${(+g.z).toFixed(2)} mm${g.note ? ` · ${esc(g.note)}` : ""}</button><button type="button" class="lg-del" aria-label="Remove">✕</button></span>`).join("");
+  $("lg-list").hidden = !list.length || viewMode !== "preview";
+}
+
+function layerZ() {
+  // only while this plate's layers are on screen
+  const p = view.preview;
+  return p?.loaded && viewMode === "preview" && previewPlateId === plates[cur]?.id ? +p.data.z[p.layer].toFixed(3) : null;
+}
+
+async function addLayerGcode(type) {
+  const z = layerZ(), bp = plates[cur];
+  if (z == null || !bp) return;
+  let gcode = "";
+  if (type === "custom") {
+    gcode = await ask(`G-code to run before the layer at ${z.toFixed(2)} mm`, bp.gcodes.find((g) => g.z === z && g.type === "custom")?.gcode || "M117 Hello", "Add");
+    if (!gcode) return;
+  }
+  bp.gcodes = bp.gcodes.filter((g) => !(g.z === z && g.type === type)).concat([{ z, type, gcode }]);
+  plateChanged(true);
+  renderLayerGcodes();
+  flash(type === "pause" ? `The print will pause before the layer at ${z.toFixed(2)} mm. Slice again to include it.` : `G-code added at ${z.toFixed(2)} mm. Slice again to include it.`, "ok");
 }
 
 function renderLegend() {
@@ -1292,6 +1331,7 @@ function build3mf(pi = cur) {
     "3D/3dmodel.model": strToU8(model),
     "Metadata/model_settings.config": strToU8(`<?xml version="1.0" encoding="UTF-8"?>\n<config>\n${configs.join("\n")}\n</config>\n`),
     ...(profiles.length ? { "Metadata/layer_heights_profile.txt": strToU8(profiles.join("\n") + "\n") } : {}),
+    ...(plates[pi]?.gcodes?.length ? { "Metadata/custom_gcode_per_layer.xml": strToU8(CAL.customGcodeXml(plates[pi].gcodes)) } : {}),
     ...(Object.keys(rangesBy).length ? { "Metadata/layer_config_ranges.xml": strToU8(LH.rangesXml(rangesBy)) } : {}),
   }, { level: 6 });
   return new Blob([zip], { type: "model/3mf" });
@@ -1310,7 +1350,7 @@ function plateKey(pi) {
   const p = plates[pi];
   if (!p) return "";
   const ox = plateX(pi);
-  return JSON.stringify([settingsVersion, S.bedType, p.bedType, p.seq, p.spiral, models.map((m) => {
+  return JSON.stringify([settingsVersion, S.bedType, p.bedType, p.seq, p.spiral, p.gcodes, models.map((m) => {
     if (m.printable === false) return null;
     const c = m.meshes.filter((x) => plateOf(x) === pi).map((x) => [+(x.position.x - ox).toFixed(3), +x.position.y.toFixed(3)]);
     return c.length ? [m.id, m.geo.uuid, m.quat.toArray(), m.scale.toArray(), c, m.overrides, m.paintRev || 0, arrId(m.paintRaw), m.vlh, m.ranges,
@@ -1411,6 +1451,8 @@ async function slice(pi = cur, quiet = false) {
     // unsaved setting changes apply to this slice, plus the plate type (OrcaSlicer's curr_bed_type) and this plate's own settings
     const plateEdits = { curr_bed_type: bp.bedType || S.bedType || undefined, print_sequence: bp.seq || undefined, spiral_mode: bp.spiral || undefined };
     for (const k of Object.keys(plateEdits)) if (plateEdits[k] === undefined) delete plateEdits[k];
+    // spiral vase: what OrcaSlicer's desktop app switches for you (its CLI refuses anything else)
+    if (bp.spiral === "1") Object.assign(plateEdits, { wall_loops: "1", sparse_infill_density: "0%", top_shell_layers: "0", enable_support: "0", enforce_support_layers: "0" });
     fd.append("edits", JSON.stringify({ ...S.edits, process: { ...S.edits.process, ...plateEdits } }));
     fd.append("arrange", "0");
     fd.append("orient", "0");
@@ -1672,7 +1714,7 @@ $("plate-toolbar").addEventListener("click", (e) => {
   ({
     shape: () => at(shapeItems()), arrange, "orient-all": orientAll, split: splitSelected, merge: mergeSelected, cut: openCut,
     mirror: () => at(mirrorItems()), volume: () => at(volumeItems()), ears: toggleEars,
-    paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()),
+    paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()), calib: () => at(calibItems()),
   })[b.dataset.tool]?.();
 });
 
@@ -2386,7 +2428,7 @@ async function saveProject(asNew) {
   const meta = {
     id: asNew ? undefined : project?.id, name,
     presets: { ...S.selected, bed_type: S.bedType }, edits: S.edits,
-    plates: plates.map((p) => ({ name: p.name, bed_type: p.bedType, print_sequence: p.seq, spiral_mode: p.spiral })),
+    plates: plates.map((p) => ({ name: p.name, bed_type: p.bedType, print_sequence: p.seq, spiral_mode: p.spiral, gcodes: p.gcodes, calib: p.calib })),
     models: models.map((m, i) => ({
       mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale.toArray(), overrides: m.overrides, printable: m.printable !== false,
       volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides,
@@ -2427,7 +2469,8 @@ async function openProject(id) {
     if (!view.renderer) initViewer();
     if (Array.isArray(meta.plates) && meta.plates.length) {
       plates.length = 0;
-      for (const pp of meta.plates) plates.push({ ...newPlate(), name: String(pp.name || ""), bedType: pp.bed_type || "", seq: pp.print_sequence || "", spiral: pp.spiral_mode || "" });
+      for (const pp of meta.plates) plates.push({ ...newPlate(), name: String(pp.name || ""), bedType: pp.bed_type || "", seq: pp.print_sequence || "", spiral: pp.spiral_mode || "",
+        gcodes: Array.isArray(pp.gcodes) ? pp.gcodes : [], calib: pp.calib || null });
       cur = 0;
       drawBed();
     }
@@ -2566,6 +2609,101 @@ $("clear").addEventListener("click", async () => {
   savedVersion = plateVersion;
   updateProjectLabel();
 });
+/* ---- calibration tests (OrcaSlicer's Calibration menu) */
+
+function calibContext() {
+  const mv = machineValues();
+  const flavor = String((Array.isArray(mv.gcode_flavor) ? mv.gcode_flavor[0] : mv.gcode_flavor) || "marlin");
+  return { first: num0(processValue("initial_layer_print_height")) || 0.2, layer: num0(processValue("layer_height")) || 0.2,
+    nozzle: num0(mv.nozzle_diameter) || 0.4, flavor, bed: { w: bed.w, d: bed.d },
+    flowRatio: num0(filamentValue("filament_flow_ratio")) || 1, nozzleTemp: num0(filamentValue("nozzle_temperature")) || 220,
+    maxVol: num0(filamentValue("filament_max_volumetric_speed")) || 0,
+    bowden: /bowden/i.test(String(mv.extruder_type || "")) };
+}
+
+const calibItems = () => [{ head: "Calibration tests" }, ...Object.entries(CAL.TESTS).map(([id, t]) => ({ label: `${t.title}…`, run: () => calibDialog(id) })),
+  ...(plates[cur]?.calib?.result ? [{ sep: true }, { label: "Enter this plate's result…", run: calibResult }] : [])];
+
+async function calibDialog(id) {
+  const T = CAL.TESTS[id], ctx = calibContext(), d = T.defaults(ctx), dlg = $("calib-dlg");
+  $("calib-title").textContent = T.title;
+  $("calib-about").textContent = T.about;
+  $("calib-fields").innerHTML = T.params.map((f) => f.choices
+    ? `<label>${esc(f.label)} <select data-k="${f.key}">${f.choices.map(([v, l]) => `<option value="${v}"${String(d[f.key]) === v ? " selected" : ""}>${esc(l)}</option>`).join("")}</select></label>`
+    : `<label>${esc(f.label)}${f.unit ? ` <span class="muted">(${esc(f.unit)})</span>` : ""} <input type="number" data-k="${f.key}" value="${d[f.key]}" step="any"${f.min != null ? ` min="${f.min}"` : ""} inputmode="decimal"></label>`).join("");
+  const read = () => Object.fromEntries([...$("calib-fields").querySelectorAll("[data-k]")].map((i) => [i.dataset.k, i.value]));
+  const preview = () => {
+    try { const plan = CAL.buildTest(id, read(), ctx); $("calib-legend").textContent = plan.legend.slice(0, 8).join(" · ") + (plan.legend.length > 8 ? " …" : ""); $("calib-ok").disabled = false; }
+    catch (e) { $("calib-legend").textContent = e.message; $("calib-ok").disabled = true; }
+  };
+  $("calib-fields").oninput = preview;
+  preview();
+  dlg.returnValue = "";
+  dlg.showModal();
+  await new Promise((r) => dlg.addEventListener("close", r, { once: true }));
+  if (dlg.returnValue !== "ok") return;
+  try { createCalibration(id, read(), ctx); } catch (e) { flash(`Couldn't make the test: ${e.message}`, "err"); }
+}
+
+function createCalibration(id, params, ctx) {
+  const plan = CAL.buildTest(id, params, ctx);
+  if (!view.renderer) initViewer();
+  if (paint.on) stopPaint();
+  let pi = cur;
+  if (meshesOn(cur).length) { plates.push(newPlate()); pi = plates.length - 1; }
+  Object.assign(plates[pi], { name: plan.plate.name, spiral: plan.plate.spiral || "", gcodes: plan.gcodes,
+    calib: { id, params, name: plan.name, legend: plan.legend, result: plan.result } });
+  const made = [];
+  for (const part of plan.parts) {
+    const geo = geoFrom(Float32Array.from(part.pos), false);
+    const c = centered(geo);
+    const m = newModelRecord(part.name, geo);
+    m.overrides = { ...part.overrides };
+    for (const v of part.volumes || []) {
+      const vol = { id: nextId++, kind: v.kind, shape: v.shape, name: v.kind === "negative" ? `Hole ${(v.size[0]).toFixed(2)} mm` : "Modifier",
+        size: new THREE.Vector3(...v.size), pos: new THREE.Vector3(v.center[0] - c.x, v.center[1] - c.y, v.center[2]), overrides: {} };
+      vol.geo = volumeGeo(vol);
+      m.volumes.push(vol);
+    }
+    m.ranges = (part.ranges || []).map((r) => ({ id: nextId++, from: r.from, to: r.to, overrides: { ...r.overrides } }));
+    models.push(m);
+    setCopies(m, 1);
+    updateBox(m);
+    m.meshes[0].position.x = plateX(pi) + part.xy[0];
+    m.meshes[0].position.y = part.xy[1];
+    made.push(m);
+  }
+  selected = null; multi.clear();
+  drawBed();
+  setCurrentPlate(pi);
+  plateChanged();
+  refresh();
+  fitView();
+  flash(`${plan.name} is on plate ${pi + 1}. Slice and print it${plan.result ? ", then enter what you see under the plate's menu (Enter this plate's result)" : ""}.`, "ok");
+}
+
+async function calibResult() {
+  const bp = plates[cur], c = bp?.calib;
+  if (!c?.result) return;
+  const r = c.result, ctx = calibContext(), dlg = $("calres-dlg");
+  $("calres-title").textContent = c.name;
+  $("calres-legend").innerHTML = c.legend.map((l) => `<li>${esc(l)}</li>`).join("");
+  $("calres-field").innerHTML = r.choices
+    ? `<label>Best looking <select id="calres-in">${r.choices.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("")}</select></label>`
+    : `<label>${r.kind === "pa" ? "Height of the sharpest corners" : "Height where it starts to fail"} <span class="muted">(mm)</span> <input id="calres-in" type="number" step="0.1" min="0" inputmode="decimal"></label>`;
+  const show = () => { const v = $("calres-in").value; const e = v !== "" ? CAL.resultEdits(r, v, ctx) : null; $("calres-out").textContent = e ? `Sets ${e.text}` : ""; $("calres-ok").disabled = !e; };
+  $("calres-in").oninput = show;
+  show();
+  dlg.returnValue = "";
+  dlg.showModal();
+  await new Promise((res) => dlg.addEventListener("close", res, { once: true }));
+  if (dlg.returnValue !== "ok") return;
+  const e = CAL.resultEdits(r, $("calres-in").value, ctx);
+  if (!e) return;
+  applyFilamentEdits(e.edits);
+  toast(`${e.text}: an unsaved change to ${S.selected.filament}. Save it with the ✎ next to the filament.`);
+}
+
 /* ---- plates: tabs, current plate, plate settings */
 
 function setCurrentPlate(i, moveView = true) {
@@ -2659,6 +2797,7 @@ const plateOptionsMenu = () => [
   { label: "Plate settings…", run: () => plateSettings(cur) },
   { label: "Arrange this plate", key: "A", run: () => arrange(cur), disabled: !modelsOn(cur).length },
   { label: "Select everything on it", run: () => selectPlate(cur), disabled: !modelsOn(cur).length },
+  ...(plates[cur].calib?.result ? [{ label: "Enter calibration result…", run: calibResult }] : []),
   { sep: true },
   { label: `Slice plate ${cur + 1}`, run: () => slice(cur), disabled: !modelsOn(cur).length },
   { label: "Slice all plates", run: sliceAll, disabled: plates.length < 2 },
@@ -2948,6 +3087,22 @@ $("range-remove").addEventListener("click", () => {
   selRange = null;
   plateChanged();
   refresh();
+});
+$("lg-pause").addEventListener("click", () => addLayerGcode("pause"));
+$("lg-custom").addEventListener("click", () => addLayerGcode("custom"));
+$("lg-list").addEventListener("click", (e) => {
+  const chip = e.target.closest(".lg-chip");
+  const bp = plates[cur];
+  if (!chip || !bp) return;
+  const z = +chip.dataset.z;
+  if (e.target.closest(".lg-del")) {
+    bp.gcodes = bp.gcodes.filter((g) => g.z !== z);
+    plateChanged(true);
+    renderLayerGcodes();
+    return;
+  }
+  const i = view.preview?.data?.z?.findIndex((x) => Math.abs(x - z) < 1e-3);
+  if (i >= 0) { view.preview.setLayer(i); renderLayerInfo(); }
 });
 $("tb-undo").addEventListener("click", undo);
 $("tb-redo").addEventListener("click", redo);

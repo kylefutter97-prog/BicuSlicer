@@ -44,7 +44,8 @@ MODEL_EXT = {".stl", ".3mf", ".obj"}   # the Orca CLI cannot read STEP (GUI only
 ALLOW_POST_PROCESS = os.environ.get("ALLOW_POST_PROCESS", "") == "1"
 # What of an uploaded 3MF reaches the slicer: geometry, per-object settings and layer height data. Not embedded
 # project settings, presets or G-code (the chosen presets are what counts, and they must not be overridden).
-KEEP_3MF_METADATA = {"metadata/model_settings.config", "metadata/layer_heights_profile.txt", "metadata/layer_config_ranges.xml"}
+KEEP_3MF_METADATA = {"metadata/model_settings.config", "metadata/layer_heights_profile.txt", "metadata/layer_config_ranges.xml",
+                     "metadata/custom_gcode_per_layer.xml"}      # G-code at chosen heights (pauses, calibration steps): runs on the printer
 KINDS = P.TYPES
 TOOLS = Path(__file__).parent / "tools"
 PRESET_DIR = DATA_DIR / "presets"

@@ -906,6 +906,18 @@ export function projectSettingsDiff(cfg) {
 }
 
 /** Take setting changes as unsaved edits to the print settings (like typing them in). */
+/** Take filament setting changes as unsaved edits (calibration results). */
+export function applyFilamentEdits(changes) {
+  Object.assign(S.edits.filament, changes);
+  renderPickers();
+  onChange("edits");
+}
+
+/** A filament setting as you'd slice with it now (your edit, else the preset, else OrcaSlicer's default). */
+export function filamentValue(key) {
+  return valueOf(S.detail.filament, S.edits.filament, key);
+}
+
 export function applyProcessEdits(changes) {
   Object.assign(S.edits.process, changes);
   renderPickers();
