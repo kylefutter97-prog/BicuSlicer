@@ -39,6 +39,12 @@ const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
 
 /* ================================================================ settings editor */
 
+// Never shown in the settings editor: the preset's parent link (managed by save/save as) and the printer
+// connection fields (managed in the Printers window).
+const NOT_EDITABLE_HERE = new Set(["inherits", "host_type", "print_host", "print_host_webui", "printhost_apikey", "printhost_cafile",
+  "printhost_port", "printhost_authorization_type", "printhost_user", "printhost_password", "printhost_ssl_ignore_revoke",
+  "flashforge_serial_number", "bbl_use_printhost"]);
+
 class Editor {
   // A settings form for one preset type. get() returns {detail, edits}; set(key, value|undefined) records a change.
   constructor(root, type, get, set, opts = {}) {
@@ -57,17 +63,22 @@ class Editor {
     const q = this.query.toLowerCase();
     const out = [];
     for (const p of lay) {
+      // the catalogue's catch-all page holds settings OrcaSlicer shows in no tab (internal or developer-only):
+      // only in Expert mode (or a search), under a name that can't be confused with OrcaSlicer's own "Others"
+      const unlisted = p.page === "Other" && p.groups.length === 1 && p.groups[0].title === "Other";
+      if (unlisted && S.mode !== "expert" && !q) continue;
+      const pageName = unlisted ? "Not in OrcaSlicer's tabs" : p.page;
       const groups = [];
       for (const g of p.groups) {
         const opts = g.options.filter((k) => {
           const o = S.catalog.options[k];
-          if (!o) return false;
+          if (!o || NOT_EDITABLE_HERE.has(k)) return false;
           if (q) return (`${o.label || ""} ${o.full_label || ""} ${k} ${g.title} ${p.page}`).toLowerCase().includes(q);
           return (MODE_RANK[o.mode] ?? 1) <= rank;
         });
-        if (opts.length) groups.push({ title: g.title, options: opts });
+        if (opts.length) groups.push({ title: unlisted ? "Settings OrcaSlicer doesn't show" : g.title, options: opts });
       }
-      if (groups.length) out.push({ page: p.page, groups });
+      if (groups.length) out.push({ page: pageName, groups });
     }
     return out;
   }

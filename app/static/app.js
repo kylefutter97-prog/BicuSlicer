@@ -1079,6 +1079,25 @@ $("pj-list").addEventListener("click", async (e) => {
   }
 });
 window.addEventListener("beforeunload", (e) => { if (projectDirty()) { e.preventDefault(); e.returnValue = ""; } });
+// Drag and drop: model files dropped anywhere on the page go onto the plate, like + Add.
+{
+  let depth = 0;
+  const hasFiles = (e) => [...(e.dataTransfer?.types || [])].includes("Files");
+  const show = (on) => { $("drop-overlay").hidden = !on; };
+  window.addEventListener("dragenter", (e) => { if (!hasFiles(e)) return; e.preventDefault(); depth++; show(true); });
+  window.addEventListener("dragover", (e) => { if (!hasFiles(e)) return; e.preventDefault(); e.dataTransfer.dropEffect = "copy"; });
+  window.addEventListener("dragleave", (e) => { if (!hasFiles(e)) return; depth = Math.max(0, depth - 1); if (!depth) show(false); });
+  window.addEventListener("drop", async (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();          // don't let the browser open the file instead
+    depth = 0;
+    show(false);
+    if (document.querySelector("dialog[open]")) return;   // a window is open: leave the plate alone
+    const files = [...e.dataTransfer.files];
+    if (files.length) await addFiles(files);
+  });
+}
+
 $("slice").addEventListener("click", async () => {
   const b = $("slice");
   const act = b.dataset.act;

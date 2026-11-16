@@ -397,3 +397,9 @@ dialog.sheet.projects { width: min(900px, 96vw); height: min(820px, 92vh); }
 .bed-info { margin: 5px 2px 0; color: var(--muted); }
 .bed-info.warn { color: var(--warn); }
 .bed-info .link { border: 0; background: none; color: var(--accent); font: inherit; padding: 0 2px; cursor: pointer; text-decoration: underline; }
+
+/* drag and drop model files anywhere on the page */
+.drop-overlay { position: fixed; inset: 0; z-index: 60; display: flex; align-items: center; justify-content: center; padding: 24px;
+  background: color-mix(in srgb, var(--bg) 70%, transparent); backdrop-filter: blur(2px); pointer-events: none; }
+.drop-overlay > div { border: 3px dashed var(--accent); border-radius: 18px; padding: 40px 28px; max-width: 520px; text-align: center;
+  font-size: 18px; font-weight: 600; background: var(--card); }
