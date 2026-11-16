@@ -1169,6 +1169,9 @@ function wireContextMenu() {
     e.preventDefault();
     if (e.button === 0 && e.ctrlKey) open(e);
   });
+  // On Windows the browser's own menu event comes after the button is released, by which time our menu is open under
+  // the pointer and gets that event instead of the view: keep the browser's menu away from the view and our menu.
+  for (const target of [view.el, $("menu")]) target.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
 function setPickMode(on) {

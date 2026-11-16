@@ -43,7 +43,7 @@ try:
     el("empty-calib").click(); W()
     items = [b.text for b in d.find_elements(By.CSS_SELECTOR, "#menu button")]
     check("empty plate offers the calibration tests", menu_open() and any("Temperature" in t for t in items), items[:3])
-    d.find_element(By.TAG_NAME, "body").send_keys(""); W()     # Escape
+    d.find_element(By.TAG_NAME, "body").send_keys("\ue00c"); W()     # Escape
 
     # a cube in the middle of the plate
     with open("/tmp/c.stl", "w") as f:
@@ -59,7 +59,15 @@ try:
     mouse("mouseMoved", cx, cy, "none", 0); mouse("mousePressed", cx, cy); W(0.1); mouse("mouseReleased", cx, cy, "right", 0); W()
     items = [b.text for b in d.find_elements(By.CSS_SELECTOR, "#menu button")]
     check("right-click opens the menu", menu_open(), items[:4])
-    d.find_element(By.TAG_NAME, "body").send_keys(""); W()
+    # Windows order: the browser's menu event arrives after release, aimed at whatever is under the pointer (our menu)
+    blocked = d.execute_script("""const out = [];
+      for (const t of [document.getElementById('menu'), document.querySelector('#viewer canvas'), document.getElementById('viewer')]) {
+        const ev = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2, clientX: 10, clientY: 10 });
+        t.dispatchEvent(ev); out.push(ev.defaultPrevented);
+      } return out;""")
+    check("the browser's own menu is kept away (menu, view, viewer)", all(blocked), blocked)
+    check("...and ours stays open", menu_open())
+    d.find_element(By.TAG_NAME, "body").send_keys("\ue00c"); W()
     check("Escape closes it", not menu_open())
 
     # right-drag (pan) on empty bed -> no menu, view moves
