@@ -17,7 +17,16 @@ import { initPrinters, printerStatus, refreshPrinter, openPrinters, openPrinterV
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const DOWN = new THREE.Vector3(0, 0, -1);
-const GAP = 6;          // mm between parts when arranging
+const GAP = 6;          // mm between parts when arranging (plus room for brims, see partGap)
+/** Space between parts: 6 mm, plus both parts' brims when brims are on (OrcaSlicer flags touching brims as G-code conflicts). */
+function partGap() {
+  const raw = (k) => { const v = processValue(k); return Array.isArray(v) ? v[0] : v; };
+  const type = String(raw("brim_type") ?? "auto_brim");
+  if (type === "no_brim" || type === "painted") return GAP;
+  const w = parseFloat(raw("brim_width")) || 0;
+  // auto brims go only on parts that need one (small or tall), so leave room for one; other brim types go on every part
+  return GAP + Math.min(20, type === "auto_brim" ? Math.max(w, 5) : 2 * w);
+}
 const MAX_COPIES = 50;
 
 // Every change to the plate bumps this (for "unsaved changes"). Whether a plate's slice is still valid is decided
@@ -907,13 +916,13 @@ function settle(newMeshes = [], home = cur) {
 
 /** The free spot on plate pi nearest to `near` (default: the plate's centre) where part m fits, as a position for its copy; or null. */
 function findSpot(pi, m, skip = [], near = null) {
-  const w = m.size.x, d = m.size.y, ox = plateX(pi);
+  const w = m.size.x, d = m.size.y, ox = plateX(pi), G = partGap();
   if (w > bed.w + 0.01 || d > bed.d + 0.01) return null;
   const rects = [];
   for (const o of models) for (const x of o.meshes) {
     if (skip.includes(x) || plateOf(x) !== pi || !o.local) continue;
     const f = footprint(o, x);
-    rects.push([f.x0 - ox - GAP, f.y0 - GAP, f.x1 - ox + GAP, f.y1 + GAP]);
+    rects.push([f.x0 - ox - G, f.y0 - G, f.x1 - ox + G, f.y1 + G]);
   }
   const tx = near ? near.x - ox + m.local.x0 + w / 2 : bed.w / 2, ty = near ? near.y + m.local.y0 + d / 2 : bed.d / 2;
   const step = Math.max(1, Math.min(5, Math.min(w, d) / 3));
@@ -933,17 +942,18 @@ function findSpot(pi, m, skip = [], near = null) {
 }
 
 function shelfPack(items) {
+  const G = partGap();
   // Shelf packing: tallest-footprint parts first, rows left→right; a new group (plate) when the bed is full
   items.sort((a, b) => b.d - a.d || b.w - a.w);
   const groups = [];
   let g = null, x = 0, y = 0, rowD = 0;
   for (const it of items) {
-    if (g && x > 0 && x + it.w > bed.w) { y += rowD + GAP; x = 0; rowD = 0; }
+    if (g && x > 0 && x + it.w > bed.w) { y += rowD + G; x = 0; rowD = 0; }
     if (!g || (g.items.length && y + it.d > bed.d + 0.01)) { g = { items: [], maxX: 0, depth: 0 }; groups.push(g); x = 0; y = 0; rowD = 0; }
     it.px = x; it.py = y;
     g.items.push(it);
-    x += it.w + GAP; rowD = Math.max(rowD, it.d);
-    g.maxX = Math.max(g.maxX, x - GAP); g.depth = Math.max(g.depth, y + rowD);
+    x += it.w + G; rowD = Math.max(rowD, it.d);
+    g.maxX = Math.max(g.maxX, x - G); g.depth = Math.max(g.depth, y + rowD);
   }
   return groups;
 }
@@ -1153,6 +1163,7 @@ function wirePointer() {
   el.addEventListener("pointercancel", finish);
 
   function onTap(e) {
+    if (cut && cutTap(e)) return;
     const hit = hitPart(e);
     if (textPlace) {
       if (hit && hit.object.userData.model === textPlace.model && hit.face) placeText(hit);
@@ -2205,56 +2216,240 @@ async function editText() {
 
 /* ---- cut at a height */
 
-let cutPlane = null;
+// The cut plane goes through the part at a height, tilted by tiltX / tiltY (degrees). Cutting rotates the part so the
+// plane is flat (z = 0, the "plane frame"), cuts there with the filled-in Z cut, and turns the halves back, or leaves
+// the top half lying on its cut face. Connectors (OrcaSlicer's plugs and dowels) are made in the plane frame too:
+// a plug is a raised part on the bottom half with a matching hole (plus tolerance) in the top half; dowels are holes
+// in both halves and separate dowel parts.
+
+let cut = null;        // the open cut: { m, copy, plane (Mesh), markers (Group), points: [[u, v]] }
+
+function cutFrame(m, height, tiltX, tiltY) {
+  // part-centred coords (rotated and scaled, as bakedGeo) -> plane frame
+  const n = new THREE.Vector3(0, 0, 1).applyEuler(new THREE.Euler(THREE.MathUtils.degToRad(tiltX), THREE.MathUtils.degToRad(tiltY), 0, "XYZ")).normalize();
+  const q = new THREE.Quaternion().setFromUnitVectors(n, new THREE.Vector3(0, 0, 1));
+  const p0 = new THREE.Vector3(0, 0, m.local.z0 + height);
+  const M = new THREE.Matrix4().makeRotationFromQuaternion(q).multiply(new THREE.Matrix4().makeTranslation(-p0.x, -p0.y, -p0.z));
+  return { M, inv: M.clone().invert(), n };
+}
+
+function readCut() {
+  const num = (id, d) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : d; };
+  return { height: num("cut-h", 0), tiltX: num("cut-tx", 0), tiltY: num("cut-ty", 0), keep: $("cut-keep").value, faceDown: $("cut-face").checked,
+    conn: { type: $("cut-conn").value, shape: $("cut-shape").value, size: Math.max(1, num("cut-size", 5)), depth: Math.max(1, num("cut-depth", 6)),
+      tol: Math.max(0, num("cut-tol", 0.15)), count: Math.max(1, Math.min(12, Math.round(num("cut-count", 2)))) } };
+}
+
+/** Cross-section of the part on the cut plane: its cap triangles (2D, plane frame) and outline edges. */
+function cutSection(m, P) {
+  const { M } = cutFrame(m, P.height, P.tiltX, P.tiltY);
+  const r = MO.cutAtZ(MO.bake(bakedGeo(m), M), 0, { capTop: false, capBottom: true });
+  const tris = [];
+  if (r.bottom) {
+    const p = r.bottom.getAttribute("position").array;
+    for (let i = 0; i < p.length; i += 9) if (Math.abs(p[i + 2]) < 1e-4 && Math.abs(p[i + 5]) < 1e-4 && Math.abs(p[i + 8]) < 1e-4) tris.push([p[i], p[i + 1], p[i + 3], p[i + 4], p[i + 6], p[i + 7]]);
+  }
+  const key = (x, y) => `${Math.round(x * 1000)},${Math.round(y * 1000)}`;
+  const count = new Map();
+  for (const t of tris) for (let k = 0; k < 3; k++) {
+    const a = [t[k * 2], t[k * 2 + 1]], b = [t[((k + 1) % 3) * 2], t[((k + 1) % 3) * 2 + 1]];
+    const id = [key(...a), key(...b)].sort().join("|");
+    const e = count.get(id);
+    count.set(id, e ? { ...e, n: e.n + 1 } : { a, b, n: 1 });
+  }
+  const edges = [...count.values()].filter((e) => e.n === 1).map((e) => [e.a, e.b]);
+  return { tris, edges };
+}
+
+/** Spread n connector spots over the cross-section: as far from its outline and from each other as possible. */
+function autoConnectors(sec, n, size) {
+  if (!sec.tris.length) return [];
+  let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+  for (const t of sec.tris) for (let k = 0; k < 6; k += 2) { x0 = Math.min(x0, t[k]); x1 = Math.max(x1, t[k]); y0 = Math.min(y0, t[k + 1]); y1 = Math.max(y1, t[k + 1]); }
+  const step = Math.max(0.5, Math.min(x1 - x0, y1 - y0) / 40);
+  const inTri = (x, y, t) => {
+    const d = (t[2] - t[0]) * (t[5] - t[1]) - (t[3] - t[1]) * (t[4] - t[0]);
+    const a = ((t[2] - x) * (t[5] - y) - (t[3] - y) * (t[4] - x)) / d, b = ((t[4] - x) * (t[1] - y) - (t[5] - y) * (t[0] - x)) / d;
+    return a >= 0 && b >= 0 && a + b <= 1;
+  };
+  const segDist = (x, y, [a, b]) => {
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy || 1;
+    const t = Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / L));
+    return Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy);
+  };
+  const cands = [];
+  for (let y = y0 + step / 2; y < y1; y += step) for (let x = x0 + step / 2; x < x1; x += step) {
+    if (!sec.tris.some((t) => inTri(x, y, t))) continue;
+    const dEdge = Math.min(...sec.edges.map((e) => segDist(x, y, e)));
+    if (dEdge >= size / 2 + 1.2) cands.push([x, y, dEdge]);      // room for the connector and a wall around it
+  }
+  if (!cands.length) return [];
+  const out = [cands.reduce((a, c) => (c[2] > a[2] ? c : a))];
+  while (out.length < n) {
+    let best = null, bestD = -1;
+    for (const c of cands) {
+      const d = Math.min(...out.map((o) => Math.hypot(c[0] - o[0], c[1] - o[1])));
+      if (d > bestD) { bestD = d; best = c; }
+    }
+    if (!best || bestD < size + 2) break;          // no more room
+    out.push(best);
+  }
+  return out.map((c) => [+c[0].toFixed(2), +c[1].toFixed(2)]);
+}
+
+function connectorShape(shape, d, len) {
+  // centred on the origin along Z
+  if (shape === "square") return MO.box(d, d, len);
+  if (shape === "hex") return MO.cylinder(d, len, 6);
+  return MO.cylinder(d, len, 48);
+}
+
+function cutPreview() {
+  if (!cut) return;
+  const P = readCut(), m = cut.m;
+  const { inv } = cutFrame(m, P.height, P.tiltX, P.tiltY);
+  // plane frame -> plate: back to part-centred coords, then to where this copy stands
+  const toPlate = new THREE.Matrix4().makeTranslation(cut.copy.position.x, cut.copy.position.y, -m.local.z0).multiply(inv);
+  cut.plane.matrix.copy(toPlate);
+  cut.markers.matrix.copy(toPlate);
+  const pts = cut.points.length ? cut.points : P.conn.type !== "none" ? autoConnectors(cutSection(m, P), P.conn.count, P.conn.size) : [];
+  cut.auto = cut.points.length ? null : pts;
+  while (cut.markers.children.length) { const c = cut.markers.children.pop(); c.geometry.dispose(); }
+  if (P.conn.type !== "none") for (const [u, v] of pts) {
+    const g = connectorShape(P.conn.shape, P.conn.size, P.conn.depth * 2);
+    const mk = new THREE.Mesh(g, view.mats.modifierSel);
+    mk.position.set(u, v, 0);
+    cut.markers.add(mk);
+  }
+  $("cut-conn-opts").hidden = P.conn.type === "none";
+  $("cut-points").textContent = P.conn.type === "none" ? "" : cut.points.length
+    ? `${cut.points.length} placed by tapping. Tap the plane to add more.` : `${pts.length} placed automatically${pts.length < P.conn.count ? " (that's all that fit)" : ""}. Or tap the cut plane to place them yourself.`;
+  $("cut-clear-points").hidden = !cut.points.length;
+}
+
 function openCut() {
   const m = selected;
   if (!m) return;
+  closeCut();
   const dlg = $("cut-dlg");
   $("cut-name").textContent = m.name;
   const h = $("cut-h"), r = $("cut-range");
   r.max = h.max = m.size.z.toFixed(2);
   h.value = r.value = (m.size.z / 2).toFixed(2);
-  const c = selectedCopy();
-  cutPlane = new THREE.Mesh(new THREE.PlaneGeometry(m.size.x * 1.3 + 4, m.size.y * 1.3 + 4),
-    new THREE.MeshBasicMaterial({ color: css("--accent"), transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }));
-  cutPlane.position.set(c.position.x, c.position.y, m.size.z / 2);
-  view.scene.add(cutPlane);
-  const sync = (src) => { (src === h ? r : h).value = src.value; cutPlane.position.z = parseFloat(src.value) || 0; };
-  h.oninput = () => sync(h);
-  r.oninput = () => sync(r);
+  const copy = selectedCopy();
+  const span = Math.max(m.size.x, m.size.y, m.size.z) * 1.4 + 4;
+  const plane = new THREE.Mesh(new THREE.PlaneGeometry(span, span),
+    new THREE.MeshBasicMaterial({ color: css("--accent"), transparent: true, opacity: 0.3, side: THREE.DoubleSide, depthWrite: false }));
+  const markers = new THREE.Group();
+  for (const o of [plane, markers]) { o.matrixAutoUpdate = false; view.scene.add(o); }
+  cut = { m, copy, plane, markers, points: [], auto: null };
+  h.oninput = () => { r.value = h.value; cutPreview(); };
+  r.oninput = () => { h.value = r.value; cutPreview(); };
+  dlg.oninput = (e) => { if (e.target !== h && e.target !== r) cutPreview(); };
+  dlg.onchange = (e) => { if (["cut-size", "cut-shape"].includes(e.target.id)) cutPreview(); };
+  cutPreview();
   dlg.returnValue = "";
-  dlg.show();      // not modal: the plate stays visible with the cut plane
+  dlg.show();      // not modal: the plate stays visible (and tappable) with the cut plane
   dlg.onclose = () => {
-    view.scene.remove(cutPlane);
-    cutPlane = null;
-    if (dlg.returnValue === "ok") doCut(m, parseFloat(h.value), $("cut-keep").value, $("cut-flip").checked);
+    const P = readCut(), pts = cut?.points.length ? cut.points : cut?.auto || [];
+    closeCut();
+    if (dlg.returnValue === "ok") doCut(m, P, pts);
   };
 }
 
-function doCut(m, height, keep, flip) {
-  if (!models.includes(m) || !(height > 0) || !(height < m.size.z)) { flash("Pick a height inside the part.", "warn"); return; }
+function closeCut() {
+  if (!cut) return;
+  view.scene.remove(cut.plane, cut.markers);
+  cut.plane.geometry.dispose();
+  for (const c of cut.markers.children) c.geometry.dispose();
+  cut = null;
+}
+
+/** A tap while the cut dialog is open: on the cut plane, it places a connector there. */
+function cutTap(e) {
+  if (!cut || readCut().conn.type === "none") return false;
+  const hit = rayFrom(e).intersectObject(cut.plane, false)[0];
+  if (!hit) return false;
+  const p = hit.point.clone().applyMatrix4(cut.plane.matrix.clone().invert());
+  cut.points.push([+p.x.toFixed(2), +p.y.toFixed(2)]);
+  cutPreview();
+  return true;
+}
+
+function doCut(m, P, pts) {
+  if (!models.includes(m) || !(P.height > 0) || !(P.height < m.size.z)) { flash("Pick a height inside the part.", "warn"); return; }
   busy("Cutting…");
   setTimeout(() => {
     try {
-      const g = bakedGeo(m);
-      const { top, bottom, openLoops } = MO.cutAtZ(g, m.local.z0 + height, { capTop: true, capBottom: true });
-      const base = selectedCopy().position.clone();
+      const { M, inv } = cutFrame(m, P.height, P.tiltX, P.tiltY);
+      const { top, bottom, openLoops } = MO.cutAtZ(MO.bake(bakedGeo(m), M), 0, { capTop: true, capBottom: true });
+      if (!top || !bottom) throw new Error("the plane misses the part");
+      const base = cut?.copy?.position?.clone() || selectedCopy().position.clone();
+      const C = P.conn, conn = C.type === "none" ? [] : pts;
+      // connector pieces in the plane frame: [geometry, kind] for the bottom and top halves
+      const vols = { bottom: [], top: [] }, dowels = [];
+      const at = (g, u, v, z0, z1) => MO.bake(g, new THREE.Matrix4().makeTranslation(u, v, (z0 + z1) / 2));
+      for (const [u, v] of conn) {
+        const hole = C.size + 2 * C.tol;
+        if (C.type === "plug") {
+          vols.bottom.push([at(connectorShape(C.shape, C.size, C.depth + 1), u, v, -1, C.depth), "part"]);          // the plug, 1 mm into its half
+          vols.top.push([at(connectorShape(C.shape, hole, C.depth + C.tol + 0.4), u, v, -0.2, C.depth + C.tol + 0.2), "negative"]);
+        } else {
+          vols.bottom.push([at(connectorShape(C.shape, hole, C.depth + 0.4), u, v, -C.depth - 0.2, 0.2), "negative"]);
+          vols.top.push([at(connectorShape(C.shape, hole, C.depth + 0.4), u, v, -0.2, C.depth + 0.2), "negative"]);
+          dowels.push(1);
+        }
+      }
+      // where each half goes: bottom as it was; top as it was, or lying on its cut face (it already does in the plane frame)
+      const back = (g) => MO.bake(g, inv);
+      const halves = [];
+      if (P.keep !== "top") halves.push(["bottom", back(bottom), vols.bottom.map(([g, k]) => [back(g), k])]);
+      if (P.keep !== "bottom") {
+        const keepFrame = P.faceDown;
+        halves.push(["top", keepFrame ? top : back(top), vols.top.map(([g, k]) => [keepFrame ? g : back(g), k])]);
+      }
       removeModel(m);
       const made = [];
-      if (bottom && keep !== "top") {
-        const r = addModel(`${m.name} (bottom)`, bottom, null, m);
-        r.m.meshes[0].position.set(base.x + r.center.x, base.y + r.center.y, 0);
-        made.push(r.m);
+      halves.forEach(([which, g, vl], i) => {
+        g.computeBoundingBox();
+        const c = g.boundingBox.getCenter(new THREE.Vector3()), minZ = g.boundingBox.min.z;
+        const piece = newModelRecord(`${m.name} (${which})`, g);
+        centered(g);
+        piece.overrides = JSON.parse(JSON.stringify(m.overrides || {}));
+        for (const [vg, kind] of vl) {
+          vg.computeBoundingBox();
+          const vc = vg.boundingBox.getCenter(new THREE.Vector3());
+          centered(vg);
+          const size = vg.boundingBox.getSize(new THREE.Vector3());
+          const v = { id: nextId++, kind, shape: "mesh", name: kind === "part" ? "Plug" : "Connector hole", overrides: {},
+            base: vg, baseSize: size.clone(), size: size.clone(), pos: new THREE.Vector3(vc.x - c.x, vc.y - c.y, vc.z - minZ) };
+          v.geo = volumeGeo(v);
+          piece.volumes.push(v);
+        }
+        models.push(piece);
+        setCopies(piece, 1);
+        updateBox(piece);
+        piece.meshes[0].position.x = base.x + i * (m.size.x + partGap());      // x and y only: updateBox set the height that sits it on the bed
+        piece.meshes[0].position.y = base.y;
+        made.push(piece);
+      });
+      if (dowels.length) {
+        // the dowels: printed lying down (stronger along their length), slightly shorter than the two holes
+        const len = 2 * C.depth - 0.4;
+        const dg = MO.bake(connectorShape(C.shape, C.size, len), new THREE.Matrix4().makeRotationY(Math.PI / 2));
+        centered(dg);
+        const dm = newModelRecord(`${m.name} dowel`, dg);
+        dm.overrides = { enable_support: "0" };     // a small dowel's underside prints fine; supports would also grow into its neighbours
+        models.push(dm);
+        setCopies(dm, dowels.length);
+        updateBox(dm);
+        dm.meshes.forEach((x, k) => { x.position.x = base.x; x.position.y = base.y + m.size.y / 2 + 10 + k * (C.size + partGap()); });
+        made.push(dm);
       }
-      if (top && keep !== "bottom") {
-        const t = flip ? MO.bake(top, new THREE.Matrix4().makeRotationX(Math.PI)) : top;
-        const r = addModel(`${m.name} (top)`, t, null, m);
-        r.m.meshes[0].position.set(base.x + r.center.x + (keep === "both" ? m.size.x + GAP : 0), base.y + r.center.y, 0);
-        made.push(r.m);
-      }
-      selected = made[0] || null; multi.clear();
+      selected = made[0] || null; multi.clear(); selectedVolume = null;
       settle(made.flatMap((x) => x.meshes));
-      flash(openLoops ? `Cut, but ${openLoops} cut outline(s) weren't closed (the model has holes): try Fix model first.` : "Cut done", openLoops ? "warn" : "ok");
+      const what = conn.length ? ` with ${conn.length} ${C.type === "plug" ? "plug" : "dowel"}${conn.length === 1 ? "" : "s"}` : "";
+      flash(openLoops ? `Cut${what}, but ${openLoops} cut outline(s) weren't closed (the model has holes): try Fix model first.` : `Cut${what}.`, openLoops ? "warn" : "ok");
     } catch (e) { flash(`Couldn't cut: ${e.message}`, "err"); } finally { busy(null); }
   }, 20);
 }
@@ -2476,7 +2671,7 @@ function pasteModel() {
   setCopies(m, 1);
   updateBox(m);
   const ref = src.meshes.filter((x) => plateOf(x) === cur).pop();
-  if (ref) { m.meshes[0].position.x = ref.position.x + m.size.x + GAP; m.meshes[0].position.y = ref.position.y; }
+  if (ref) { m.meshes[0].position.x = ref.position.x + m.size.x + partGap(); m.meshes[0].position.y = ref.position.y; }
   selected = m;
   settle(m.meshes);
   flash(`Pasted ${m.name}`, "ok");
@@ -3121,7 +3316,7 @@ $("copy-plus").addEventListener("click", () => {
   setCopies(selected, selected.meshes.length + 1);
   const mesh = selected.meshes[selected.meshes.length - 1];
   mesh.position.copy(from.position);
-  mesh.position.x += selected.size.x + GAP;
+  mesh.position.x += selected.size.x + partGap();
   settle([mesh], home);
 });
 $("copy-minus").addEventListener("click", () => { if (selected) { setCopies(selected, selected.meshes.length - 1); plateChanged(); refresh(); } });
@@ -3332,6 +3527,7 @@ $("range-remove").addEventListener("click", () => {
 });
 $("empty-calib").addEventListener("click", (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, calibItems()); });
 $("obj-edit-text").addEventListener("click", editText);
+$("cut-clear-points").addEventListener("click", () => { if (cut) { cut.points = []; cutPreview(); } });
 $("vol-edit-text").addEventListener("click", editText);
 $("lg-pause").addEventListener("click", () => addLayerGcode("pause"));
 $("lg-custom").addEventListener("click", () => addLayerGcode("custom"));

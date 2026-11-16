@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=33">
+<link rel="stylesheet" href="/static/style.css?v=34">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -421,12 +421,26 @@
   <form method="dialog">
     <p><b>Cut</b> <span class="muted" id="cut-name"></span></p>
     <label class="field"><span>Height above the bed (mm)</span>
-      <div class="cut-row"><input type="range" id="cut-range" min="0" step="0.1"><input type="number" id="cut-h" min="0" step="0.1" inputmode="decimal"></div>
+      <div class="cut-row"><input type="range" id="cut-range" min="0" step="0.1"><input type="number" id="cut-h" min="0" step="any" inputmode="decimal"></div>
     </label>
-    <label class="field"><span>Keep</span>
-      <select id="cut-keep"><option value="both">Both parts</option><option value="bottom">Bottom only</option><option value="top">Top only</option></select>
-    </label>
-    <label class="check-inline"><input type="checkbox" id="cut-flip" checked> Turn the top part over, cut face on the bed</label>
+    <div class="calib-fields">
+      <label>Tilt X <span class="muted">(°)</span> <input type="number" id="cut-tx" value="0" min="-80" max="80" step="any" inputmode="decimal"></label>
+      <label>Tilt Y <span class="muted">(°)</span> <input type="number" id="cut-ty" value="0" min="-80" max="80" step="any" inputmode="decimal"></label>
+      <label>Keep <select id="cut-keep"><option value="both">Both parts</option><option value="bottom">Bottom only</option><option value="top">Top only</option></select></label>
+    </div>
+    <label class="check-inline"><input type="checkbox" id="cut-face" checked> Lay the top part on its cut face</label>
+    <div class="cut-conn">
+      <label>Connectors <select id="cut-conn"><option value="none">None</option><option value="plug">Plugs (a peg and a hole)</option><option value="dowel">Dowels (holes, and separate dowels)</option></select></label>
+      <div id="cut-conn-opts" class="calib-fields" hidden>
+        <label>Shape <select id="cut-shape"><option value="round">Round</option><option value="square">Square</option><option value="hex">Hexagon</option></select></label>
+        <label>Size <span class="muted">(mm)</span> <input type="number" id="cut-size" value="5" min="1" step="any" inputmode="decimal"></label>
+        <label>Depth <span class="muted">(mm)</span> <input type="number" id="cut-depth" value="6" min="1" step="any" inputmode="decimal"></label>
+        <label>Tolerance <span class="muted">(mm)</span> <input type="number" id="cut-tol" value="0.15" min="0" step="any" inputmode="decimal"></label>
+        <label>How many <input type="number" id="cut-count" value="2" min="1" max="12" step="1" inputmode="numeric"></label>
+      </div>
+      <p class="muted small" id="cut-points"></p>
+      <button type="button" class="btn small-btn" id="cut-clear-points" hidden>Back to automatic</button>
+    </div>
     <p class="muted small">The cut faces are filled in, so both parts stay solid.</p>
     <div class="actions"><button value="cancel" class="btn" type="submit">Cancel</button><button value="ok" class="primary" type="submit">Cut</button></div>
   </form>
@@ -603,6 +617,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=36"></script>
+<script type="module" src="/static/app.js?v=37"></script>
 </body>
 </html>
