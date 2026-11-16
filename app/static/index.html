@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=19">
+<link rel="stylesheet" href="/static/style.css?v=20">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -84,7 +84,7 @@
       <button class="btn" id="view-reset" type="button">Fit view</button>
       <button class="btn danger" id="clear" type="button">Clear</button>
     </div>
-    <p class="tip muted small" id="tip" hidden>Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom</p>
+    <p class="tip muted small" id="tip" hidden>Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom · press ? for keyboard shortcuts</p>
   </section>
 
   <!-- ======================= parts -->
@@ -303,6 +303,35 @@
 </dialog>
 
 <!-- ======================= small dialogs -->
+<dialog id="keys" class="keys-dlg">
+  <form method="dialog">
+    <p><b>Keyboard shortcuts</b> <span class="muted small">Ctrl = ⌘ on a Mac</span></p>
+    <table class="keys">
+      <tr><th colspan="2">Parts</th></tr>
+      <tr><td><kbd>Delete</kbd> / <kbd>Backspace</kbd></td><td>Remove the selected part</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Delete</kbd></td><td>Clear the plate</td></tr>
+      <tr><td><kbd>Esc</kbd></td><td>Cancel pick face / deselect</td></tr>
+      <tr><td><kbd>A</kbd></td><td>Arrange</td></tr>
+      <tr><td><kbd>F</kbd></td><td>Pick face down</td></tr>
+      <tr><td><kbd>R</kbd> / <kbd>Shift</kbd>+<kbd>R</kbd></td><td>Rotate 45° / −45°</td></tr>
+      <tr><td><kbd>+</kbd> / <kbd>−</kbd></td><td>Add / remove a copy</td></tr>
+      <tr><td>Arrow keys</td><td>Move 1 mm (<kbd>Shift</kbd>: 10 mm)</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Copy / paste a part</td></tr>
+      <tr><th colspan="2">View</th></tr>
+      <tr><td><kbd>Tab</kbd></td><td>Model ↔ Layers</td></tr>
+      <tr><td><kbd>↑</kbd> / <kbd>↓</kbd> in Layers</td><td>Next / previous layer (<kbd>Shift</kbd>: 10)</td></tr>
+      <tr><td><kbd>0</kbd> <kbd>1</kbd> <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> <kbd>6</kbd></td><td>Fit · top · front · back · left · right</td></tr>
+      <tr><td><kbd>Z</kbd></td><td>Zoom to the selected part</td></tr>
+      <tr><th colspan="2">Plate and files</th></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Enter</kbd></td><td>Slice / send / start (the main button)</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>I</kbd></td><td>Add a model</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>S</kbd> / <kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>S</kbd></td><td>Save project / save as</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>O</kbd></td><td>Projects</td></tr>
+      <tr><td><kbd>?</kbd></td><td>This list</td></tr>
+    </table>
+    <div class="actions"><button value="ok" class="primary" type="submit">Close</button></div>
+  </form>
+</dialog>
 <dialog id="bed-dlg">
   <form method="dialog">
     <p><b id="bed-dlg-title">Plate type</b></p>
@@ -335,6 +364,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=21"></script>
+<script type="module" src="/static/app.js?v=22"></script>
 </body>
 </html>

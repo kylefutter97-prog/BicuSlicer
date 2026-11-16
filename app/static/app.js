@@ -263,7 +263,7 @@ function setViewMode(mode) {
   if (mode === "preview") setPickMode(false);
   $("tip").textContent = mode === "preview"
     ? "Drag to turn the view · pinch or scroll to zoom · slide to step through the layers"
-    : "Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom";
+    : "Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom · press ? for keyboard shortcuts";
 }
 
 function plateChanged() {
@@ -703,6 +703,8 @@ async function slice() {
     fd.append("orient", "0");
     fd.append("name", plateName());
     fd.append("model", build3mf(), "plate.3mf");
+    const thumbs = plateThumbs();      // Mainsail's file preview (the headless slicer can't render one)
+    if (thumbs) fd.append("thumbs", new Blob([JSON.stringify(thumbs)], { type: "application/json" }), "thumbs.json");
     $("result").innerHTML = `<p><span class="spinner"></span>Uploading…</p>`;
     const job = await apiJson("/api/slice", { method: "POST", body: fd });
     currentJobVersion = version;
@@ -755,6 +757,143 @@ async function plateAction(act, plate, btn) {
     $("result").insertAdjacentHTML("afterbegin", `<p class="msg err">${esc(e.message)}</p>`);
   }
 }
+
+/* ================================================================ G-code thumbnails */
+
+let thumbRenderer = null;
+
+function filamentColour() {
+  const v = S.detail.filament?.values?.filament_colour;
+  const c = String(Array.isArray(v) ? v[0] : v || "");
+  return /^#[0-9a-f]{6}/i.test(c) ? c.slice(0, 7) : css("--model");
+}
+
+function plateThumbs() {
+  // the plate's parts from a three-quarter view, in the filament's colour, on a transparent background
+  if (!models.length || !view.scene) return null;
+  try {
+    thumbRenderer ||= new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+    thumbRenderer.setPixelRatio(1);
+    const meshes = models.flatMap((m) => m.meshes);
+    const box = new THREE.Box3();
+    for (const m of meshes) { m.updateMatrixWorld(true); box.expandByObject(m); }
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const dist = Math.max(sphere.radius, 1) / Math.sin(THREE.MathUtils.degToRad(15)) * 1.04;
+    const cam = new THREE.PerspectiveCamera(30, 1, dist / 100, dist * 4);
+    cam.up.set(0, 0, 1);
+    cam.position.copy(sphere.center).addScaledVector(new THREE.Vector3(0.9, -1.2, 1).normalize(), dist);
+    cam.lookAt(sphere.center);
+    const mat = new THREE.MeshStandardMaterial({ color: filamentColour(), roughness: 0.55, metalness: 0.05 });
+    const meshState = meshes.map((m) => [m, m.material, m.visible]);
+    const others = [view.bedGroup, view.preview?.group].filter(Boolean).map((o) => [o, o.visible]);
+    for (const [o] of others) o.visible = false;
+    for (const m of meshes) { m.material = mat; m.visible = true; }
+    const out = {};
+    for (const [w, h] of [[32, 32], [300, 300]]) {
+      thumbRenderer.setSize(w, h, false);
+      thumbRenderer.render(view.scene, cam);
+      out[`${w}x${h}`] = thumbRenderer.domElement.toDataURL("image/png").split(",")[1];
+    }
+    for (const [m, mt, v] of meshState) { m.material = mt; m.visible = v; }
+    for (const [o, v] of others) o.visible = v;
+    mat.dispose();
+    return out;
+  } catch {
+    return null;            // no preview is better than no slice
+  }
+}
+
+/* ================================================================ keyboard shortcuts */
+// Modelled on OrcaSlicer's. Ctrl means Cmd on a Mac. Slice is Ctrl+Enter because Ctrl+R reloads a browser page.
+
+let clipboardModel = null;
+
+function viewFrom(dir) {
+  const r = Math.hypot(bed.w, bed.d) * 1.15;
+  const c = new THREE.Vector3(bed.w / 2, bed.d / 2, 0);
+  const d = { top: [0, -0.001, 1], front: [0, -1, 0.25], back: [0, 1, 0.25], left: [-1, 0, 0.25], right: [1, 0, 0.25] }[dir];
+  view.camera.position.copy(c).addScaledVector(new THREE.Vector3(...d).normalize(), r);
+  view.controls.target.copy(c);
+  view.controls.update();
+}
+
+function nudge(dx, dy) {
+  if (!selected) return;
+  for (const mesh of selected.meshes) { mesh.position.x += dx; mesh.position.y += dy; }
+  plateChanged();
+  refresh();
+}
+
+function pasteModel() {
+  const src = clipboardModel;
+  if (!src || !models.includes(src) && !src.geo) return;
+  const m = { id: nextId++, name: src.name, geo: src.geo.clone(), quat: src.quat.clone(), scale: src.scale, meshes: [], box: null,
+    overrides: JSON.parse(JSON.stringify(src.overrides || {})) };
+  models.push(m);
+  setCopies(m, 1);
+  updateBox(m);
+  const ref = src.meshes[src.meshes.length - 1];
+  if (ref) { m.meshes[0].position.x = ref.position.x + m.size.x + GAP; m.meshes[0].position.y = ref.position.y; }
+  selected = m;
+  settle(m.meshes);
+  flash(`Pasted ${m.name}`, "ok");
+}
+
+function onKey(e) {
+  const t = e.target;
+  if (t.closest?.("input, textarea, select, [contenteditable]") || document.querySelector("dialog[open]")) return;
+  const ctrl = e.ctrlKey || e.metaKey;
+  const k = e.key;
+  const handled = () => e.preventDefault();
+  if (ctrl) {
+    const lower = k.toLowerCase();
+    if (k === "Enter") { handled(); $("slice").click(); }
+    else if (lower === "s") { handled(); saveProject(e.shiftKey); }
+    else if (lower === "o") { handled(); openProjects().catch((err) => flash(err.message, "err")); }
+    else if (lower === "i") { handled(); document.querySelector(".file-input")?.click(); }
+    else if (lower === "c" && selected && !window.getSelection()?.toString()) { handled(); clipboardModel = selected; flash(`Copied ${selected.name}`, "ok"); }
+    else if (lower === "v" && clipboardModel) { handled(); pasteModel(); }
+    else if (k === "Delete" || k === "Backspace") { handled(); $("clear").click(); }
+    return;
+  }
+  if (e.altKey) return;
+  if (k === "?") { handled(); $("keys").showModal(); return; }
+  if (k === "Tab" && view.preview?.loaded) { handled(); setViewMode(viewMode === "preview" ? "model" : "preview"); return; }
+  if (viewMode === "preview") {
+    if (k === "ArrowUp" || k === "ArrowDown") {
+      handled();
+      view.preview.setLayer(view.preview.layer + (k === "ArrowUp" ? 1 : -1) * (e.shiftKey ? 10 : 1));
+      renderLayerInfo();
+      return;
+    }
+  }
+  switch (k) {
+    case "Escape": if (pickMode) setPickMode(false); else { selected = null; refresh(); } break;
+    case "Delete": case "Backspace": if (selected) { handled(); $("obj-delete").click(); } return;
+    case "a": case "A": if (models.length) { handled(); arrange(); } return;
+    case "f": case "F": if (selected) { handled(); setPickMode(!pickMode); } return;
+    case "r": case "R":
+      if (selected) { handled(); rotateModel(selected, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), (e.shiftKey ? -1 : 1) * Math.PI / 4)); }
+      return;
+    case "+": case "=": if (selected) { handled(); $("copy-plus").click(); } return;
+    case "-": case "_": if (selected) { handled(); $("copy-minus").click(); } return;
+    case "ArrowLeft": case "ArrowRight": case "ArrowUp": case "ArrowDown":
+      if (selected) {
+        handled();
+        const step = e.shiftKey ? 10 : 1;
+        nudge(k === "ArrowLeft" ? -step : k === "ArrowRight" ? step : 0, k === "ArrowUp" ? step : k === "ArrowDown" ? -step : 0);
+      }
+      return;
+    case "0": handled(); fitView(); return;
+    case "1": handled(); viewFrom("top"); return;
+    case "3": handled(); viewFrom("front"); return;
+    case "4": handled(); viewFrom("back"); return;
+    case "5": handled(); viewFrom("left"); return;
+    case "6": handled(); viewFrom("right"); return;
+    case "z": case "Z": handled(); if (selected) focusModel(selected); else fitView(); return;
+  }
+}
+window.addEventListener("keydown", onKey);
 
 /* ================================================================ main button */
 // One button that follows the job, like OrcaSlicer's: Slice -> Send to <printer>... -> Start print -> Open <printer>.

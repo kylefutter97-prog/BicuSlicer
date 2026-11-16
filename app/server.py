@@ -6,6 +6,7 @@ It has no login of its own: run it behind an authenticating reverse proxy or on 
 """
 
 import asyncio
+import base64
 import json
 import os
 import re
@@ -239,6 +240,43 @@ def build_datadir(job_dir: Path, picks: dict, edits: dict) -> tuple[Path, dict]:
     return dd, files
 
 
+THUMB_SIZE = re.compile(r"^\d{1,4}x\d{1,4}$")
+
+
+def inject_thumbnails(gcode: Path, thumbs: dict) -> int:
+    """Put PNG thumbnails into the G-code the way OrcaSlicer/PrusaSlicer write them (base64 in "; thumbnail
+    begin WxH len" comment blocks right after the header), so Moonraker/Mainsail show a file preview.
+    The headless OrcaSlicer CLI can't render them itself (no OpenGL), so the page renders and sends them."""
+    blocks = []
+    for size, b64 in sorted(thumbs.items(), key=lambda kv: int(kv[0].split("x")[0]) if THUMB_SIZE.match(kv[0]) else 0):
+        if not THUMB_SIZE.match(size) or not isinstance(b64, str):
+            continue
+        try:
+            raw = base64.b64decode(b64, validate=True)
+        except ValueError:
+            continue
+        if raw[:8] != b"\x89PNG\r\n\x1a\n" or len(raw) > 1_500_000:
+            continue
+        data = base64.b64encode(raw).decode()
+        w, h = size.split("x")
+        body = "".join(f"; {data[i:i + 78]}\n" for i in range(0, len(data), 78))
+        blocks.append(f";\n; thumbnail begin {w}x{h} {len(data)}\n{body}; thumbnail end\n;\n")
+    if not blocks:
+        return 0
+    tmp = gcode.with_suffix(".thumb.tmp")
+    with gcode.open("rb") as src, tmp.open("wb") as dst:
+        head = src.read(65536)
+        marker = b"; HEADER_BLOCK_END\n"
+        cut = head.find(marker)
+        cut = cut + len(marker) if cut >= 0 else 0
+        dst.write(head[:cut])
+        dst.write("".join(blocks).encode())
+        dst.write(head[cut:])
+        shutil.copyfileobj(src, dst, 1 << 20)
+    tmp.replace(gcode)
+    return len(blocks)
+
+
 def gcode_filament_mm(gcode: Path) -> float | None:
     """Orca writes '; filament used [mm] = N' in the G-code's summary block (start or end)."""
     pattern = re.compile(r"; filament used \[mm\] = ([\d.]+)")
@@ -288,6 +326,14 @@ async def run_slice(job: dict, form: dict) -> None:
             (job_dir / "slice.log").write_bytes(log)
             shutil.rmtree(dd, ignore_errors=True)
 
+        tj = job_dir / "thumbs.json"
+        if tj.is_file():
+            try:
+                thumbs = json.loads(tj.read_text())
+                for g in out.glob("plate_*.gcode"):
+                    await asyncio.to_thread(inject_thumbnails, g, thumbs if isinstance(thumbs, dict) else {})
+            except (ValueError, OSError):
+                pass            # a missing preview never fails a slice
         result = {}
         rj = out / "result.json"
         if rj.is_file():
@@ -700,6 +746,10 @@ async def api_slice(request: web.Request):
                 form["original"] = part.filename
             elif part.name == "edits":
                 form["edits"] = await part.text()
+            elif part.name == "thumbs":
+                raw = await part.read(decode=False)
+                if len(raw) < 4_000_000:
+                    (job_dir / "thumbs.json").write_bytes(raw)
             elif part.name:
                 form[part.name] = (await part.text())[:200]
         if not model_name:
