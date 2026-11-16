@@ -40,7 +40,7 @@ What the page shows is what gets sliced. The page bakes every placed part into o
 
 ## Requirements
 
-- Docker on an x86-64 or ARM64 host (e.g. a Raspberry Pi 5). The image is about 1.8 GB and contains OrcaSlicer's slicing engine: no separate OrcaSlicer install is needed.
+- Docker on an x86-64 or ARM64 host (e.g. a Raspberry Pi 5), or Docker Desktop on Windows or macOS. The image is about 1.8 GB and contains OrcaSlicer's slicing engine: no separate OrcaSlicer install is needed.
 - Optional: an OrcaSlicer desktop data folder, if you want its user presets available. For example, the linuxserver/orcaslicer desktop container's `/config/.config/OrcaSlicer`. Without one, start from the vendor library or a custom printer.
 - Internet access on first start, to fetch OrcaSlicer's settings catalogue and vendor profiles (see below).
 - A Klipper printer with Moonraker, reachable from the container.
@@ -48,14 +48,30 @@ What the page shows is what gets sliced. The page bakes every placed part into o
 
 ## Quick start
 
+You need [Docker](https://docs.docker.com/engine/install/) with the Compose plugin. On most Linux systems, `curl -fsSL https://get.docker.com | sudo sh` installs both.
+
+**With the published image** (x86-64 and ARM64):
+
 ```sh
-git clone https://github.com/<you>/BicuSlicer.git
+mkdir bicuslicer && cd bicuslicer
+curl -fsSLo docker-compose.yml https://raw.githubusercontent.com/kylefutter97-prog/BicuSlicer/main/docker-compose.example.yml
+docker compose up -d
+```
+
+**Or build it yourself** from the repository:
+
+```sh
+git clone https://github.com/kylefutter97-prog/BicuSlicer.git
 cd BicuSlicer
-cp docker-compose.example.yml docker-compose.yml   # then edit the paths
+cp docker-compose.example.yml docker-compose.yml   # then swap image: for build: . in it
 docker compose up -d --build
 ```
 
 Open `http://<host>:8000`.
+- **First start:** BicuSlicer downloads OrcaSlicer's settings list and vendor profiles (about 25 MB, a few minutes). A setup window then asks for your printer.
+- **Connect your printer:** add it under **Printers**.
+- **Your data:** it lives in the `bicuslicer-data` Docker volume, so it survives updates.
+- **Updating:** run `docker compose pull && docker compose up -d`.
 
 > **There is no login.** Anyone who can reach the port can slice and start prints. Run it on a trusted network, or put it behind an
 > authenticating reverse proxy (Authentik, Authelia, oauth2-proxy, Caddy/nginx basic auth…). Don't expose it to the internet as-is.

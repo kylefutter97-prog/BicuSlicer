@@ -1,19 +1,27 @@
+# BicuSlicer: save this file as docker-compose.yml, then `docker compose up -d` and open http://<host>:8000
 services:
   bicuslicer:
-    build: .
-    image: bicuslicer:local
+    image: ghcr.io/kylefutter97-prog/bicuslicer:latest
+    # Or build it yourself from a clone of the repo instead of pulling the image:
+    # build: .
     container_name: bicuslicer
-    user: "1000:1000"                 # must be able to read the OrcaSlicer folder and write ./data
     environment:
       TZ: Etc/UTC
-      # Printers (Klipper/Moonraker, OctoPrint, PrusaLink, Duet) are added in the page: tap the printer pill.
+      # Printers (Klipper/Moonraker, OctoPrint, PrusaLink, Duet) are added in the page: Printers in the header.
     volumes:
+      # Everything BicuSlicer keeps (presets, projects, printers, jobs, OrcaSlicer's downloaded data).
+      # A Docker-managed volume gets the right owner automatically. To use a host folder instead, create it
+      # owned by uid 1000 first (mkdir data && sudo chown 1000:1000 data) and use ./data:/data.
+      - bicuslicer-data:/data
       # Optional: an OrcaSlicer desktop data folder whose user presets you want to see, read-only.
       # With the linuxserver/orcaslicer desktop container this is <its /config>/.config/OrcaSlicer.
       # - /path/to/orcaslicer/config/.config/OrcaSlicer:/orca:ro
-      - ./data:/data
-      # - ./app:/app:ro                        # development: live code, restart to apply
+      # Development: live code from the repo, restart the container to apply.
+      # - ./app:/app:ro
     ports:
       - "8000:8000"                   # or drop this and reach it through your reverse proxy
     mem_limit: 4g
     restart: unless-stopped
+
+volumes:
+  bicuslicer-data:
