@@ -718,3 +718,13 @@ export function pickPartSetting(exclude = []) {
 export function processValue(key) {
   return valueOf(processBase(), {}, key);
 }
+
+/* ================================================================ projects */
+
+/** Restore a project's presets and unsaved edits. Returns the preset names that aren't available here. */
+export async function applyProjectPresets(presets = {}, edits = {}) {
+  for (const t of TYPES) if (presets[t]) S.selected[t] = presets[t];
+  for (const t of TYPES) S.edits[t] = { ...(edits?.[t] || {}) };
+  await refreshLists(true);
+  return TYPES.filter((t) => presets[t] && S.selected[t] !== presets[t]).map((t) => `${TYPE_LABEL[t].toLowerCase()} "${presets[t]}"`);
+}

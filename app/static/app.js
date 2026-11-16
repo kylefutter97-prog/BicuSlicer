@@ -4,8 +4,8 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, strToU8 } from "three/addons/libs/fflate.module.js";
-import { $, esc, apiJson, confirmBox } from "./util.js";
-import { initSettings, S, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable } from "./settings.js";
+import { $, esc, api, apiJson, postJson, confirmBox, ask, toast } from "./util.js";
+import { initSettings, S, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview } from "./preview.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
 
@@ -269,6 +269,7 @@ function setViewMode(mode) {
 function plateChanged() {
   // the plate or settings no longer match the last slice
   plateVersion++;
+  updateProjectLabel();
   if (currentJob?.status === "done") renderJob(currentJob);
   if (!view.preview?.loaded) return;
   $("preview-stale").hidden = false;
@@ -649,7 +650,7 @@ function renderJob(job) {
     const sent = p.uploaded ? `<p class="msg ok">On ${esc(p.uploaded_name || "the printer")} as <b>${esc(p.uploaded)}</b>${p.started ? " · print started" : ""}</p>` : "";
     let action;
     if (!p.uploaded) action = pr.configured
-      ? `<button class="primary" data-act="upload" data-plate="${p.plate}">Send to ${esc(pr.name)}</button>`
+      ? `<button class="primary" data-act="send" data-plate="${p.plate}">Send to ${esc(pr.name)}…</button>`
       : `<button class="primary" data-act="printers" data-plate="${p.plate}">Add a printer…</button>`;
     else if (!p.started) {
       const ready = pr.idle && (!p.uploaded_to || p.uploaded_to === pr.id);
@@ -724,6 +725,15 @@ async function plateAction(act, plate, btn) {
   if (!jobIsCurrent() && act !== "printers") { renderJob(job); return; }   // never send or start an out-of-date slice
   if (act === "preview") { showPreview(job, plate); return; }
   if (act === "printers") { openPrinters(true); return; }
+  let startNow = false;
+  if (act === "send") {
+    const p = job.plates.find((x) => String(x.plate) === plate);
+    const choice = await sendDialog(p);
+    if (!choice) return;
+    if (!jobIsCurrent()) { renderJob(job); return; }
+    startNow = choice === "print";
+    act = "upload";
+  }
   if (act === "start") {
     const p = job.plates.find((x) => String(x.plate) === plate);
     if (!(await confirmBox(`Start printing ${p.uploaded} (${fmtTime(p.time_s)})? Make sure the bed is clear.`, "Start print"))) return;
@@ -731,10 +741,14 @@ async function plateAction(act, plate, btn) {
   }
   btn.disabled = true;
   const label = btn.textContent;
-  btn.innerHTML = `<span class="spinner"></span>${act === "upload" ? "Sending…" : "Starting…"}`;
+  btn.innerHTML = `<span class="spinner"></span>${act === "upload" ? (startNow ? "Sending and starting…" : "Sending…") : "Starting…"}`;
   try {
-    const target = act === "upload" && printerStatus().id ? `?printer=${printerStatus().id}` : "";
-    await apiJson(`/api/jobs/${job.id}/plates/${plate}/${act}${target}`, { method: "POST" });
+    const q = new URLSearchParams();
+    if (act === "upload" && printerStatus().id) q.set("printer", printerStatus().id);
+    if (startNow) q.set("start", "1");
+    const res = await apiJson(`/api/jobs/${job.id}/plates/${plate}/${act}${q.toString() ? "?" + q : ""}`, { method: "POST" });
+    if (res.note) toast(res.note, "warn");
+    else if (res.started) toast(`Printing on ${res.printer}`);
     currentJob = await apiJson(`/api/jobs/${job.id}`);
     await refreshPrinter();
     renderJob(currentJob);
@@ -743,6 +757,166 @@ async function plateAction(act, plate, btn) {
     btn.textContent = label;
     $("result").insertAdjacentHTML("afterbegin", `<p class="msg err">${esc(e.message)}</p>`);
   }
+}
+
+/* ================================================================ send dialog */
+
+function sendDialog(p) {
+  // like OrcaSlicer's upload dialog: send and start printing, or just send the file
+  const pr = printerStatus();
+  return new Promise((resolve) => {
+    const dlg = $("send");
+    $("send-text").textContent = `Send ${p ? fmtTime(p.time_s) + " of printing" : "this plate"} to ${pr.name}.`;
+    const printBtn = $("send-print");
+    printBtn.disabled = !pr.idle;
+    $("send-note").textContent = pr.idle ? "Make sure the bed is clear before starting."
+      : `${pr.name} can't start now (${pr.online ? pr.message || pr.state || "busy" : "offline"}). You can still send the file and start it later.`;
+    dlg.returnValue = "";
+    dlg.showModal();
+    (pr.idle ? printBtn : $("send-only")).focus();
+    dlg.addEventListener("close", () => resolve(["print", "send"].includes(dlg.returnValue) ? dlg.returnValue : null), { once: true });
+  });
+}
+
+/* ================================================================ projects */
+
+let project = null;            // {id, name} of the open project, or null for an unsaved plate
+let savedVersion = 0;          // plateVersion when the project was last saved or opened
+const projectDirty = () => models.length > 0 && plateVersion !== savedVersion;
+
+function updateProjectLabel() {
+  const el = $("project-name");
+  if (!el) return;
+  el.textContent = project ? project.name : models.length ? "Unsaved plate" : "";
+  el.classList.toggle("dirty", projectDirty());
+  el.title = projectDirty() ? "Unsaved changes" : "";
+}
+
+function meshStl(geo) {
+  // the part's own mesh (centred, unrotated, unscaled) as binary STL
+  const p = geo.getAttribute("position").array;
+  const tris = p.length / 9;
+  const buf = new ArrayBuffer(84 + tris * 50);
+  const dv = new DataView(buf);
+  dv.setUint32(80, tris, true);
+  let o = 84;
+  for (let i = 0; i < p.length; i += 9) {
+    o += 12;
+    for (let k = 0; k < 9; k++) { dv.setFloat32(o, p[i + k], true); o += 4; }
+    o += 2;
+  }
+  return new Blob([buf], { type: "model/stl" });
+}
+
+function thumbnail() {
+  // render the plate (models, not toolpaths) into a small PNG
+  return new Promise((resolve) => {
+    const wasPreview = viewMode === "preview";
+    if (wasPreview) setViewMode("model");
+    const prevSel = selected;
+    selected = null;
+    refresh();
+    view.renderer.render(view.scene, view.camera);
+    const src = view.renderer.domElement;
+    const c = document.createElement("canvas");
+    c.width = 360; c.height = 240;
+    const ctx = c.getContext("2d");
+    const s = Math.max(c.width / src.width, c.height / src.height);
+    ctx.drawImage(src, (c.width - src.width * s) / 2, (c.height - src.height * s) / 2, src.width * s, src.height * s);
+    selected = prevSel;
+    refresh();
+    if (wasPreview) setViewMode("preview");
+    c.toBlob((b) => resolve(b), "image/png");
+  });
+}
+
+async function saveProject(asNew) {
+  if (!models.length) { toast("Add a model first.", "warn"); return; }
+  let name = project?.name;
+  if (asNew || !project) {
+    name = await ask(asNew && project ? "Save a copy as" : "Save project as", project ? `${project.name} copy` : plateName(), "Save");
+    if (!name) return;
+  }
+  const version = plateVersion;
+  const meta = {
+    id: asNew ? undefined : project?.id, name,
+    presets: { ...S.selected }, edits: S.edits,
+    models: models.map((m, i) => ({
+      mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale, overrides: m.overrides,
+      instances: m.meshes.map((x) => [+x.position.x.toFixed(3), +x.position.y.toFixed(3)]),
+    })),
+  };
+  const fd = new FormData();
+  fd.append("project", new Blob([JSON.stringify(meta)], { type: "application/json" }), "project.json");
+  models.forEach((m, i) => fd.append(`mesh_${i}`, meshStl(m.geo), `${i}.stl`));
+  busy("Saving project…");
+  try {
+    const thumb = await thumbnail();
+    if (thumb) fd.append("thumb", thumb, "thumb.png");
+    const r = await apiJson("/api/projects", { method: "POST", body: fd });
+    project = { id: r.id, name: r.name };
+    savedVersion = version;
+    updateProjectLabel();
+    toast(`Saved "${r.name}"`);
+    if ($("projects").open) await loadProjectList();
+  } catch (e) { toast(e.message, "err"); } finally { busy(null); }
+}
+
+async function openProject(id) {
+  if (projectDirty() && !(await confirmBox("Open this project? Unsaved changes to the current plate will be lost.", "Open"))) return;
+  busy("Opening project…");
+  try {
+    const meta = await apiJson(`/api/projects/${id}`);
+    $("projects").close();
+    clearPlate();
+    const missing = await applyProjectPresets(meta.presets, meta.edits);
+    if (!view.renderer) initViewer();
+    for (const pm of meta.models) {
+      const buf = await (await api(`/api/projects/${id}/mesh/${pm.mid}`)).arrayBuffer();
+      const geo = mergeToGeometry(new THREE.Mesh(new STLLoader().parse(buf)));
+      const m = { id: nextId++, name: pm.name, geo, quat: new THREE.Quaternion().fromArray(pm.quat || [0, 0, 0, 1]),
+        scale: pm.scale || 1, meshes: [], box: null, overrides: pm.overrides || {} };
+      models.push(m);
+      setCopies(m, (pm.instances || [[bed.w / 2, bed.d / 2]]).length);
+      updateBox(m);
+      (pm.instances || []).forEach((xy, k) => { if (m.meshes[k]) { m.meshes[k].position.x = xy[0]; m.meshes[k].position.y = xy[1]; } });
+    }
+    selected = null;
+    plateChanged();
+    project = { id: meta.id, name: meta.name };
+    savedVersion = plateVersion;
+    refresh();
+    fitView();
+    updateProjectLabel();
+    toast(missing.length ? `Opened "${meta.name}", but ${missing.join(", ")} isn't available here: using the current one instead.` : `Opened "${meta.name}"`, missing.length ? "warn" : "ok");
+  } catch (e) { toast(e.message, "err"); } finally { busy(null); }
+}
+
+const fmtDate = (t) => (t ? new Date(t * 1000).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" }) : "");
+
+async function loadProjectList() {
+  const rows = await apiJson("/api/projects");
+  $("pj-list").innerHTML = rows.length ? rows.map((r) => `
+    <div class="pj-card${project?.id === r.id ? " current" : ""}">
+      <button class="pj-open" data-pj-open="${r.id}" type="button" aria-label="Open ${esc(r.name)}">
+        ${r.thumb ? `<img src="/api/projects/${r.id}/thumb.png?t=${r.updated}" alt="" loading="lazy">` : `<span class="pj-noimg">No preview</span>`}
+      </button>
+      <div class="pj-info"><b>${esc(r.name)}</b><span class="muted small">${r.parts} part${r.parts === 1 ? "" : "s"} · ${esc(fmtDate(r.updated))}</span>
+        ${r.machine ? `<span class="muted small">${esc(r.machine)}</span>` : ""}</div>
+      <div class="pj-actions">
+        <button class="btn" data-pj-open="${r.id}" type="button">Open</button>
+        <button class="btn" data-pj-rename="${r.id}" data-name="${esc(r.name)}" type="button">Rename</button>
+        <button class="btn danger" data-pj-delete="${r.id}" data-name="${esc(r.name)}" type="button">Delete</button>
+      </div>
+    </div>`).join("") : `<p class="muted">No saved projects yet. Lay out a plate, then Save.</p>`;
+  $("pj-save").disabled = !models.length;
+  $("pj-save").textContent = project ? `Save "${project.name}"` : "Save plate…";
+  $("pj-saveas").hidden = !project;
+}
+
+async function openProjects() {
+  $("projects").showModal();
+  await loadProjectList();
 }
 
 /* ================================================================ wiring */
@@ -774,7 +948,7 @@ $("objects").addEventListener("click", (e) => {
 });
 $("arrange").addEventListener("click", arrange);
 $("view-reset").addEventListener("click", fitView);
-$("clear").addEventListener("click", () => {
+function clearPlate() {
   for (const m of models) for (const mesh of m.meshes) view.scene.remove(mesh);
   for (const m of models) m.geo.dispose();
   plateChanged();
@@ -786,6 +960,13 @@ $("clear").addEventListener("click", () => {
   selected = null;
   $("plate-flash").hidden = true;
   refresh();
+}
+$("clear").addEventListener("click", async () => {
+  if (projectDirty() && !(await confirmBox("Clear the plate? Unsaved changes to this project will be lost.", "Clear", true))) return;
+  clearPlate();
+  project = null;
+  savedVersion = plateVersion;
+  updateProjectLabel();
 });
 $("lay-face").addEventListener("click", () => setPickMode(!pickMode));
 $("auto-orient").addEventListener("click", () => selected && autoOrient(selected));
@@ -840,6 +1021,35 @@ $("obj-delete").addEventListener("click", () => {
   selected = null;
   refresh();
 });
+$("open-projects").addEventListener("click", () => openProjects().catch((e) => toast(e.message, "err")));
+$("save-project").addEventListener("click", () => saveProject(false));
+$("pj-close").addEventListener("click", () => $("projects").close());
+$("pj-save").addEventListener("click", () => saveProject(false));
+$("pj-saveas").addEventListener("click", () => saveProject(true));
+$("pj-list").addEventListener("click", async (e) => {
+  const o = e.target.closest("[data-pj-open]");
+  if (o) { openProject(o.dataset.pjOpen); return; }
+  const r = e.target.closest("[data-pj-rename]");
+  if (r) {
+    const name = await ask("Rename project", r.dataset.name, "Rename");
+    if (!name) return;
+    try {
+      await postJson(`/api/projects/${r.dataset.pjRename}/rename`, { name });
+      if (project?.id === r.dataset.pjRename) { project.name = name; updateProjectLabel(); }
+      await loadProjectList();
+    } catch (err) { toast(err.message, "err"); }
+    return;
+  }
+  const d = e.target.closest("[data-pj-delete]");
+  if (d && await confirmBox(`Delete the project "${d.dataset.name}"? This can't be undone.`, "Delete", true)) {
+    try {
+      await api(`/api/projects/${d.dataset.pjDelete}`, { method: "DELETE" });
+      if (project?.id === d.dataset.pjDelete) { project = null; updateProjectLabel(); }
+      await loadProjectList();
+    } catch (err) { toast(err.message, "err"); }
+  }
+});
+window.addEventListener("beforeunload", (e) => { if (projectDirty()) { e.preventDefault(); e.returnValue = ""; } });
 $("slice").addEventListener("click", slice);
 $("result").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-act]");

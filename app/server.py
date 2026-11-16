@@ -40,6 +40,7 @@ KINDS = P.TYPES
 TOOLS = Path(__file__).parent / "tools"
 PRESET_DIR = DATA_DIR / "presets"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+PROJECTS = DATA_DIR / "projects"
 IDLE_PRINT_STATES = {"standby", "complete", "cancelled", "error"}
 
 slice_lock = asyncio.Lock()
@@ -803,10 +804,26 @@ async def api_upload(request):
     job = get_job(request.match_info["id"])
     pl = plate_of(job, request.match_info["n"])
     p = pick_printer(request, job)
-    remote = await host_call(H.backend(p).upload(JOBS / job["id"] / "out" / pl["file"], gcode_name(job, pl)))
+    b = H.backend(p)
+    start = request.query.get("start") == "1"
+    if start:      # "Send and print": don't upload at all if it couldn't start anyway
+        st = await host_call(b.status())
+        if not st.get("idle"):
+            raise web.HTTPConflict(text=f"{p['name']} isn't ready to start: {st.get('message') or st.get('state') or 'busy'}. Use Send only, or try again when it's free.")
+    remote = await host_call(b.upload(JOBS / job["id"] / "out" / pl["file"], gcode_name(job, pl)))
     pl.update(uploaded=remote, uploaded_to=p["id"], uploaded_name=p["name"], started=None)
     save_meta(job)
-    return web.json_response({"uploaded": remote, "printer": p["name"]})
+    started = False
+    if start:
+        st = await host_call(b.status())          # check again: the upload can take a while
+        if not st.get("idle"):
+            return web.json_response({"uploaded": remote, "printer": p["name"], "started": False,
+                                      "note": f"Sent, but {p['name']} became busy, so it wasn't started"})
+        await host_call(b.start(remote))
+        pl["started"] = time.time()
+        save_meta(job)
+        started = True
+    return web.json_response({"uploaded": remote, "printer": p["name"], "started": started})
 
 
 @routes.post("/api/jobs/{id}/plates/{n}/start")
@@ -824,6 +841,144 @@ async def api_start(request):
     pl["started"] = time.time()
     save_meta(job)
     return web.json_response({"started": pl["uploaded"], "printer": p["name"]})
+
+
+# ---------------------------------------------------------------- projects
+# A project = project.json (presets, unsaved process edits, and per part: name, rotation, scale, copies'
+# positions, per-part settings) + one binary STL per part (its mesh, centred, unrotated) + thumb.png.
+
+PROJECT_ID = re.compile(r"^[0-9a-f]{12}$")
+
+
+def project_dir(pid: str) -> Path:
+    if not PROJECT_ID.match(pid or ""):
+        raise web.HTTPNotFound()
+    return PROJECTS / pid
+
+
+def project_summary(d: Path) -> dict | None:
+    try:
+        j = json.loads((d / "project.json").read_text())
+    except (OSError, ValueError):
+        return None
+    return {"id": d.name, "name": j.get("name") or "Untitled", "created": j.get("created"), "updated": j.get("updated"),
+            "parts": sum(len(m.get("instances") or [1]) for m in j.get("models", [])),
+            "models": len(j.get("models", [])), "machine": (j.get("presets") or {}).get("machine"),
+            "thumb": (d / "thumb.png").is_file()}
+
+
+@routes.get("/api/projects")
+async def api_projects(_):
+    rows = [r for r in (project_summary(d) for d in PROJECTS.iterdir() if d.is_dir()) if r] if PROJECTS.is_dir() else []
+    rows.sort(key=lambda r: r.get("updated") or 0, reverse=True)
+    return web.json_response(rows)
+
+
+@routes.get("/api/projects/{id}")
+async def api_project(request):
+    f = project_dir(request.match_info["id"]) / "project.json"
+    if not f.is_file():
+        raise web.HTTPNotFound(text="No such project")
+    return web.FileResponse(f, headers={"Cache-Control": "no-cache"})
+
+
+@routes.get("/api/projects/{id}/thumb.png")
+async def api_project_thumb(request):
+    f = project_dir(request.match_info["id"]) / "thumb.png"
+    if not f.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(f, headers={"Cache-Control": "no-cache"})
+
+
+@routes.get("/api/projects/{id}/mesh/{mid}")
+async def api_project_mesh(request):
+    mid = request.match_info["mid"]
+    if not mid.isdigit():
+        raise web.HTTPNotFound()
+    f = project_dir(request.match_info["id"]) / f"mesh_{mid}.stl"
+    if not f.is_file():
+        raise web.HTTPNotFound()
+    return web.FileResponse(f, headers={"Cache-Control": "no-cache"})
+
+
+@routes.post("/api/projects")
+async def api_project_save(request):
+    """Multipart: 'project' (JSON; with 'id' to overwrite that project), 'mesh_<mid>' (binary STL per part), 'thumb' (PNG)."""
+    reader = await request.multipart()
+    tmp = PROJECTS / f".tmp-{uuid.uuid4().hex}"
+    tmp.mkdir(parents=True)
+    try:
+        meta = None
+        async for part in reader:
+            if part.name == "project":
+                raw = await part.read(decode=False)
+                if len(raw) > 5_000_000:
+                    raise web.HTTPBadRequest(text="Project data too large")
+                meta = json.loads(raw)
+            elif part.name == "thumb":
+                data = await part.read(decode=False)
+                if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) < 2_000_000:
+                    (tmp / "thumb.png").write_bytes(data)
+            elif part.name and re.fullmatch(r"mesh_\d+", part.name):
+                with (tmp / f"{part.name}.stl").open("wb") as fh:
+                    while chunk := await part.read_chunk(1 << 20):
+                        fh.write(chunk)
+        if not isinstance(meta, dict) or not isinstance(meta.get("models"), list):
+            raise web.HTTPBadRequest(text="Bad project data")
+        for m in meta["models"]:
+            if not (tmp / f"mesh_{int(m.get('mid', -1))}.stl").is_file():
+                raise web.HTTPBadRequest(text=f"Missing mesh for {m.get('name')}")
+        pid = meta.get("id") if PROJECT_ID.match(str(meta.get("id") or "")) and (PROJECTS / str(meta.get("id"))).is_dir() else uuid.uuid4().hex[:12]
+        old = PROJECTS / pid
+        prev = {}
+        if (old / "project.json").is_file():
+            try:
+                prev = json.loads((old / "project.json").read_text())
+            except ValueError:
+                pass
+        now = time.time()
+        meta.update(id=pid, name=str(meta.get("name") or "Untitled").strip()[:120] or "Untitled",
+                    created=prev.get("created") or now, updated=now, version=1)
+        (tmp / "project.json").write_text(json.dumps(meta))
+        if old.exists():
+            trash = PROJECTS / f".old-{uuid.uuid4().hex}"
+            old.rename(trash)
+            tmp.rename(old)
+            shutil.rmtree(trash, ignore_errors=True)
+        else:
+            tmp.rename(old)
+        return web.json_response(project_summary(old))
+    except ValueError:
+        raise web.HTTPBadRequest(text="Bad project data")
+    finally:
+        if tmp.exists():
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+@routes.post("/api/projects/{id}/rename")
+async def api_project_rename(request):
+    d = project_dir(request.match_info["id"])
+    f = d / "project.json"
+    if not f.is_file():
+        raise web.HTTPNotFound(text="No such project")
+    body = await request.json()
+    name = str(body.get("name") or "").strip()[:120]
+    if not name:
+        raise web.HTTPBadRequest(text="Give the project a name")
+    j = json.loads(f.read_text())
+    j["name"] = name
+    j["updated"] = time.time()
+    f.write_text(json.dumps(j))
+    return web.json_response(project_summary(d))
+
+
+@routes.delete("/api/projects/{id}")
+async def api_project_delete(request):
+    d = project_dir(request.match_info["id"])
+    if not d.is_dir():
+        raise web.HTTPNotFound(text="No such project")
+    shutil.rmtree(d)
+    return web.json_response({"deleted": d.name})
 
 
 @web.middleware
@@ -855,6 +1010,9 @@ async def on_startup(app):
 def main():
     JOBS.mkdir(parents=True, exist_ok=True)
     PRESET_DIR.mkdir(parents=True, exist_ok=True)
+    PROJECTS.mkdir(parents=True, exist_ok=True)
+    for leftover in list(PROJECTS.glob(".tmp-*")) + list(PROJECTS.glob(".old-*")):   # interrupted saves
+        shutil.rmtree(leftover, ignore_errors=True)
     shutil.rmtree(DATA_DIR / "tmp", ignore_errors=True)   # leftovers from orient calls
     # jobs that were mid-slice when the container stopped can't finish
     for meta in JOBS.glob("*/meta.json"):

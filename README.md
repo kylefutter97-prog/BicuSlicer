@@ -12,6 +12,7 @@ Lay out a plate in the browser, slice it with the real OrcaSlicer engine using t
   - tap a face to put it on the bed;
   - run OrcaSlicer's own auto-orient and check the result in the 3D view;
   - rotate in fixed steps, scale, add copies, and auto-arrange.
+- **Projects:** save a plate and open it again on any device. A project keeps the parts, their positions, rotations, scale, copies and per-part settings, the chosen presets and unsaved process edits, and a thumbnail. Projects are stored on the server in `DATA_DIR/projects/`.
 - **Per-part settings,** like OrcaSlicer's object settings. Give one part its own infill, walls, shells, layer height, supports, brim, seam, fuzzy skin and so on: any of the ~300 settings OrcaSlicer allows per object, from its `PrintObjectConfig` / `PrintRegionConfig`. They're written into the plate's 3MF (`Metadata/model_settings.config`) for the slicer.
 - **OrcaSlicer's settings, with its Simple / Advanced / Expert modes:** every printer, filament and process setting, laid out in the same pages and groups as the desktop app, with search and help text. The list is generated from OrcaSlicer's own source for the version you run. Changes you haven't saved still apply when you slice.
 - **Profiles:** create, edit, rename, delete, import and export printer, filament and process presets.
@@ -28,7 +29,8 @@ Lay out a plate in the browser, slice it with the real OrcaSlicer engine using t
 - **Physical printers, like OrcaSlicer's:**
   - Add printers with **Moonraker (Klipper)**, **OctoPrint** (also Klipper through Moonraker's OctoPrint compatibility), **PrusaLink** or **Duet (RepRapFirmware)** connections. Each uses OrcaSlicer's fields: host or IP, device UI, API key, HTTP digest user and password, and HTTPS check.
   - Test a connection before saving it, and link a connection to printer presets so choosing a preset picks its printer.
-  - Send G-code, then start the print with a separate, confirmed tap. Starting is refused unless the printer reports it's idle.
+  - Like OrcaSlicer's upload dialog, **Send and print** or **Send only**. Starting is refused unless the printer reports it's idle, and that's checked again just before the print starts.
+  - A slice that no longer matches the plate or settings can't be sent or started.
   - A status pill shows the printer's state and temperatures.
   - Credentials stay on the server (`DATA_DIR/printers.json`, mode 600) and are never sent back to the page.
 

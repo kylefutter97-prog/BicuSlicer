@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
 <title>BicuSlicer</title>
-<link rel="stylesheet" href="/static/style.css?v=11">
+<link rel="stylesheet" href="/static/style.css?v=12">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -20,6 +20,7 @@
     <button type="button" data-mode="expert">Expert</button>
   </div>
   <div class="top-right">
+    <button id="open-projects" class="btn ghost" type="button">Projects</button>
     <button id="open-printers" class="btn ghost" type="button">Printers</button>
     <button id="open-profiles" class="btn ghost" type="button">Profiles</button>
     <button id="printer" class="pill" type="button" title="Printer status">
@@ -32,7 +33,7 @@
   <!-- ======================= plate (3D view) -->
   <section class="card area-plate plate-card">
     <div class="card-head">
-      <h2>Plate</h2>
+      <h2>Plate <span id="project-name" class="project-name"></span></h2>
       <span id="plate-summary" class="muted"></span>
     </div>
     <div class="viewer-wrap">
@@ -70,6 +71,7 @@
         <input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple>
         + Add
       </label>
+      <button class="btn" id="save-project" type="button">Save</button>
       <button class="btn" id="arrange" type="button">Arrange</button>
       <button class="btn" id="view-reset" type="button">Fit view</button>
       <button class="btn danger" id="clear" type="button">Clear</button>
@@ -258,6 +260,28 @@
   </div>
 </dialog>
 
+<!-- ======================= projects -->
+<dialog id="projects" class="sheet projects">
+  <div class="sheet-head"><b>Projects</b><button class="btn icon" id="pj-close" type="button" aria-label="Close">✕</button></div>
+  <div class="wiz-body">
+    <div class="pj-top"><button class="primary" id="pj-save" type="button">Save plate…</button><button class="btn" id="pj-saveas" type="button" hidden>Save as new…</button></div>
+    <div id="pj-list" class="pj-list"></div>
+  </div>
+</dialog>
+
+<!-- ======================= send to printer -->
+<dialog id="send">
+  <form method="dialog">
+    <p id="send-text"></p>
+    <p id="send-note" class="muted small"></p>
+    <div class="actions send-actions">
+      <button value="cancel" class="btn" type="submit">Cancel</button>
+      <button value="send" id="send-only" class="btn" type="submit">Send only</button>
+      <button value="print" id="send-print" class="primary" type="submit">Send and print</button>
+    </div>
+  </form>
+</dialog>
+
 <!-- ======================= per-part setting picker -->
 <dialog id="part-pick" class="sheet part-pick">
   <form method="dialog" class="pp-wrap">
@@ -293,6 +317,6 @@
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 
-<script type="module" src="/static/app.js?v=12"></script>
+<script type="module" src="/static/app.js?v=13"></script>
 </body>
 </html>
