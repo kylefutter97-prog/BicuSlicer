@@ -687,7 +687,7 @@ async function slice() {
   if (!models.length || !layoutOk().fits) return;
   if (!S.selected.machine || !S.selected.process || !S.selected.filament) {
     $("result-card").hidden = false;
-    $("result").innerHTML = `<p class="msg err">Choose a printer, filament and process first.</p>`;
+    $("result").innerHTML = `<p class="msg err">Choose a printer, filament and print settings first.</p>`;
     return;
   }
   const btn = $("slice");

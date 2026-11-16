@@ -12,10 +12,10 @@ Lay out a plate in the browser, slice it with the real OrcaSlicer engine using t
   - tap a face to put it on the bed;
   - run OrcaSlicer's own auto-orient and check the result in the 3D view;
   - rotate in fixed steps, scale, add copies, and auto-arrange.
-- **Projects:** save a plate and open it again on any device. A project keeps the parts, their positions, rotations, scale, copies and per-part settings, the chosen presets and unsaved process edits, and a thumbnail. Projects are stored on the server in `DATA_DIR/projects/`.
+- **Projects:** save a plate and open it again on any device. A project keeps the parts, their positions, rotations, scale, copies and per-part settings, the chosen presets and unsaved print-settings edits, and a thumbnail. Projects are stored on the server in `DATA_DIR/projects/`.
 - **Per-part settings,** like OrcaSlicer's object settings. Give one part its own infill, walls, shells, layer height, supports, brim, seam, fuzzy skin and so on: any of the ~300 settings OrcaSlicer allows per object, from its `PrintObjectConfig` / `PrintRegionConfig`. They're written into the plate's 3MF (`Metadata/model_settings.config`) for the slicer.
-- **OrcaSlicer's settings, with its Simple / Advanced / Expert modes:** every printer, filament and process setting, laid out in the same pages and groups as the desktop app, with search and help text. The list is generated from OrcaSlicer's own source for the version you run. Changes you haven't saved still apply when you slice.
-- **Profiles:** create, edit, rename, delete, import and export printer, filament and process presets.
+- **OrcaSlicer's settings, with its Simple / Advanced / Expert modes** (OrcaSlicer's "process" presets are called *print settings* here): every printer, filament and print setting, laid out in the same pages and groups as the desktop app, with search and help text. The list is generated from OrcaSlicer's own source for the version you run. Changes you haven't saved still apply when you slice.
+- **Profiles:** create, edit, rename, delete, import and export printer, filament and print settings presets.
   - Your presets are kept in BicuSlicer's own store.
   - Presets from an OrcaSlicer desktop data folder and OrcaSlicer's vendor library (70+ brands) appear read-only, and you can save copies to change them.
   - Import takes OrcaSlicer `.json` presets and `.orca_printer` / `.orca_filament` / `.orca_bundle` / `.zip` bundles.
@@ -82,7 +82,7 @@ It saves them to `DATA_DIR/orca/<tag>/`. The CLI also exports OrcaSlicer's built
 
 ## How it works
 
-- **Server:** `app/server.py`, a small [aiohttp](https://docs.aiohttp.org/) app, plus `app/presets.py`, which resolves OrcaSlicer presets (`inherits` chains across your presets, the OrcaSlicer folder and the vendor library) without the GUI. For each job it writes standalone, fully resolved copies of the chosen printer, filament and process presets (with any unsaved changes applied) into a private folder, and runs:
+- **Server:** `app/server.py`, a small [aiohttp](https://docs.aiohttp.org/) app, plus `app/presets.py`, which resolves OrcaSlicer presets (`inherits` chains across your presets, the OrcaSlicer folder and the vendor library) without the GUI. For each job it writes standalone, fully resolved copies of the chosen printer, filament and print settings presets (with any unsaved changes applied) into a private folder, and runs:
 
   ```
   orca-slicer --datadir <job folder> --load-settings "machine.json;process.json" --load-filaments filament.json \

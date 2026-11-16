@@ -3,7 +3,8 @@
 import { $, esc, store, apiJson, postJson, presetUrl, download, saveBlob, toast, ask, confirmBox, api } from "./util.js";
 
 export const TYPES = ["machine", "filament", "process"];
-export const TYPE_LABEL = { machine: "Printer", filament: "Filament", process: "Process" };
+// what the page calls each OrcaSlicer preset type ("process" is OrcaSlicer's internal name for print settings)
+export const TYPE_LABEL = { machine: "Printer", filament: "Filament", process: "Print settings" };
 const MODE_RANK = { simple: 0, advanced: 1, expert: 2, develop: 3 };
 const SOURCE_LABEL = { user: "Mine", orca: "OrcaSlicer", system: "System" };
 
@@ -660,8 +661,8 @@ class PartEditor extends Editor {
     const { edits } = this.get();
     const keys = Object.keys(edits || {}).filter((k) => S.catalog.options[k]);
     this.root.innerHTML = keys.length
-      ? keys.map((k) => this.field(k).replace('class="reset"', 'class="reset remove" title="Remove: use the process setting"')).join("")
-      : `<p class="muted small part-empty">Uses the process settings. Add a setting to change it for this part only.</p>`;
+      ? keys.map((k) => this.field(k).replace('class="reset"', 'class="reset remove" title="Remove: use the print settings value"')).join("")
+      : `<p class="muted small part-empty">Uses the print settings. Add a setting to change it for this part only.</p>`;
   }
 }
 

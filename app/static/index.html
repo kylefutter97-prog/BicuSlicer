@@ -108,7 +108,7 @@
     </div>
   </section>
 
-  <!-- ======================= presets + process settings -->
+  <!-- ======================= presets + print settings -->
   <section class="card area-settings">
     <div class="pickers">
       <div class="picker">
@@ -120,8 +120,8 @@
         <div class="picker-row"><select id="pick-filament"></select><button class="btn icon" id="edit-filament" type="button" title="Edit filament presets" aria-label="Edit filament presets">✎</button></div>
       </div>
       <div class="picker">
-        <label for="pick-process">Process <span class="badge" id="mod-process" hidden></span></label>
-        <div class="picker-row"><select id="pick-process"></select><button class="btn icon" id="edit-process" type="button" title="Manage process presets" aria-label="Manage process presets">✎</button></div>
+        <label for="pick-process">Print settings <span class="badge" id="mod-process" hidden></span></label>
+        <div class="picker-row"><select id="pick-process"></select><button class="btn icon" id="edit-process" type="button" title="Edit print settings presets" aria-label="Edit print settings presets">✎</button></div>
       </div>
     </div>
     <div class="process-bar" id="process-bar" hidden>
@@ -151,7 +151,7 @@
     <div class="seg" role="tablist">
       <button type="button" data-pm-type="machine">Printers</button>
       <button type="button" data-pm-type="filament">Filaments</button>
-      <button type="button" data-pm-type="process">Processes</button>
+      <button type="button" data-pm-type="process">Print settings</button>
     </div>
     <button class="btn icon" id="pm-close" type="button" aria-label="Close">✕</button>
   </div>
@@ -317,6 +317,6 @@
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 
-<script type="module" src="/static/app.js?v=14"></script>
+<script type="module" src="/static/app.js?v=15"></script>
 </body>
 </html>
