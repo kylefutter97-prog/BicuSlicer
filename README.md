@@ -20,7 +20,10 @@ Lay out a plate in the browser, slice it with the real OrcaSlicer engine using t
   - add shapes (box, cylinder, sphere, cone), modifier parts with their own settings, negative parts;
   - one-click brim ears, printable on/off, Fix model (OrcaSlicer's repair), convert inches;
   - export a part as STL or the plate as 3MF;
-  - **paint supports** (enforce / block, or paint every overhang) and **seams** (here / avoid) with a brush.
+  - **paint supports** (enforce / block, or paint every overhang) and **seams** (here / avoid) with a brush;
+  - **undo and redo** (Ctrl+Z, Ctrl+Shift+Z / Ctrl+Y, or ↶ ↷), 60 steps.
+- **Multiple plates, like OrcaSlicer's:** plates side by side with tabs; drag a part onto another plate or use *Move to plate*. Each plate is sliced, sent and printed on its own, keeps its own result, and can have its own name, plate type, print sequence and spiral vase. Arrange spills what doesn't fit onto the next plates.
+- **Open OrcaSlicer / Bambu Studio projects** (what MakerWorld downloads are): plates and their settings, copies, parts with their own settings, modifier and negative parts, and painted supports and seams (written back to the slicer exactly as painted). Optionally take the project's print settings as unsaved changes; speeds and accelerations, tuned for the project's printer, are a separate choice. Your printer and filament stay as they are. Not yet: multi-colour painting, support enforcer/blocker parts, variable layer height.
 - **Projects:** save a plate and open it again on any device. A project keeps the parts, their positions, rotations, scale, copies and per-part settings, the chosen presets and unsaved print-settings edits, and a thumbnail. Projects are stored on the server in `DATA_DIR/projects/`.
 - **Per-part settings,** like OrcaSlicer's object settings. Give one part its own infill, walls, shells, layer height, supports, brim, seam, fuzzy skin and so on: any of the ~300 settings OrcaSlicer allows per object, from its `PrintObjectConfig` / `PrintRegionConfig`. They're written into the plate's 3MF (`Metadata/model_settings.config`) for the slicer.
 - **OrcaSlicer's settings, with its Simple / Advanced / Expert modes** (OrcaSlicer's "process" presets are called *print settings* here): every printer, filament and print setting, laid out in the same pages and groups as the desktop app, with search and help text. The list is generated from OrcaSlicer's own source for the version you run. Changes you haven't saved still apply when you slice.
@@ -94,6 +97,7 @@ Open `http://<host>:8000`.
 | `SLICE_TIMEOUT` | `900` | Seconds before a slice is stopped |
 | `MAX_UPLOAD_MB` | `300` | Largest upload |
 | `PORT` | `8000` | Listen port |
+| `ALLOW_POST_PROCESS` | – | `1` lets print settings run their post-processing scripts. Off by default: OrcaSlicer runs them on the server, and presets and projects can come from anywhere. |
 
 The OrcaSlicer version is the `ORCA_VERSION` build argument (`docker compose build --build-arg ORCA_VERSION=2.5.1`). Build with the same version as any OrcaSlicer desktop install whose presets you import, so presets saved by one version load in the other.
 

@@ -3,9 +3,10 @@ import { OrbitControls } from "three/addons/controls/OrbitControls.js";
 import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
-import { zipSync, strToU8 } from "three/addons/libs/fflate.module.js";
+import { zipSync, unzipSync, strToU8 } from "three/addons/libs/fflate.module.js";
+import { readProject3mf, paintState, projectPlateOrigin, transformPositions } from "./project3mf.js";
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
-import { initSettings, S, bedChoices, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
+import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview } from "./preview.js";
 import * as MO from "./meshops.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
@@ -207,9 +208,25 @@ async function addFiles(files) {
   const ok = /\.(stl|3mf|obj)$/i;
   for (const f of files.filter((x) => !ok.test(x.name))) problems.push(`${f.name}: use an STL, 3MF or OBJ file`);
   files = files.filter((x) => ok.test(x.name));
+  const projects = [];
   for (const f of files) {
     busy(`Loading ${f.name}…`);
     try {
+      if (/\.3mf$/i.test(f.name)) {
+        // OrcaSlicer / Bambu projects open with their plates, parts and settings (after the plain files);
+        // other 3MFs come in object by object. Anything this reader can't follow falls back to the generic loader.
+        let proj = null;
+        try { proj = readProject3mf(unzipSync(new Uint8Array(await f.arrayBuffer()))); } catch (e) { console.warn("3MF reader:", e); }
+        if (proj?.objects.length) {
+          if (proj.isProject) { projects.push([f.name, proj]); continue; }
+          for (const ob of proj.objects) for (const { m, copies } of partsFromObject(ob, new Set(S.catalog?.part_options || []), new Set())) {
+            models.push(m); setCopies(m, copies.length); updateBox(m);
+            added.push(...m.meshes);
+            selected = m;
+          }
+          continue;
+        }
+      }
       const geo = await parseFile(f);
       const m = newModelRecord(f.name.replace(/\.[^.]+$/, ""), geo);
       models.push(m);
@@ -222,9 +239,185 @@ async function addFiles(files) {
     }
   }
   busy(null);
-  settle(added);
-  fitView();
+  if (added.length) { settle(added); fitView(); }
   if (problems.length) flash(problems.join(" · "), "err");
+  for (const [name, proj] of projects) await openProject3mf(name, proj);
+}
+
+/* ---- OrcaSlicer / Bambu Studio / MakerWorld projects */
+
+function geoFrom(pos, flip) {
+  // triangle soup -> geometry; a mirroring transform turns faces inside out, so swap two corners back
+  if (flip) for (let i = 0; i < pos.length; i += 9) for (let k = 0; k < 3; k++) { const t = pos[i + 3 + k]; pos[i + 3 + k] = pos[i + 6 + k]; pos[i + 6 + k] = t; }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  return g;
+}
+
+const partSettings = (o, allowed) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => allowed.has(k) && k !== "extruder"));
+
+/** One object of a 3MF -> BicuSlicer parts: copies that share a rotation and scale become one part with copies. */
+function partsFromObject(ob, allowed, notes) {
+  const out = [];
+  const groups = new Map();
+  ob.items.forEach((it, i) => { const k = it.transform.slice(0, 9).map((x) => x.toFixed(6)).join(","); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
+  const normals = ob.parts.filter((p) => p.subtype === "normal_part");
+  if (!normals.length) return out;
+  for (const p of ob.parts) if (!["normal_part", "modifier_part", "negative_part"].includes(p.subtype)) notes.add(`${p.subtype.replace(/_/g, " ")}s aren't supported yet, so they were left out.`);
+  if (normals.length > 1 && normals.some((p) => Object.keys(partSettings(p.settings, allowed)).length))
+    notes.add(`${ob.name}: settings of its separate parts apply to the whole part here.`);
+  for (const idx of groups.values()) {
+    const t0 = ob.items[idx[0]].transform;
+    const R = [...t0.slice(0, 9), 0, 0, 0];
+    const det = R[0] * (R[4] * R[8] - R[5] * R[7]) - R[1] * (R[3] * R[8] - R[5] * R[6]) + R[2] * (R[3] * R[7] - R[4] * R[6]);
+    const total = normals.reduce((n, q) => n + q.pos.length, 0);
+    const pos = new Float32Array(total);
+    const raw = { supports: null, seam: null };
+    let off = 0, tri = 0;
+    for (const q of normals) {
+      pos.set(transformPositions(q.pos, R), off);
+      for (const k of ["supports", "seam"]) if (q.paint[k]) { raw[k] ||= new Array(total / 9); q.paint[k].forEach((v, i) => { if (v) raw[k][tri + i] = v; }); }
+      off += q.pos.length; tri += q.pos.length / 9;
+    }
+    const geo = geoFrom(pos, det < 0);
+    geo.computeBoundingBox();
+    const minZ = geo.boundingBox.min.z;
+    const c = centered(geo);
+    const m = newModelRecord(ob.name, geo);
+    m.overrides = { ...partSettings(ob.settings, allowed), ...(normals.length === 1 ? partSettings(normals[0].settings, allowed) : {}) };
+    m.printable = ob.items[idx[0]].printable;
+    if (raw.supports || raw.seam) {
+      const states = (a) => (a ? Uint8Array.from({ length: total / 9 }, (_, i) => (a[i] ? paintState(a[i]) : 0)) : null);
+      m.paint = { supports: states(raw.supports), seam: states(raw.seam) };
+      if (det > 0) m.paintRaw = raw;      // kept exactly as painted, for the slicer
+    }
+    for (const q of ob.parts) {
+      if (q.subtype !== "modifier_part" && q.subtype !== "negative_part") continue;
+      const vg = geoFrom(transformPositions(q.pos, R), det < 0);
+      const vc = centered(vg);
+      vg.computeBoundingBox();
+      const size = vg.boundingBox.getSize(new THREE.Vector3());
+      const v = { id: nextId++, kind: q.subtype === "negative_part" ? "negative" : "modifier", shape: "mesh",
+        name: q.name || (q.subtype === "negative_part" ? "Negative part" : "Modifier"), size: size.clone(),
+        pos: new THREE.Vector3(vc.x - c.x, vc.y - c.y, vc.z - minZ), overrides: q.subtype === "modifier_part" ? partSettings(q.settings, allowed) : {},
+        base: vg, baseSize: size.clone() };
+      v.geo = volumeGeo(v);
+      m.volumes.push(v);
+    }
+    // each copy's centre where the project had it: the transform moves the (rotated) centre c by its translation
+    out.push({ m, copies: idx.map((i) => ({ item: i, x: c.x + ob.items[i].transform[9], y: c.y + ob.items[i].transform[10] })) });
+  }
+  return out;
+}
+
+function importDialog(name, proj, diff) {
+  const dlg = $("import-dlg");
+  const parts = proj.objects.reduce((n, o) => n + o.items.length, 0);
+  const nPlates = Math.max(1, proj.plates.length);
+  const painted = proj.objects.some((o) => o.parts.some((p) => p.paint.supports || p.paint.seam));
+  const mods = proj.objects.reduce((n, o) => n + o.parts.filter((p) => p.subtype !== "normal_part").length, 0);
+  const own = proj.objects.filter((o) => Object.keys(o.settings).length || o.parts.some((p) => Object.keys(p.settings).length)).length;
+  const made = [proj.settings?.printer_settings_id, proj.settings?.print_settings_id].filter(Boolean).map(String);
+  $("imp-title").textContent = proj.title || name.replace(/(\.gcode)?\.3mf$/i, "");
+  $("imp-summary").innerHTML = [
+    `${parts} part${parts === 1 ? "" : "s"} on ${nPlates} plate${nPlates === 1 ? "" : "s"}`,
+    mods ? `${mods} modifier or negative part${mods === 1 ? "" : "s"}` : "",
+    own ? `${own} part${own === 1 ? " has" : "s have"} their own settings` : "",
+    painted ? "Painted supports or seams" : "",
+    made.length ? `Made with ${made.map(esc).join(" · ")}${proj.app ? ` in ${esc(proj.app)}` : ""}` : proj.app ? `Made in ${esc(proj.app)}` : "",
+    ...proj.notes.map((n) => `<span class="warn-text">${esc(n)}</span>`),
+  ].filter(Boolean).map((x) => `<li>${x}</li>`).join("");
+  $("imp-mode-wrap").hidden = !models.length;
+  const nq = Object.keys(diff.quality).length, ns = Object.keys(diff.speed).length;
+  $("imp-set-wrap").hidden = !(nq + ns);
+  $("imp-settings").checked = nq > 0;
+  $("imp-settings-text").textContent = `Use its print settings: ${nq} differ from yours (layer height, walls, infill, supports…)`;
+  const shown = diff.groups.slice(0, 6).map(([g, labs]) => (labs.length === 1 && labs[0].toLowerCase().includes(g.toLowerCase()) ? labs[0] : `${g}: ${labs.join(", ").toLowerCase()}`));
+  $("imp-settings-list").textContent = shown.join(" · ") + (diff.groups.length > 6 ? ` · and ${diff.groups.slice(6).reduce((n, [, l]) => n + l.length, 0)} more` : "");
+  $("imp-speeds-wrap").hidden = !ns;
+  $("imp-speeds").checked = false;
+  $("imp-speeds-text").textContent = `Also its ${ns} speed and acceleration setting${ns === 1 ? "" : "s"}${proj.settings?.printer_settings_id ? ` (tuned for ${proj.settings.printer_settings_id})` : ""}`;
+  dlg.returnValue = "";
+  dlg.showModal();
+  return new Promise((resolve) => dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" ? {
+    replace: !models.length || dlg.querySelector("input[name=imp-mode]:checked")?.value !== "add",
+    settings: $("imp-settings").checked && !$("imp-set-wrap").hidden, speeds: $("imp-speeds").checked && !$("imp-speeds-wrap").hidden,
+  } : null), { once: true }));
+}
+
+async function openProject3mf(name, proj) {
+  const diff = projectSettingsDiff(proj.settings);
+  const choice = await importDialog(name, proj, diff);
+  if (!choice) return;
+  if (choice.replace && projectDirty() && !(await confirmBox("Replace the plates? Unsaved changes to them will be lost.", "Replace", true))) return;
+  busy(`Opening ${name}…`);
+  await new Promise((r) => setTimeout(r, 30));
+  try {
+    if (!view.renderer) initViewer();
+    const notes = new Set(proj.notes);
+    if (choice.replace) { clearPlate(); project = null; }
+    const nP = Math.max(1, proj.plates.length);
+    // where the project's plates go: from plate 1 when replacing; after the last plate with parts when adding
+    const lastUsed = plates.reduce((a, p, i) => (meshesOn(i).length ? i : a), -1);
+    const base = choice.replace ? 0 : nP === 1 && !meshesOn(cur).length ? cur : lastUsed + 1;
+    const bedIds = new Set(bedChoices().map((b) => b.v));
+    for (let i = 0; i < nP; i++) {
+      if (!plates[base + i]) plates.push(newPlate());
+      const pp = proj.plates[i];
+      if (pp && (choice.replace || !meshesOn(base + i).length)) {
+        Object.assign(plates[base + i], { name: pp.name || "", bedType: bedIds.has(pp.bedType) ? pp.bedType : "", seq: pp.seq || "", spiral: pp.spiral || "" });
+      }
+    }
+    const onPlate = new Map();
+    proj.plates.forEach((pp, i) => { for (const [oid, k] of pp.instances) onPlate.set(`${oid}#${k}`, i); });
+    const allowed = new Set(S.catalog?.part_options || []);
+    const placed = new Map();          // our plate index -> copies placed there
+    for (const ob of proj.objects) {
+      for (const { m, copies } of partsFromObject(ob, allowed, notes)) {
+        models.push(m);
+        setCopies(m, copies.length);
+        updateBox(m);
+        copies.forEach((cp, k) => {
+          const pi = onPlate.get(`${ob.id}#${cp.item}`) ?? 0;
+          const o = proj.bed ? projectPlateOrigin(pi, nP, proj.bed) : { x: 0, y: 0 };
+          const mesh = m.meshes[k];
+          mesh.position.x = plateX(base + pi) + (cp.x - o.x);
+          mesh.position.y = cp.y - o.y;
+          if (!placed.has(base + pi)) placed.set(base + pi, []);
+          placed.get(base + pi).push(mesh);
+        });
+      }
+    }
+    // keep each plate's layout; if it's off this bed, centre it, and if it doesn't fit at all, arrange it
+    for (const [pi, list] of placed) {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const mesh of list) { const f = footprint(mesh.userData.model, mesh); x0 = Math.min(x0, f.x0); y0 = Math.min(y0, f.y0); x1 = Math.max(x1, f.x1); y1 = Math.max(y1, f.y1); }
+      const ox = plateX(pi);
+      const inside = x0 >= ox - 0.5 && x1 <= ox + bed.w + 0.5 && y0 >= -0.5 && y1 <= bed.d + 0.5;
+      if (inside && !list.some(overlapsOthers)) continue;
+      if (x1 - x0 <= bed.w && y1 - y0 <= bed.d) {
+        const dx = ox + (bed.w - (x1 - x0)) / 2 - x0, dy = (bed.d - (y1 - y0)) / 2 - y0;
+        for (const mesh of list) { mesh.position.x += dx; mesh.position.y += dy; }
+        if (!list.some(overlapsOthers)) continue;
+      }
+      arrange(pi);
+    }
+    if (choice.settings) applyProcessEdits({ ...diff.quality, ...(choice.speeds ? diff.speed : {}) });
+    if (proj.extra["layer_heights_profile.txt"] || proj.extra["layer_config_ranges.xml"]) notes.add("Variable layer heights and height ranges in this project aren't used yet.");
+    selected = null; multi.clear(); selectedVolume = null;
+    if (choice.replace) cur = 0;
+    drawBed();
+    plateChanged();
+    refresh();
+    fitView();
+    showPlateResult();
+    const n = [...placed.values()].reduce((a, l) => a + l.length, 0);
+    flash(`Opened ${proj.title || name}: ${n} part${n === 1 ? "" : "s"} on ${placed.size} plate${placed.size === 1 ? "" : "s"}.${notes.size ? " " + [...notes].join(" ") : ""}`, notes.size ? "warn" : "ok");
+  } catch (e) {
+    flash(`Couldn't open ${name}: ${e.message}`, "err");
+  } finally {
+    busy(null);
+  }
 }
 
 /* ---------------------------------------------------------------- model maths */
@@ -279,6 +472,7 @@ function replaceGeo(m, geo) {
   m.quat.identity();
   m.scale.set(1, 1, 1);
   m.paint = null;
+  m.paintRaw = null;
   m.meshes.forEach((x, i) => { x.geometry = geo; x.position.x = keepXY[i][0] + c.x; x.position.y = keepXY[i][1] + c.y; });
   updateBox(m);
 }
@@ -287,6 +481,10 @@ function replaceGeo(m, geo) {
 
 function volumeGeo(v) {
   const s = v.size;
+  if (v.shape === "mesh") {      // a modifier / negative part brought in with a project: its own mesh, resized
+    const b = v.baseSize;
+    return MO.bake(v.base, new THREE.Matrix4().makeScale(s.x / (b.x || 1), s.y / (b.y || 1), s.z / (b.z || 1)));
+  }
   const g = v.shape === "cylinder" ? MO.cylinder(1, 1) : v.shape === "sphere" ? MO.sphere(1) : v.shape === "cone" ? MO.cone(1, 1) : MO.box(1, 1, 1);
   return MO.bake(g, new THREE.Matrix4().makeScale(s.x, s.y, s.z));
 }
@@ -416,7 +614,8 @@ function takeSnapshot() {
         copies: m.meshes.map((x) => [x.position.x, x.position.y]),
         overrides: JSON.stringify(m.overrides || {}), printable: m.printable !== false,
         volumes: (m.volumes || []).map((v) => ({ id: v.id, name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(),
-          pos: v.pos.toArray(), overrides: JSON.stringify(v.overrides || {}), geo: v.geo })),
+          pos: v.pos.toArray(), overrides: JSON.stringify(v.overrides || {}), geo: v.geo, base: v.base, baseSize: v.baseSize?.toArray() })),
+        paintRaw: m.paintRaw || null,
         paintRev: m.paintRev || 0,
         paint: m.paint ? { fine: !!m.paint.fine, supports: keepOrCopy(m.paint.supports, op?.supports), seam: keepOrCopy(m.paint.seam, op?.seam) } : null,
       };
@@ -424,7 +623,7 @@ function takeSnapshot() {
   };
   snap.key = JSON.stringify(snap.plates) + JSON.stringify(snap.models.map((sm) => [sm.id, sm.name, sm.geo.uuid, sm.quat, sm.scale, sm.copies, sm.overrides, sm.printable,
     sm.volumes.map((v) => [v.id, v.name, v.kind, v.shape, v.size, v.pos, v.overrides, v.geo.uuid]),
-    sm.paint && [sm.paint.fine, arrId(sm.paint.supports), arrId(sm.paint.seam)]]));
+    sm.paint && [sm.paint.fine, arrId(sm.paint.supports), arrId(sm.paint.seam)], arrId(sm.paintRaw)]));
   return snap;
 }
 
@@ -484,7 +683,9 @@ function restoreSnapshot(s) {
       m.overrides = JSON.parse(sm.overrides);
       m.printable = sm.printable;
       m.volumes = sm.volumes.map((v) => ({ id: v.id, name: v.name, kind: v.kind, shape: v.shape, size: new THREE.Vector3().fromArray(v.size),
-        pos: new THREE.Vector3().fromArray(v.pos), overrides: JSON.parse(v.overrides), geo: v.geo }));
+        pos: new THREE.Vector3().fromArray(v.pos), overrides: JSON.parse(v.overrides), geo: v.geo,
+        ...(v.base ? { base: v.base, baseSize: new THREE.Vector3().fromArray(v.baseSize) } : {}) }));
+      m.paintRaw = sm.paintRaw;
       // painting changes the arrays in place, so the part gets its own copies
       m.paint = sm.paint ? { fine: sm.paint.fine, supports: sm.paint.supports?.slice() ?? null, seam: sm.paint.seam?.slice() ?? null } : null;
       models.push(m);
@@ -938,6 +1139,7 @@ const fmtMm = (v) => v.toFixed(v < 100 ? 1 : 0);
 function refresh() {
   const has = models.length > 0;
   $("empty").hidden = has;
+  if (!has) $("preview-controls").hidden = true;      // nothing on the plates (e.g. after undo): no layers to show
   $("plate-tools").hidden = !has;
   $("tip").hidden = !has;
   $("parts-card").hidden = !has;
@@ -997,7 +1199,7 @@ function refresh() {
 
 /* ================================================================ slicing */
 
-function meshXml(geo, matrix, paint) {
+function meshXml(geo, matrix, paint, raw = null) {
   // a 3MF <mesh> with the vertices baked into plate coordinates; identical corners become one vertex.
   // paint (optional): per-triangle paint states for supports / seam, written the way OrcaSlicer reads them.
   const p = geo.getAttribute("position").array;
@@ -1015,13 +1217,14 @@ function meshXml(geo, matrix, paint) {
     vx.push(`<vertex x="${(e[0] * x + e[4] * y + e[8] * z + e[12]).toFixed(4)}" y="${(e[1] * x + e[5] * y + e[9] * z + e[13]).toFixed(4)}" z="${(e[2] * x + e[6] * y + e[10] * z + e[14]).toFixed(4)}"/>`);
   }
   const flip = matrix.determinant() < 0;      // a mirrored transform turns faces inside out: swap two corners back
+  if (flip) raw = null;                       // painted sub-triangles follow the corner order: use the plain states
   const tx = [];
   for (let t = 0; t < tris.length; t += 3) {
     const a = tris[t], b = flip ? tris[t + 2] : tris[t + 1], c = flip ? tris[t + 1] : tris[t + 2];
     if (a === b || b === c || a === c) continue;
     const k = t / 3;
-    const ps = paint?.supports ? MO.paintCode(paint.supports[k]) : "";
-    const pm = paint?.seam ? MO.paintCode(paint.seam[k]) : "";
+    const ps = raw?.supports?.[k] || (paint?.supports ? MO.paintCode(paint.supports[k]) : "");
+    const pm = raw?.seam?.[k] || (paint?.seam ? MO.paintCode(paint.seam[k]) : "");
     tx.push(`<triangle v1="${a}" v2="${b}" v3="${c}"${ps ? ` paint_supports="${ps}"` : ""}${pm ? ` paint_seam="${pm}"` : ""}/>`);
   }
   return `<mesh><vertices>${vx.join("")}</vertices><triangles>${tx.join("")}</triangles></mesh>`;
@@ -1044,7 +1247,7 @@ function build3mf(pi = cur) {
       if (plateOf(mesh) !== pi) continue;
       mesh.updateMatrixWorld(true);
       const bodyId = id++;
-      objects.push(`<object id="${bodyId}" type="model" name="${esc(m.name)}">${meshXml(m.geo, toPlate.clone().multiply(mesh.matrixWorld), m.paint)}</object>`);
+      objects.push(`<object id="${bodyId}" type="model" name="${esc(m.name)}">${meshXml(m.geo, toPlate.clone().multiply(mesh.matrixWorld), m.paint, m.paintRaw)}</object>`);
       if (!m.volumes.length) {
         // per-part settings: OrcaSlicer reads them from Metadata/model_settings.config, keyed by object id
         configs.push(`  <object id="${bodyId}">\n    <metadata key="name" value="${esc(m.name)}"/>\n${metaXml(m.overrides, "    ")}  </object>`);
@@ -1092,7 +1295,7 @@ function plateKey(pi) {
   return JSON.stringify([settingsVersion, S.bedType, p.bedType, p.seq, p.spiral, models.map((m) => {
     if (m.printable === false) return null;
     const c = m.meshes.filter((x) => plateOf(x) === pi).map((x) => [+(x.position.x - ox).toFixed(3), +x.position.y.toFixed(3)]);
-    return c.length ? [m.id, m.geo.uuid, m.quat.toArray(), m.scale.toArray(), c, m.overrides, m.paintRev || 0,
+    return c.length ? [m.id, m.geo.uuid, m.quat.toArray(), m.scale.toArray(), c, m.overrides, m.paintRev || 0, arrId(m.paintRaw),
       m.volumes.map((v) => [v.kind, v.size.toArray(), v.pos.toArray(), v.overrides, v.geo.uuid])] : null;
   }).filter(Boolean)]);
 }
@@ -1706,6 +1909,7 @@ function startPaint(target) {
         r.geo.computeVertexNormals();
         r.geo.computeBoundingSphere();
         m.geo = r.geo;
+        m.paintRaw = null;      // a project's painting continues at the detail shown (finer than that is approximated)
         for (const mesh of m.meshes) mesh.geometry = r.geo;
         m.paint = { supports: remap(old?.supports), seam: remap(old?.seam), fine: true };
       }
@@ -1872,6 +2076,7 @@ function pasteModel() {
   m.printable = src.printable !== false;
   m.volumes = (src.volumes || []).map((v) => ({ ...v, id: nextId++, size: v.size.clone(), pos: v.pos.clone(), overrides: { ...v.overrides }, geo: v.geo.clone() }));
   if (src.paint) m.paint = { supports: src.paint.supports?.slice() || null, seam: src.paint.seam?.slice() || null };
+  m.paintRaw = src.paintRaw || null;
   models.push(m);
   setCopies(m, 1);
   updateBox(m);
@@ -2053,14 +2258,18 @@ async function saveProject(asNew) {
     if (!name) return;
   }
   const version = plateVersion;
+  const extraMeshes = [];      // mesh-shaped modifiers, stored after the parts' meshes
+  const sparse = (a) => (a ? Object.fromEntries(a.flatMap((v, i) => (v ? [[i, v]] : []))) : null);
   const meta = {
     id: asNew ? undefined : project?.id, name,
     presets: { ...S.selected, bed_type: S.bedType }, edits: S.edits,
     plates: plates.map((p) => ({ name: p.name, bed_type: p.bedType, print_sequence: p.seq, spiral_mode: p.spiral })),
     models: models.map((m, i) => ({
       mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale.toArray(), overrides: m.overrides, printable: m.printable !== false,
-      volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides })),
+      volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides,
+        ...(v.shape === "mesh" ? { vmid: extraMeshes.push(v.base) - 1 + models.length, base_size: v.baseSize.toArray() } : {}) })),
       paint: m.paint ? { supports: m.paint.supports ? b64(m.paint.supports) : null, seam: m.paint.seam ? b64(m.paint.seam) : null } : null,
+      paint_raw: m.paintRaw ? { supports: sparse(m.paintRaw.supports), seam: sparse(m.paintRaw.seam) } : null,
       // [x, y, plate]: x and y on that plate
       instances: m.meshes.map((x) => { const pi = plateOf(x); return [+(x.position.x - plateX(pi)).toFixed(3), +x.position.y.toFixed(3), pi]; }),
     })),
@@ -2068,6 +2277,7 @@ async function saveProject(asNew) {
   const fd = new FormData();
   fd.append("project", new Blob([JSON.stringify(meta)], { type: "application/json" }), "project.json");
   models.forEach((m, i) => fd.append(`mesh_${i}`, meshStl(m.geo), `${i}.stl`));
+  extraMeshes.forEach((g, j) => fd.append(`mesh_${models.length + j}`, meshStl(g), `${models.length + j}.stl`));
   busy("Saving project…");
   try {
     const thumb = await thumbnail();
@@ -2104,16 +2314,26 @@ async function openProject(id) {
       if (Array.isArray(pm.scale)) m.scale.fromArray(pm.scale); else m.scale.setScalar(pm.scale || 1);
       m.overrides = pm.overrides || {};
       m.printable = pm.printable !== false;
-      m.volumes = (pm.volumes || []).map((v) => {
+      m.volumes = [];
+      for (const v of pm.volumes || []) {
         const vol = { id: nextId++, name: v.name, kind: v.kind, shape: v.shape, size: new THREE.Vector3().fromArray(v.size),
           pos: new THREE.Vector3().fromArray(v.pos), overrides: v.overrides || {} };
+        if (v.shape === "mesh") {
+          const vb = await (await api(`/api/projects/${id}/mesh/${v.vmid}`)).arrayBuffer();
+          vol.base = mergeToGeometry(new THREE.Mesh(new STLLoader().parse(vb)));
+          vol.baseSize = new THREE.Vector3().fromArray(v.base_size);
+        }
         vol.geo = volumeGeo(vol);
-        return vol;
-      });
+        m.volumes.push(vol);
+      }
       // painted triangles line up with the saved mesh only if it wasn't recentred differently: the mesh is stored centred
       const tris = geo.getAttribute("position").count / 3;
       const unb = (x) => { const a = x ? unb64(x) : null; return a && a.length === tris ? a : null; };
       if (pm.paint) m.paint = { supports: unb(pm.paint.supports), seam: unb(pm.paint.seam) };
+      if (pm.paint_raw) {
+        const arr = (o) => { if (!o) return null; const a = new Array(tris); for (const [i, v] of Object.entries(o)) if (+i < tris) a[+i] = v; return a; };
+        m.paintRaw = { supports: arr(pm.paint_raw.supports), seam: arr(pm.paint_raw.seam) };
+      }
       models.push(m);
       setCopies(m, (pm.instances || [[bed.w / 2, bed.d / 2, 0]]).length);
       updateBox(m);

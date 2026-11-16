@@ -869,3 +869,48 @@ export async function applyProjectPresets(presets = {}, edits = {}) {
   await refreshLists(true);
   return TYPES.filter((t) => presets[t] && S.selected[t] !== presets[t]).map((t) => `${TYPE_LABEL[t].toLowerCase()} "${presets[t]}"`);
 }
+
+/* ================================================================ settings from an opened OrcaSlicer / Bambu project */
+
+// Never taken from a downloaded project: post-processing runs programs on the slicing machine, G-code is the
+// printer's business, and filament slots refer to the project's (multi-material) printer, not yours.
+const NEVER_FROM_PROJECT = /^(post_process|filename_format|notes|.*gcode.*|.*_filament|filament_.*|flush_.*|wipe_tower_.*|prime_tower_.*|enable_prime_tower|inherits|name|print_settings_id|compatible_.*|from|version|setting_id|instantiation)$/;
+const asText = (v) => (Array.isArray(v) ? v.map(String).join(",") : String(v ?? ""));
+
+/** The print settings in a project (its whole config) that differ from yours: { quality: {k: v}, speed: {k: v} }. */
+export function projectSettingsDiff(cfg) {
+  const out = { quality: {}, speed: {}, groups: [] };     // groups: [section, [labels]] of the quality changes, for showing
+  const mine = S.detail.process?.values;
+  if (!cfg || !mine) return out;
+  for (const p of S.catalog?.layouts?.process || []) {
+    const speedPage = /speed/i.test(p.page);
+    for (const g of p.groups) for (const k of g.options) {
+      if (!(k in cfg) || NEVER_FROM_PROJECT.test(k)) continue;
+      // compare with what you'd slice with now: your edit, else the preset, else OrcaSlicer's default
+      const cur = valueOf(S.detail.process, S.edits.process, k);
+      if (cur === undefined || asText(cfg[k]) === asText(cur)) continue;
+      // an old-style value (e.g. 0 for what is now a choice) is read by OrcaSlicer as its new equivalent: can't compare
+      const ev = S.catalog.options[k]?.enum_values;
+      if (ev?.length && !ev.includes(asText(cur))) continue;
+      const v = Array.isArray(cfg[k]) && !Array.isArray(cur) ? cfg[k][0] : cfg[k];
+      const speed = speedPage || /accel|jerk|speed/.test(k);
+      (speed ? out.speed : out.quality)[k] = v;
+      if (!speed) {
+        const lab = S.catalog.options[k]?.label || k;
+        const last = out.groups[out.groups.length - 1];
+        if (last && last[0] === g.title) last[1].push(lab); else out.groups.push([g.title, [lab]]);
+      }
+    }
+  }
+  return out;
+}
+
+/** Take setting changes as unsaved edits to the print settings (like typing them in). */
+export function applyProcessEdits(changes) {
+  Object.assign(S.edits.process, changes);
+  renderPickers();
+  processEditor?.render();
+  onChange("edits");
+}
+
+export const settingLabel = (k) => S.catalog?.options?.[k]?.full_label || S.catalog?.options?.[k]?.label || k;

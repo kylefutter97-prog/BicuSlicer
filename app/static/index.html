@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=23">
+<link rel="stylesheet" href="/static/style.css?v=24">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -398,6 +398,24 @@
   </form>
 </dialog>
 
+<dialog id="import-dlg">
+  <form method="dialog" class="import-dlg">
+    <p class="imp-head"><span class="muted small">Open project</span><b id="imp-title"></b></p>
+    <ul id="imp-summary" class="imp-summary"></ul>
+    <div id="imp-mode-wrap" class="imp-group">
+      <label class="check-inline"><input type="radio" name="imp-mode" value="replace" checked> Replace what's on the plates</label>
+      <label class="check-inline"><input type="radio" name="imp-mode" value="add"> Add it to them</label>
+    </div>
+    <div id="imp-set-wrap" class="imp-group">
+      <label class="check-inline"><input type="checkbox" id="imp-settings"> <span id="imp-settings-text"></span></label>
+      <p class="muted small imp-list" id="imp-settings-list"></p>
+      <label class="check-inline" id="imp-speeds-wrap"><input type="checkbox" id="imp-speeds"> <span id="imp-speeds-text"></span></label>
+      <p class="muted small">Your printer and filament stay as they are. The settings become unsaved changes you can review, save or discard.</p>
+    </div>
+    <div class="actions"><button value="cancel" type="submit" formnovalidate>Cancel</button><button value="ok" class="primary" type="submit">Open</button></div>
+  </form>
+</dialog>
+
 <dialog id="plate-dlg">
   <form method="dialog" class="plate-dlg">
     <p><b id="plate-dlg-title">Plate</b> <span class="muted small">settings for this plate only</span></p>
@@ -474,6 +492,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=25"></script>
+<script type="module" src="/static/app.js?v=26"></script>
 </body>
 </html>

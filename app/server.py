@@ -14,6 +14,7 @@ import shutil
 import sys
 import time
 import uuid
+import zipfile
 from pathlib import Path
 
 import aiohttp
@@ -37,6 +38,13 @@ MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "300"))
 STATIC = Path(__file__).parent / "static"
 JOBS = DATA_DIR / "jobs"
 MODEL_EXT = {".stl", ".3mf", ".obj"}   # the Orca CLI cannot read STEP (GUI only)
+# OrcaSlicer runs a print profile's post-processing scripts on the machine that slices, which here is the server, for
+# anyone who can open the page, with presets and projects imported from anywhere. So they're switched off unless the
+# person running BicuSlicer opts in.
+ALLOW_POST_PROCESS = os.environ.get("ALLOW_POST_PROCESS", "") == "1"
+# What of an uploaded 3MF reaches the slicer: geometry, per-object settings and layer height data. Not embedded
+# project settings, presets or G-code (the chosen presets are what counts, and they must not be overridden).
+KEEP_3MF_METADATA = {"metadata/model_settings.config", "metadata/layer_heights_profile.txt", "metadata/layer_config_ranges.xml"}
 KINDS = P.TYPES
 TOOLS = Path(__file__).parent / "tools"
 PRESET_DIR = DATA_DIR / "presets"
@@ -244,10 +252,37 @@ def build_datadir(job_dir: Path, picks: dict, edits: dict) -> tuple[Path, dict]:
                 flat["compatible_prints_condition"] = ""
         d = dd / "user" / "default" / t
         d.mkdir(parents=True, exist_ok=True)
+        if not ALLOW_POST_PROCESS:
+            # removed, not emptied: OrcaSlicer's default is no scripts, and an explicit [] crashes the 2.5.1 CLI
+            flat.pop("post_process", None)
         f = d / f"{name}.json"
         f.write_text(json.dumps(flat, indent=4))
         files[t] = f
     return dd, files
+
+
+def clean_3mf(path: Path) -> None:
+    """Rewrite an uploaded 3MF without embedded project settings, presets, G-code or post-processing settings."""
+    try:
+        with zipfile.ZipFile(path) as z:
+            infos = z.infolist()
+            drop = {i.filename for i in infos if i.filename.lower().startswith("metadata/") and i.filename.lower() not in KEEP_3MF_METADATA}
+            ms = next((i for i in infos if i.filename.lower() == "metadata/model_settings.config"), None)
+            risky = ms is not None and b"post_process" in z.read(ms)
+            if not drop and not risky:
+                return
+            tmp = path.with_name(path.name + ".clean")
+            with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as out:
+                for i in infos:
+                    if i.filename in drop:
+                        continue
+                    data = z.read(i)
+                    if i is ms:
+                        data = re.sub(rb'<metadata\s+key="post_process"[^>]*/>', b"", data)
+                    out.writestr(i, data, compress_type=zipfile.ZIP_DEFLATED)
+        tmp.replace(path)
+    except zipfile.BadZipFile:
+        raise ValueError("That 3MF file is damaged (it isn't a valid zip)")
 
 
 THUMB_SIZE = re.compile(r"^\d{1,4}x\d{1,4}$")
@@ -311,6 +346,8 @@ async def run_slice(job: dict, form: dict) -> None:
             job["status"] = "slicing"
             job["started"] = time.time()
             save_meta(job)
+            if job["model"].endswith(".3mf"):
+                await asyncio.to_thread(clean_3mf, job_dir / job["model"])
             dd, files = await asyncio.to_thread(build_datadir, job_dir, {t: form[t] for t in KINDS}, job["edits"])
             out.mkdir(exist_ok=True)
             cmd = [ORCA_BIN, "--datadir", str(dd),
