@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
 <title>BicuSlicer</title>
-<link rel="stylesheet" href="/static/style.css?v=9">
+<link rel="stylesheet" href="/static/style.css?v=10">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -100,7 +100,9 @@
           <div class="stepper"><button class="btn" id="copy-minus" type="button" aria-label="Remove a copy">−</button><b id="copy-count">1</b><button class="btn" id="copy-plus" type="button" aria-label="Add a copy">+</button></div>
         </label>
       </div>
-      <div class="toolbar"><button class="btn danger" id="obj-delete" type="button">Remove</button></div>
+      <div class="group-label">Settings for this part <span class="muted" id="part-count"></span></div>
+      <div id="part-settings" class="part-settings"></div>
+      <div class="toolbar"><button class="btn" id="part-add" type="button">+ Add setting</button><button class="btn danger" id="obj-delete" type="button">Remove part</button></div>
     </div>
   </section>
 
@@ -256,6 +258,17 @@
   </div>
 </dialog>
 
+<!-- ======================= per-part setting picker -->
+<dialog id="part-pick" class="sheet part-pick">
+  <form method="dialog" class="pp-wrap">
+    <div class="sheet-head"><b>Add a setting for this part</b><button class="btn icon" value="cancel" type="submit" aria-label="Close">✕</button></div>
+    <div class="pp-body">
+      <input id="pp-search" class="search" type="search" placeholder="Search settings (e.g. infill, walls, support)">
+      <ul id="pp-list" class="pp-list"></ul>
+    </div>
+  </form>
+</dialog>
+
 <!-- ======================= small dialogs -->
 <dialog id="newp">
   <form method="dialog">
@@ -280,6 +293,6 @@
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 
-<script type="module" src="/static/app.js?v=9"></script>
+<script type="module" src="/static/app.js?v=10"></script>
 </body>
 </html>

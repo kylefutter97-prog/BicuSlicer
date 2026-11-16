@@ -12,6 +12,7 @@ Lay out a plate in the browser, slice it with the real OrcaSlicer engine using t
   - tap a face to put it on the bed;
   - run OrcaSlicer's own auto-orient and check the result in the 3D view;
   - rotate in fixed steps, scale, add copies, and auto-arrange.
+- **Per-part settings,** like OrcaSlicer's object settings. Give one part its own infill, walls, shells, layer height, supports, brim, seam, fuzzy skin and so on: any of the ~300 settings OrcaSlicer allows per object, from its `PrintObjectConfig` / `PrintRegionConfig`. They're written into the plate's 3MF (`Metadata/model_settings.config`) for the slicer.
 - **OrcaSlicer's settings, with its Simple / Advanced / Expert modes:** every printer, filament and process setting, laid out in the same pages and groups as the desktop app, with search and help text. The list is generated from OrcaSlicer's own source for the version you run. Changes you haven't saved still apply when you slice.
 - **Profiles:** create, edit, rename, delete, import and export printer, filament and process presets.
   - Your presets are kept in BicuSlicer's own store.

@@ -337,3 +337,17 @@ a.btn { text-decoration: none; display: inline-flex; align-items: center; justif
 .pr-form-foot { flex-wrap: wrap; }
 .pr-form-foot .btn, .pr-form-foot .primary { min-width: 0; flex: 0 1 auto; }
 #pr-form .field input[type=password] { font-family: inherit; }
+
+/* ================================================================ per-part settings */
+.part-settings { margin-top: 6px; }
+.part-settings .opt { grid-template-columns: minmax(0, 1fr) minmax(0, 52%); border-left-color: color-mix(in srgb, var(--accent) 55%, transparent); }
+.part-settings .reset.remove { color: var(--bad); }
+.part-empty { margin: 6px 0 2px; }
+.part-badge { color: var(--accent); font-weight: 600; }
+dialog.sheet.part-pick { width: min(560px, 96vw); height: min(720px, 88vh); }
+.pp-wrap { display: flex; flex-direction: column; height: 100%; margin: 0; }
+.pp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px; }
+.pp-list { list-style: none; margin: 0; padding: 0; overflow: auto; flex: 1; min-height: 0; }
+.pp-head { position: sticky; top: 0; background: var(--card); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); padding: 10px 4px 4px; }
+.pp-item { display: block; width: 100%; text-align: left; padding: 9px 10px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 15px; }
+.pp-item:hover, .pp-item:focus-visible { background: var(--field); }

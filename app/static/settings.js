@@ -637,3 +637,83 @@ export function machineValues() {
   const d = S.detail.machine;
   return d ? { ...d.values, ...S.edits.machine } : {};
 }
+
+/* ================================================================ per-part settings */
+
+// The process preset as it will be sliced (saved values + unsaved edits), as the base for part overrides.
+function processBase() {
+  const d = S.detail.process;
+  return { name: d?.name, values: { ...(d?.values || {}), ...S.edits.process }, own: [], parent: {}, inherits: "", editable: false };
+}
+
+class PartEditor extends Editor {
+  render() {
+    if (!S.catalog) { this.root.innerHTML = `<p class="muted small">Loading OrcaSlicer's settings list…</p>`; return; }
+    const { edits } = this.get();
+    const keys = Object.keys(edits || {}).filter((k) => S.catalog.options[k]);
+    this.root.innerHTML = keys.length
+      ? keys.map((k) => this.field(k).replace('class="reset"', 'class="reset remove" title="Remove: use the process setting"')).join("")
+      : `<p class="muted small part-empty">Uses the process settings. Add a setting to change it for this part only.</p>`;
+  }
+}
+
+export function partOptionsAvailable() { return !!S.catalog?.part_options?.length; }
+
+/** A settings list for one part. getOverrides() returns the part's overrides object (or null); onChange() after any change. */
+export function createPartEditor(root, getOverrides, onChange) {
+  const ed = new PartEditor(root, "process", () => ({ detail: processBase(), edits: getOverrides() || {} }), (k, v) => {
+    const o = getOverrides();
+    if (!o) return;
+    if (v === undefined) delete o[k]; else o[k] = v;
+    ed.render();
+    onChange();
+  });
+  return ed;
+}
+
+/** Ask which per-part setting to add; resolves to a setting key or null. */
+export function pickPartSetting(exclude = []) {
+  return new Promise((resolve) => {
+    const dlg = $("part-pick");
+    const list = $("pp-list");
+    const search = $("pp-search");
+    const allowed = new Set(S.catalog?.part_options || []);
+    const skip = new Set(exclude);
+    const rank = MODE_RANK[S.mode] ?? 0;
+    const render = () => {
+      const q = search.value.trim().toLowerCase();
+      const html = [];
+      for (const p of S.catalog?.layouts?.process || []) {
+        for (const g of p.groups) {
+          const keys = g.options.filter((k) => {
+            const o = S.catalog.options[k];
+            if (!o || !allowed.has(k) || skip.has(k)) return false;
+            if (q) return `${o.label || ""} ${o.full_label || ""} ${k} ${g.title} ${p.page}`.toLowerCase().includes(q);
+            return (MODE_RANK[o.mode] ?? 1) <= rank;
+          });
+          if (!keys.length) continue;
+          html.push(`<li class="pp-head">${esc(p.page)} › ${esc(g.title)}</li>` + keys.map((k) =>
+            `<li><button type="button" class="pp-item" data-key="${k}">${esc(S.catalog.options[k].label || S.catalog.options[k].full_label || k)}</button></li>`).join(""));
+        }
+      }
+      list.innerHTML = html.join("") || `<li class="muted small">${q ? "No per-part settings match." : "Nothing in this mode: try Advanced or Expert, or search."}</li>`;
+    };
+    const onClick = (e) => { const b = e.target.closest("[data-key]"); if (b) { dlg.returnValue = b.dataset.key; dlg.close(); } };
+    search.value = "";
+    render();
+    search.oninput = render;
+    list.addEventListener("click", onClick);
+    dlg.returnValue = "";
+    dlg.showModal();
+    search.focus();
+    dlg.addEventListener("close", () => {
+      list.removeEventListener("click", onClick);
+      resolve(dlg.returnValue && dlg.returnValue !== "cancel" ? dlg.returnValue : null);
+    }, { once: true });
+  });
+}
+
+/** The value a newly added part setting starts from: what the process would use. */
+export function processValue(key) {
+  return valueOf(processBase(), {}, key);
+}

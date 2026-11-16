@@ -5,7 +5,7 @@ import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, strToU8 } from "three/addons/libs/fflate.module.js";
 import { $, esc, apiJson, confirmBox } from "./util.js";
-import { initSettings, S, machineValues } from "./settings.js";
+import { initSettings, S, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable } from "./settings.js";
 import { Preview } from "./preview.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
 
@@ -152,7 +152,7 @@ async function addFiles(files) {
     busy(`Loading ${f.name}…`);
     try {
       const geo = await parseFile(f);
-      const m = { id: nextId++, name: f.name.replace(/\.[^.]+$/, ""), geo, quat: new THREE.Quaternion(), scale: 1, meshes: [], box: null };
+      const m = { id: nextId++, name: f.name.replace(/\.[^.]+$/, ""), geo, quat: new THREE.Quaternion(), scale: 1, meshes: [], box: null, overrides: {} };
       models.push(m);
       setCopies(m, 1);
       updateBox(m);
@@ -528,7 +528,7 @@ function refresh() {
   $("objects").innerHTML = models.map((m) => `
     <li class="${m === selected ? "sel" : ""}${ok.off.has(m) || ok.tall.has(m) ? " bad" : ""}" data-id="${m.id}">
       <span class="name">${esc(m.name)}</span>
-      <span class="muted small">${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
+      <span class="muted small">${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
     </li>`).join("");
   const panel = $("obj-panel");
   panel.hidden = !selected;
@@ -537,6 +537,10 @@ function refresh() {
     $("obj-size").textContent = `${fmtMm(selected.size.x)} × ${fmtMm(selected.size.y)} × ${fmtMm(selected.size.z)} mm`;
     if (document.activeElement !== $("obj-scale")) $("obj-scale").value = Math.round(selected.scale * 1000) / 10;
     $("copy-count").textContent = selected.meshes.length;
+    if (partEditor.model !== selected) { partEditor.model = selected; partEditor.render(); }
+    const n = Object.keys(selected.overrides).length;
+    $("part-count").textContent = n ? `· ${n}` : "";
+    $("part-add").disabled = !partOptionsAvailable();
   }
   let warn = "";
   if (ok.tall.size) warn = `Too tall for this printer (max ${bed.h} mm): ${[...ok.tall].map((m) => m.name).join(", ")}.`;
@@ -552,7 +556,7 @@ function refresh() {
 
 function build3mf() {
   // One 3MF object per placed part, vertices baked in bed coordinates (what the slicer sees is what's on screen).
-  const objects = [], items = [];
+  const objects = [], items = [], configs = [];
   let id = 1;
   for (const m of models) {
     const p = m.geo.getAttribute("position").array;
@@ -578,6 +582,9 @@ function build3mf() {
         if (a !== b && b !== c && a !== c) tx.push(`<triangle v1="${a}" v2="${b}" v3="${c}"/>`);
       }
       objects.push(`<object id="${id}" type="model" name="${esc(m.name)}"><mesh><vertices>${vx.join("")}</vertices><triangles>${tx.join("")}</triangles></mesh></object>`);
+      // per-part settings: OrcaSlicer reads them from Metadata/model_settings.config, keyed by object id
+      configs.push(`  <object id="${id}">\n    <metadata key="name" value="${esc(m.name)}"/>\n${Object.entries(m.overrides).map(([k, v]) =>
+        `    <metadata key="${esc(k)}" value="${esc(Array.isArray(v) ? v.join(",") : v)}"/>\n`).join("")}  </object>`);
       items.push(`<item objectid="${id}"/>`);
       id++;
     }
@@ -587,6 +594,7 @@ function build3mf() {
     "[Content_Types].xml": strToU8('<?xml version="1.0" encoding="UTF-8"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="model" ContentType="application/vnd.ms-package.3dmanufacturing-3dmodel+xml"/></Types>'),
     "_rels/.rels": strToU8('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>'),
     "3D/3dmodel.model": strToU8(model),
+    "Metadata/model_settings.config": strToU8(`<?xml version="1.0" encoding="UTF-8"?>\n<config>\n${configs.join("\n")}\n</config>\n`),
   }, { level: 6 });
   return new Blob([zip], { type: "model/3mf" });
 }
@@ -780,6 +788,17 @@ $("obj-scale").addEventListener("change", () => {
   selected.scale = v / 100;
   updateBox(selected);
   settle(selected.meshes);
+});
+const partEditor = createPartEditor($("part-settings"), () => selected?.overrides || null, () => { plateChanged(); refresh(); });
+$("part-add").addEventListener("click", async () => {
+  if (!selected) return;
+  const key = await pickPartSetting(Object.keys(selected.overrides));
+  if (!key || !selected) return;
+  selected.overrides[key] = processValue(key);
+  partEditor.render();
+  plateChanged();
+  refresh();
+  $("part-settings").querySelector(`[data-key="${key}"]`)?.focus();
 });
 $("copy-plus").addEventListener("click", () => {
   if (!selected || selected.meshes.length >= MAX_COPIES) return;

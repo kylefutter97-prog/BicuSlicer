@@ -95,6 +95,12 @@ async def ensure_orca_data() -> None:
             out, _ = await proc.communicate()
             if proc.returncode != 0:
                 raise RuntimeError(out.decode("utf-8", "replace").strip().splitlines()[-1:] or "download failed")
+        if not (d / "scopes.json").is_file():
+            # which settings may be set per part (OrcaSlicer's object/region config classes)
+            proc = await asyncio.create_subprocess_exec(sys.executable or "python3", str(TOOLS / "orca_scopes.py"), "--tag", tag,
+                                                        "--out", str(d), stdout=asyncio.subprocess.DEVNULL,
+                                                        stderr=asyncio.subprocess.DEVNULL)
+            await proc.wait()       # optional: without it the page just can't offer per-part settings
         if not (d / "defaults.json").is_file():
             work = DATA_DIR / "tmp" / uuid.uuid4().hex
             work.mkdir(parents=True)
@@ -361,12 +367,27 @@ async def api_state(_):
     })
 
 
+_catalog_cache: dict = {}
+
+
 @routes.get("/api/catalog")
 async def api_catalog(_):
     f = orca["dir"] / "catalog.json" if orca["dir"] else None
     if not f or not f.is_file():
         raise web.HTTPServiceUnavailable(text=f"Settings catalogue not available yet ({orca['status']})")
-    return web.FileResponse(f, headers={"Cache-Control": "max-age=3600"})
+    sc = f.parent / "scopes.json"
+    key = (str(f), f.stat().st_mtime, sc.stat().st_mtime if sc.is_file() else 0)
+    if _catalog_cache.get("key") != key:
+        cat = json.loads(f.read_text())
+        part = []
+        if sc.is_file():
+            scopes = json.loads(sc.read_text())
+            allowed = set(scopes.get("object", [])) | set(scopes.get("region", []))
+            part = [k for k in cat.get("type_options", {}).get("process", []) if k in allowed and k in cat["options"]]
+        cat["part_options"] = part          # process settings OrcaSlicer allows per part
+        _catalog_cache.update(key=key, body=json.dumps(cat).encode())
+    return web.Response(body=_catalog_cache["body"], content_type="application/json",
+                        headers={"Cache-Control": "no-cache"})
 
 
 @routes.get("/api/defaults")
