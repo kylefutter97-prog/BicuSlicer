@@ -6,6 +6,7 @@ import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, strToU8 } from "three/addons/libs/fflate.module.js";
 import { $, esc, apiJson, confirmBox } from "./util.js";
 import { initSettings, S, machineValues } from "./settings.js";
+import { Preview } from "./preview.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const DOWN = new THREE.Vector3(0, 0, -1);
@@ -49,6 +50,7 @@ function initViewer() {
   new ResizeObserver(resize).observe(el);
   renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
   wirePointer();
+  view.preview = new Preview(scene);
   resize();
 }
 
@@ -237,12 +239,75 @@ function overlapsOthers(mesh) {
 }
 
 // Keep the user's placement; only re-arrange when the given parts don't fit or land on top of something.
+/* ---------------------------------------------------------------- layer preview */
+
+let viewMode = "model";
+let previewKey = null;          // "<job>/<plate>" currently loaded
+
+function setViewMode(mode) {
+  if (mode === "preview" && !view.preview?.loaded) mode = "model";
+  viewMode = mode;
+  for (const m of models) for (const mesh of m.meshes) mesh.visible = mode === "model";
+  view.preview?.setVisible(mode === "preview");
+  for (const b of document.querySelectorAll("[data-view]")) b.classList.toggle("on", b.dataset.view === mode);
+  $("pv-layers").hidden = $("legend").hidden = mode !== "preview";
+  $("layer-text").hidden = mode !== "preview";
+  if (mode === "preview") setPickMode(false);
+  $("tip").textContent = mode === "preview"
+    ? "Drag to turn the view · pinch or scroll to zoom · slide to step through the layers"
+    : "Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom";
+}
+
+function plateChanged() {
+  // the plate no longer matches the last slice
+  if (!view.preview?.loaded) return;
+  $("preview-stale").hidden = false;
+  if (viewMode === "preview") setViewMode("model");
+}
+
+function renderLayerInfo() {
+  const p = view.preview;
+  if (!p.loaded) return;
+  $("layer").max = p.layers;
+  $("layer").value = p.layer + 1;
+  $("layer-text").textContent = `Layer ${p.layer + 1} of ${p.layers} · Z ${p.data.z[p.layer].toFixed(2)} mm`;
+}
+
+function renderLegend() {
+  $("legend").innerHTML = view.preview.legend().map((f) =>
+    `<label class="lg${f.visible ? "" : " off"}"><input type="checkbox" data-feat="${f.i}" ${f.visible ? "checked" : ""}><span class="sw" style="background:${esc(f.color)}"></span>${esc(f.name)}</label>`).join("");
+}
+
+async function showPreview(job, plate) {
+  const key = `${job.id}/${plate}`;
+  try {
+    if (previewKey !== key) {
+      busy("Loading layer preview…");
+      view.preview.clear();
+      previewKey = null;
+      await view.preview.load(`/api/jobs/${job.id}/plates/${plate}/preview`);
+      previewKey = key;
+      $("show-travel").checked = view.preview.showTravel;
+      renderLegend();
+    }
+    $("preview-stale").hidden = true;
+    $("preview-controls").hidden = false;
+    renderLayerInfo();
+    setViewMode("preview");
+  } catch (e) {
+    flash(e.message, "err");
+  } finally {
+    busy(null);
+  }
+}
+
 function settle(newMeshes = []) {
   if (!layoutOk().fits || newMeshes.some(overlapsOthers)) arrange();
   else refresh();
 }
 
 function arrange() {
+  plateChanged();
   // Shelf packing: tallest-footprint parts first, rows left→right, then centre the block on the bed.
   const items = [];
   for (const m of models) for (const mesh of m.meshes) items.push({ m, mesh, w: m.size.x, d: m.size.y });
@@ -348,6 +413,7 @@ function wirePointer() {
 
   el.addEventListener("pointerdown", (e) => {
     pointers.add(e.pointerId);
+    if (viewMode === "preview") { down = null; return; }   // layers view: the pointer only turns the view
     if (pointers.size > 1) {                  // second finger: hand over to zoom/pan
       if (drag) endDrag();
       down = null;
@@ -381,7 +447,7 @@ function wirePointer() {
     drag = null;
     view.controls.enabled = true;
     view.el.classList.remove("dragging");
-    if (wasMoved) refresh();
+    if (wasMoved) { plateChanged(); refresh(); }
     return wasMoved;
   }
 
@@ -566,6 +632,7 @@ function renderJob(job) {
       </div>
       ${sent}
       <div class="actions">
+        <button class="btn" data-act="preview" data-plate="${p.plate}" type="button">Layers</button>
         <a class="btn" href="/api/jobs/${job.id}/plates/${p.plate}/gcode">Download</a>
         ${action}
       </div></div>`;
@@ -606,7 +673,8 @@ async function slice() {
     fd.append("model", build3mf(), "plate.3mf");
     $("result").innerHTML = `<p><span class="spinner"></span>Uploading…</p>`;
     const job = await apiJson("/api/slice", { method: "POST", body: fd });
-    await poll(job.id);
+    const done = await poll(job.id);
+    if (done.status === "done" && done.plates?.length) showPreview(done, done.plates[0].plate);
   } catch (e) {
     $("result").innerHTML = `<p class="msg err">${esc(e.message)}</p>`;
   } finally {
@@ -617,6 +685,7 @@ async function slice() {
 
 async function plateAction(act, plate, btn) {
   const job = currentJob;
+  if (act === "preview") { showPreview(job, plate); return; }
   if (act === "start") {
     const p = job.plates.find((x) => String(x.plate) === plate);
     if (!(await confirmBox(`Start printing ${p.uploaded} (${fmtTime(p.time_s)})? Make sure the bed is clear.`, "Start print"))) return;
@@ -667,6 +736,17 @@ for (const input of document.querySelectorAll(".file-input")) {
     await addFiles(files);
   });
 }
+for (const b of document.querySelectorAll("[data-view]")) b.addEventListener("click", () => setViewMode(b.dataset.view));
+$("layer").addEventListener("input", (e) => { view.preview.setLayer(Number(e.target.value) - 1); renderLayerInfo(); });
+$("layer-down").addEventListener("click", () => { view.preview.setLayer(view.preview.layer - 1); renderLayerInfo(); });
+$("layer-up").addEventListener("click", () => { view.preview.setLayer(view.preview.layer + 1); renderLayerInfo(); });
+$("show-travel").addEventListener("change", (e) => { view.preview.showTravel = e.target.checked; view.preview.setLayer(view.preview.layer); });
+$("legend").addEventListener("change", (e) => {
+  const i = e.target.dataset.feat;
+  if (i === undefined) return;
+  view.preview.setFeature(Number(i), e.target.checked);
+  renderLegend();
+});
 $("objects").addEventListener("click", (e) => {
   const li = e.target.closest("li[data-id]");
   if (!li) return;
@@ -680,6 +760,10 @@ $("clear").addEventListener("click", () => {
   for (const m of models) for (const mesh of m.meshes) view.scene.remove(mesh);
   for (const m of models) m.geo.dispose();
   models.length = 0;
+  view.preview.clear();
+  previewKey = null;
+  $("preview-controls").hidden = true;
+  setViewMode("model");
   selected = null;
   $("plate-flash").hidden = true;
   refresh();
@@ -716,12 +800,13 @@ $("copy-plus").addEventListener("click", () => {
   mesh.position.x += selected.size.x + GAP;
   settle([mesh]);
 });
-$("copy-minus").addEventListener("click", () => { if (selected) { setCopies(selected, selected.meshes.length - 1); refresh(); } });
+$("copy-minus").addEventListener("click", () => { if (selected) { setCopies(selected, selected.meshes.length - 1); plateChanged(); refresh(); } });
 $("obj-delete").addEventListener("click", () => {
   if (!selected) return;
   for (const mesh of selected.meshes) view.scene.remove(mesh);
   selected.geo.dispose();
   models.splice(models.indexOf(selected), 1);
+  plateChanged();
   selected = null;
   refresh();
 });

@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
 <title>BicuSlicer</title>
-<link rel="stylesheet" href="/static/style.css?v=6">
+<link rel="stylesheet" href="/static/style.css?v=7">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -45,6 +45,22 @@
       </div>
       <div id="hint" class="hint" hidden></div>
       <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text"></span></div>
+    </div>
+    <div id="preview-controls" class="preview-controls" hidden>
+      <div class="pv-top">
+        <div class="seg view-seg" role="group" aria-label="View">
+          <button type="button" data-view="model">Model</button>
+          <button type="button" data-view="preview">Layers</button>
+        </div>
+        <label class="check-inline"><input type="checkbox" id="show-travel"> Travel</label>
+      </div>
+      <div class="pv-layers" id="pv-layers">
+        <button class="btn icon" id="layer-down" type="button" aria-label="Previous layer">−</button>
+        <input type="range" id="layer" min="1" max="1" value="1" aria-label="Layer">
+        <button class="btn icon" id="layer-up" type="button" aria-label="Next layer">+</button>
+      </div>
+      <div class="pv-info"><span id="layer-text"></span><span id="preview-stale" class="stale" hidden>Plate changed since this slice</span></div>
+      <div class="legend" id="legend"></div>
     </div>
     <p id="plate-msg" class="msg warn" hidden></p>
     <p id="plate-flash" class="msg" hidden></p>
@@ -224,6 +240,6 @@
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 
-<script type="module" src="/static/app.js?v=5"></script>
+<script type="module" src="/static/app.js?v=7"></script>
 </body>
 </html>

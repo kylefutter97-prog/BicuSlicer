@@ -17,6 +17,7 @@ from pathlib import Path
 import aiohttp
 from aiohttp import web
 
+import gcode_preview
 import presets as P
 
 ORCA_BIN = os.environ.get("ORCA_BIN", "/opt/orcaslicer/bin/orca-slicer")
@@ -693,6 +694,35 @@ async def api_gcode(request):
     pl = plate_of(job, request.match_info["n"])
     return web.FileResponse(JOBS / job["id"] / "out" / pl["file"],
                             headers={"Content-Disposition": f'attachment; filename="{gcode_name(job, pl)}"'})
+
+
+preview_lock = asyncio.Semaphore(2)
+
+
+@routes.get("/api/jobs/{id}/plates/{n}/preview")
+async def api_preview(request):
+    """Compact toolpaths for the layer preview (built from the G-code on first request, then cached)."""
+    job = get_job(request.match_info["id"])
+    pl = plate_of(job, request.match_info["n"])
+    out = JOBS / job["id"] / "out"
+    bin_path = out / f"plate_{pl['plate']}.preview"
+    gz_path = out / f"plate_{pl['plate']}.preview.gz"
+    if not gz_path.is_file():
+        async with preview_lock:
+            if not gz_path.is_file():
+                def make():
+                    import gzip
+                    gcode_preview.build(out / pl["file"], bin_path)
+                    tmp = gz_path.with_suffix(".tmp")
+                    tmp.write_bytes(gzip.compress(bin_path.read_bytes(), 6))
+                    tmp.replace(gz_path)
+                    bin_path.unlink(missing_ok=True)
+                await asyncio.to_thread(make)
+    if "gzip" in request.headers.get("Accept-Encoding", ""):
+        return web.Response(body=gz_path.read_bytes(), content_type="application/octet-stream",
+                            headers={"Content-Encoding": "gzip", "Cache-Control": "private, max-age=86400"})
+    import gzip
+    return web.Response(body=gzip.decompress(gz_path.read_bytes()), content_type="application/octet-stream")
 
 
 @routes.post("/api/jobs/{id}/plates/{n}/upload")
