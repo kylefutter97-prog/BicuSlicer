@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=26">
+<link rel="stylesheet" href="/static/style.css?v=27">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -51,8 +51,8 @@
       <label class="tb file-btn" title="Add models (Ctrl+I)">＋ Add<input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple></label>
       <button class="tb" type="button" data-tool="shape" title="Add a box, cylinder, sphere or cone">Shape ▾</button>
       <span class="tb-sep"></span>
-      <button class="tb" type="button" data-tool="arrange" title="Arrange (A)">Arrange</button>
-      <button class="tb" type="button" data-tool="orient-all" title="Auto-orient every part">Orient all</button>
+      <button class="tb" type="button" data-tool="arrange" data-needs="parts" title="Arrange (A)">Arrange</button>
+      <button class="tb" type="button" data-tool="orient-all" data-needs="parts" title="Auto-orient every part">Orient all</button>
       <span class="tb-sep"></span>
       <button class="tb" type="button" data-tool="split" data-needs="one" title="Split into separate parts">Split</button>
       <button class="tb" type="button" data-tool="merge" data-needs="many" title="Merge the selected parts (Shift-click to select several)">Merge</button>
@@ -74,6 +74,7 @@
           Add a model
         </label>
         <span class="muted small">STL, 3MF or OBJ · add as many as you like (export STEP designs as STL or 3MF first)</span>
+        <button class="btn" id="empty-calib" type="button">Or print a calibration test ▾</button>
       </div>
       <div id="hint" class="hint" hidden></div>
       <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text"></span></div>
@@ -540,6 +541,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=28"></script>
+<script type="module" src="/static/app.js?v=29"></script>
 </body>
 </html>

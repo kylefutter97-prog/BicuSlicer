@@ -512,3 +512,4 @@ dialog.cut-dlg { position: fixed; inset: auto 16px 16px auto; margin: 0; width: 
 .lg-chip { display: inline-flex; align-items: center; border: 1px solid var(--line); border-radius: 999px; background: var(--field); font-size: 12.5px; overflow: hidden; }
 .lg-chip button { border: 0; background: none; color: var(--text); font: inherit; padding: 4px 8px; cursor: pointer; }
 .lg-chip .lg-del { color: var(--muted); padding-left: 2px; }
+.empty #empty-calib { pointer-events: auto; }

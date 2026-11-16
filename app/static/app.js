@@ -1111,6 +1111,7 @@ function wirePointer() {
   const finish = (e) => {
     pointers.delete(e.pointerId);
     cancelPress();
+    if (e.button === 2) { down = null; return; }
     if (paint.painting) { paint.painting = false; view.controls.enabled = true; down = null; if (paint.model) paint.model.paintRev = (paint.model.paintRev || 0) + 1; plateChanged(); refresh(); return; }
     if (drag && endDrag()) { down = null; return; }   // a drag, not a tap
     if (!down || e.type === "pointercancel") { down = null; return; }
@@ -1145,14 +1146,28 @@ function wirePointer() {
 }
 
 function wireContextMenu() {
-  view.renderer.domElement.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
+  // The right button also pans the view, so the menu opens on a right *click* (released where it was pressed,
+  // quickly), not at the start or end of a right-drag. Ctrl-click (a Mac's right-click) opens it straight away.
+  const el = view.renderer.domElement;
+  let rdown = null;
+  const open = (e) => {
     if (viewMode === "preview" || paint.on) return;
     const hit = hitPart(e);
     if (hit) {
       if (!selection().includes(hit.object.userData.model)) pickPart(hit.object.userData.model, hit.object);
       openMenu(e.clientX, e.clientY, partMenu());
     } else openMenu(e.clientX, e.clientY, plateMenu());
+  };
+  el.addEventListener("pointerdown", (e) => { rdown = e.button === 2 ? { x: e.clientX, y: e.clientY, t: performance.now() } : null; }, { capture: true });
+  el.addEventListener("pointerup", (e) => {
+    if (e.button !== 2 || !rdown) return;
+    const still = Math.hypot(e.clientX - rdown.x, e.clientY - rdown.y) <= 5 && performance.now() - rdown.t < 700;
+    rdown = null;
+    if (still) open(e);
+  });
+  el.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (e.button === 0 && e.ctrlKey) open(e);
   });
 }
 
@@ -1204,7 +1219,7 @@ function refresh() {
     }
     syncVolumes(m);
   }
-  $("plate-toolbar").hidden = !has && history.at <= 0;     // stays up after Clear so it can be undone
+  $("plate-toolbar").hidden = false;      // always: Add, Shape and Calibrate make parts; the rest wait for some
   $("plate-tabs").hidden = !has && plates.length < 2;
   updateToolbar();
   updatePlateTabs();
@@ -1700,7 +1715,7 @@ const plateMenu = () => [
 function updateToolbar() {
   const one = !!selected, many = selection().length > 1;
   for (const b of document.querySelectorAll("#plate-toolbar [data-needs]")) {
-    b.disabled = b.dataset.needs === "one" ? !one || many : b.dataset.needs === "many" ? !many : false;
+    b.disabled = b.dataset.needs === "one" ? !one || many : b.dataset.needs === "many" ? !many : b.dataset.needs === "parts" ? !models.length : false;
   }
   $("tb-ears").classList.toggle("on", !!selected && selected.overrides.brim_type === "brim_ears");
   $("tb-paint").classList.toggle("on", paint.on);
@@ -3088,6 +3103,7 @@ $("range-remove").addEventListener("click", () => {
   plateChanged();
   refresh();
 });
+$("empty-calib").addEventListener("click", (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, calibItems()); });
 $("lg-pause").addEventListener("click", () => addLayerGcode("pause"));
 $("lg-custom").addEventListener("click", () => addLayerGcode("custom"));
 $("lg-list").addEventListener("click", (e) => {
