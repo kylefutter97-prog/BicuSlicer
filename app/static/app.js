@@ -697,7 +697,8 @@ async function slice() {
     await new Promise((r) => setTimeout(r, 30));   // let the spinner paint before the heavy export
     const fd = new FormData();
     for (const k of ["machine", "process", "filament"]) fd.append(k, S.selected[k]);
-    fd.append("edits", JSON.stringify(S.edits));   // unsaved setting changes apply to this slice
+    // unsaved setting changes apply to this slice, plus the chosen plate type (OrcaSlicer's curr_bed_type)
+    fd.append("edits", JSON.stringify({ ...S.edits, process: { ...S.edits.process, ...(S.bedType ? { curr_bed_type: S.bedType } : {}) } }));
     fd.append("arrange", "0");
     fd.append("orient", "0");
     fd.append("name", plateName());
@@ -868,7 +869,7 @@ async function saveProject(asNew) {
   const version = plateVersion;
   const meta = {
     id: asNew ? undefined : project?.id, name,
-    presets: { ...S.selected }, edits: S.edits,
+    presets: { ...S.selected, bed_type: S.bedType }, edits: S.edits,
     models: models.map((m, i) => ({
       mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale, overrides: m.overrides,
       instances: m.meshes.map((x) => [+x.position.x.toFixed(3), +x.position.y.toFixed(3)]),

@@ -16,6 +16,7 @@ export const S = {
   selected: { machine: null, process: null, filament: null },
   detail: { machine: null, process: null, filament: null },
   edits: { machine: {}, process: {}, filament: {} },   // unsaved changes used for slicing
+  bedType: null,                                        // OrcaSlicer's curr_bed_type for this plate
   state: null,
 };
 let onChange = () => {};
@@ -288,6 +289,8 @@ export async function refreshLists(keepEdits = false) {
   for (const t of TYPES) if (changed.includes(t) && !keepEdits) S.edits[t] = {};
   await Promise.all(TYPES.map(loadDetail));
   renderPickers();
+  if (changed.includes("machine") || !S.bedType) chooseBed();
+  renderBed();
   processEditor?.render();
   remember();
   onChange("presets");
@@ -329,7 +332,7 @@ async function choose(t, name) {
   S.selected[t] = name;
   S.edits[t] = {};
   if (t === "machine") await refreshLists();
-  else { await loadDetail(t); renderPickers(); if (t === "process") processEditor.render(); remember(); onChange("presets"); }
+  else { await loadDetail(t); renderPickers(); renderBed(); if (t === "process") processEditor.render(); remember(); onChange("presets"); }
 }
 
 async function saveEdits(t, asNew) {
@@ -349,6 +352,54 @@ async function saveEdits(t, asNew) {
     S.edits[t] = {};
     await refreshLists();
   } catch (e) { toast(e.message, "err"); }
+}
+
+/* ================================================================ plate type */
+// OrcaSlicer's "plate type" (curr_bed_type) picks which of the filament's bed temperatures is used.
+const BED_TEMP_KEY = {
+  "Cool Plate": "cool_plate_temp", "Engineering Plate": "eng_plate_temp", "High Temp Plate": "hot_plate_temp",
+  "Textured PEI Plate": "textured_plate_temp", "Textured Cool Plate": "textured_cool_plate_temp", "Supertack Plate": "supertack_plate_temp",
+};
+
+function bedOptions() {
+  const o = S.catalog?.options?.curr_bed_type;
+  const vals = o?.enum_values?.length ? o.enum_values : Object.keys(BED_TEMP_KEY);
+  return vals.map((v, i) => ({ v, label: o?.enum_labels?.[i] || v }));
+}
+
+function chooseBed() {
+  // remembered per printer; otherwise the printer preset's default plate type; otherwise OrcaSlicer's default
+  const vals = bedOptions().map((x) => x.v);
+  const saved = (store.get("bed") || {})[S.selected.machine];
+  const preset = scalar(S.detail.machine?.values?.default_bed_type);
+  S.bedType = [saved, preset, S.defaults.curr_bed_type].find((v) => v && vals.includes(v)) || vals[0];
+}
+
+function renderBed() {
+  const sel = $("pick-bed");
+  if (!sel) return;
+  sel.innerHTML = bedOptions().map((b) => `<option value="${esc(b.v)}"${b.v === S.bedType ? " selected" : ""}>${esc(b.label)}</option>`).join("");
+  const info = $("bed-info");
+  const key = BED_TEMP_KEY[S.bedType];
+  const f = S.detail.filament;
+  if (!key || !f) { info.textContent = ""; return; }
+  const first = Number(scalar(valueOf(f, S.edits.filament, `${key}_initial_layer`)));
+  const other = Number(scalar(valueOf(f, S.edits.filament, key)));
+  const zero = !first && !other;
+  info.classList.toggle("warn", zero);
+  info.textContent = zero
+    ? `${f.name} has no bed temperature for this plate (0 °C): the bed won't be heated.`
+    : `Bed ${first || 0} °C first layer · ${other || 0} °C after (from ${f.name})`;
+}
+
+export function setBedType(v) {
+  if (!bedOptions().some((b) => b.v === v)) return false;
+  S.bedType = v;
+  const all = store.get("bed") || {};
+  all[S.selected.machine] = v;
+  store.set("bed", all);
+  renderBed();
+  return true;
 }
 
 /* ================================================================ profile manager */
@@ -651,6 +702,8 @@ async function loadCatalog() {
   }
   if (S.state.orca.status === "ready") {
     [S.catalog, S.defaults] = await Promise.all([apiJson("/api/catalog"), apiJson("/api/defaults")]);
+    if (!(store.get("bed") || {})[S.selected.machine]) chooseBed();
+    renderBed();
   }
   processEditor?.render();
   if ($("pm").open) PM.editor.render();
@@ -667,6 +720,7 @@ export async function initSettings(changeCb) {
     $(`pick-${t}`).addEventListener("change", (e) => choose(t, e.target.value));
     $(`edit-${t}`).addEventListener("click", () => pmOpen(t).catch((e) => toast(e.message, "err")));
   }
+  $("pick-bed").addEventListener("change", (e) => { setBedType(e.target.value); onChange("edits"); });
   $("process-save").addEventListener("click", () => saveEdits("process", false));
   $("process-saveas").addEventListener("click", () => saveEdits("process", true));
   $("process-discard").addEventListener("click", () => { S.edits.process = {}; renderPickers(); processEditor.render(); onChange("edits"); });
@@ -777,5 +831,6 @@ export async function applyProjectPresets(presets = {}, edits = {}) {
   for (const t of TYPES) if (presets[t]) S.selected[t] = presets[t];
   for (const t of TYPES) S.edits[t] = { ...(edits?.[t] || {}) };
   await refreshLists(true);
+  if (presets.bed_type) setBedType(presets.bed_type);
   return TYPES.filter((t) => presets[t] && S.selected[t] !== presets[t]).map((t) => `${TYPE_LABEL[t].toLowerCase()} "${presets[t]}"`);
 }

@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=16">
+<link rel="stylesheet" href="/static/style.css?v=17">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -122,6 +122,11 @@
       <div class="picker">
         <label for="pick-machine">Printer <span class="badge" id="mod-machine" hidden></span></label>
         <div class="picker-row"><select id="pick-machine"></select><button class="btn icon" id="edit-machine" type="button" title="Edit printer presets" aria-label="Edit printer presets">✎</button></div>
+      </div>
+      <div class="picker">
+        <label for="pick-bed">Plate type</label>
+        <select id="pick-bed"></select>
+        <p class="bed-info small" id="bed-info"></p>
       </div>
       <div class="picker">
         <label for="pick-filament">Filament <span class="badge" id="mod-filament" hidden></span></label>
@@ -325,6 +330,6 @@
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 
-<script type="module" src="/static/app.js?v=18"></script>
+<script type="module" src="/static/app.js?v=19"></script>
 </body>
 </html>

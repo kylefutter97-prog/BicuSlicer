@@ -392,3 +392,8 @@ dialog.sheet.projects { width: min(900px, 96vw); height: min(820px, 92vh); }
 .sub { display: grid; gap: 3px; min-width: 0; }
 .sub-label { font-size: 12px; color: var(--muted); }
 .sub.unsaved .sub-label { color: var(--warn); }
+
+/* plate type */
+#pick-bed { width: 100%; }
+.bed-info { margin: 5px 2px 0; color: var(--muted); }
+.bed-info.warn { color: var(--warn); }
