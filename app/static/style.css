@@ -371,3 +371,6 @@ dialog.sheet.projects { width: min(900px, 96vw); height: min(820px, 92vh); }
 .pj-actions { display: flex; gap: 6px; padding: 8px 12px 12px; flex-wrap: wrap; }
 .pj-actions .btn { min-height: 34px; font-size: 14px; flex: 1 1 auto; }
 .send-actions { flex-wrap: wrap; }
+
+/* main button when there's a slice ready to send / start */
+#slice.go { background: var(--ok); color: var(--accent-text); }

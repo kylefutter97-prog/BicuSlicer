@@ -270,6 +270,7 @@ function plateChanged() {
   // the plate or settings no longer match the last slice
   plateVersion++;
   updateProjectLabel();
+  updateMainButton();
   if (currentJob?.status === "done") renderJob(currentJob);
   if (!view.preview?.loaded) return;
   $("preview-stale").hidden = false;
@@ -561,7 +562,7 @@ function refresh() {
   const msg = $("plate-msg");
   msg.textContent = warn;
   msg.hidden = !warn;
-  $("slice").disabled = !has || !ok.fits;
+  updateMainButton();
 }
 
 /* ================================================================ slicing */
@@ -628,6 +629,10 @@ function printerUrl() {
 }
 
 function renderJob(job) {
+  try { renderJobInner(job); } finally { updateMainButton(); }
+}
+
+function renderJobInner(job) {
   const out = $("result");
   $("result-card").hidden = false;
   if (job.status === "queued" || job.status === "slicing") {
@@ -646,17 +651,9 @@ function renderJob(job) {
   const warn = (job.warnings || []).filter(Boolean).map((w) => `<p class="msg warn">${esc(w)}</p>`).join("");
   out.innerHTML = warn + job.plates.map((p) => {
     const title = job.plates.length > 1 ? `<h3>Plate ${p.plate}</h3>` : "";
-    const pr = printerStatus();
     const sent = p.uploaded ? `<p class="msg ok">On ${esc(p.uploaded_name || "the printer")} as <b>${esc(p.uploaded)}</b>${p.started ? " · print started" : ""}</p>` : "";
-    let action;
-    if (!p.uploaded) action = pr.configured
-      ? `<button class="primary" data-act="send" data-plate="${p.plate}">Send to ${esc(pr.name)}…</button>`
-      : `<button class="primary" data-act="printers" data-plate="${p.plate}">Add a printer…</button>`;
-    else if (!p.started) {
-      const ready = pr.idle && (!p.uploaded_to || p.uploaded_to === pr.id);
-      action = `<button class="primary" data-act="start" data-plate="${p.plate}" ${ready ? "" : "disabled"}>${ready ? "Start print" : pr.online ? "Printer busy" : "Printer offline"}</button>`;
-    }
-    else action = printerUrl() ? `<a class="btn" href="${esc(printerUrl())}" target="_blank" rel="noopener">Open printer</a>` : "";
+    // sending and starting live on the main button; the card keeps the details
+    const action = p.started && printerUrl() ? `<a class="btn" href="${esc(printerUrl())}" target="_blank" rel="noopener">Open printer</a>` : "";
     return `<div class="plate">${title}
       <div class="stats">
         <div class="stat"><b>${fmtTime(p.time_s)}</b><span>print time</span></div>
@@ -690,9 +687,8 @@ async function slice() {
     $("result").innerHTML = `<p class="msg err">Choose a printer, filament and print settings first.</p>`;
     return;
   }
-  const btn = $("slice");
-  btn.disabled = true;
-  btn.textContent = "Slicing…";
+  slicing = true;
+  updateMainButton();
   $("result-card").hidden = false;
   $("result").innerHTML = `<p><span class="spinner"></span>Preparing the plate…</p>`;
   $("result-card").scrollIntoView({ behavior: "smooth", block: "start" });
@@ -714,7 +710,7 @@ async function slice() {
   } catch (e) {
     $("result").innerHTML = `<p class="msg err">${esc(e.message)}</p>`;
   } finally {
-    btn.textContent = "Slice";
+    slicing = false;
     refresh();
   }
 }
@@ -757,6 +753,38 @@ async function plateAction(act, plate, btn) {
     btn.textContent = label;
     $("result").insertAdjacentHTML("afterbegin", `<p class="msg err">${esc(e.message)}</p>`);
   }
+}
+
+/* ================================================================ main button */
+// One button that follows the job, like OrcaSlicer's: Slice -> Send to <printer>... -> Start print -> Open <printer>.
+
+let slicing = false;
+let actionRunning = false;
+
+function mainState() {
+  if (slicing) return { label: "Slicing…", disabled: true };
+  const job = currentJob;
+  if (job?.status === "done" && job.plates?.length && jobIsCurrent()) {
+    const pr = printerStatus();
+    const p = job.plates.find((x) => !x.started);
+    if (!p) return printerUrl() ? { label: `Open ${pr.name || "printer"}`, act: "open" } : { label: "Printing", disabled: true };
+    if (!pr.configured) return { label: "Add a printer…", act: "printers", plate: p.plate };
+    if (!p.uploaded) return { label: `Send to ${pr.name}…`, act: "send", plate: p.plate, ready: true };
+    const ready = pr.idle && (!p.uploaded_to || p.uploaded_to === pr.id);
+    return { label: ready ? "Start print" : pr.online ? `${pr.name} is busy` : `${pr.name} is offline`, act: "start", plate: p.plate, disabled: !ready, ready };
+  }
+  return { label: "Slice", act: "slice", disabled: !(models.length && layoutOk().fits) };
+}
+
+function updateMainButton() {
+  if (actionRunning) return;          // keep the spinner while sending/starting
+  const st = mainState();
+  const b = $("slice");
+  b.textContent = st.label;
+  b.disabled = !!st.disabled;
+  b.dataset.act = st.act || "";
+  b.dataset.plate = st.plate ?? "";
+  b.classList.toggle("go", !!st.ready);
 }
 
 /* ================================================================ send dialog */
@@ -1050,7 +1078,15 @@ $("pj-list").addEventListener("click", async (e) => {
   }
 });
 window.addEventListener("beforeunload", (e) => { if (projectDirty()) { e.preventDefault(); e.returnValue = ""; } });
-$("slice").addEventListener("click", slice);
+$("slice").addEventListener("click", async () => {
+  const b = $("slice");
+  const act = b.dataset.act;
+  if (act === "slice") return slice();
+  if (act === "open") { window.open(printerUrl(), "_blank", "noopener"); return; }
+  if (!act) return;
+  actionRunning = true;
+  try { await plateAction(act, b.dataset.plate, b); } finally { actionRunning = false; updateMainButton(); }
+});
 $("result").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-act]");
   if (b) plateAction(b.dataset.act, b.dataset.plate, b);
