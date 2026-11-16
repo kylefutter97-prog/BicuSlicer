@@ -2,6 +2,17 @@
 
 export const $ = (id) => document.getElementById(id);
 
+// iPhone/iPad: Safari only enables files whose type iOS knows, and iOS has no type for .stl/.3mf (or
+// .orca_printer), so an accept=".stl,.3mf" picker greys them out. Let iOS pick any file; the page checks
+// the extension itself. (iPadOS reports itself as a Mac, so also look for a touch screen.)
+export const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+if (isIOS) {
+  for (const input of document.querySelectorAll('input[type="file"][accept]')) {
+    input.dataset.accept = input.getAttribute("accept");
+    input.removeAttribute("accept");
+  }
+}
+
 export const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 
 export const store = {

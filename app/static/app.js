@@ -153,6 +153,9 @@ async function addFiles(files) {
   if (!files.length) return;
   if (!view.renderer) initViewer();
   const problems = [], added = [];
+  const ok = /\.(stl|3mf|obj)$/i;
+  for (const f of files.filter((x) => !ok.test(x.name))) problems.push(`${f.name}: use an STL, 3MF or OBJ file`);
+  files = files.filter((x) => ok.test(x.name));
   for (const f of files) {
     busy(`Loading ${f.name}…`);
     try {
