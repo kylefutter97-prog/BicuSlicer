@@ -171,6 +171,7 @@ h3 { font-size: 15px; margin: 0 0 10px; }
   .top { position: static; }
   .layout {
     flex: 1; min-height: 0; padding: 12px; gap: 12px;
+    width: 100%; max-width: none; margin: 0; align-items: stretch;   /* undo the phone/laptop centring and top-alignment */
     grid-template-columns: 400px minmax(0, 1fr) 340px;
     grid-template-rows: auto minmax(0, 1fr) auto;
     grid-template-areas: "settings plate parts" "settings plate result" "settings plate slice";
@@ -180,7 +181,9 @@ h3 { font-size: 15px; margin: 0 0 10px; }
   .area-plate .viewer-wrap { flex: 1; min-height: 0; display: flex; }
   .area-plate .viewer { flex: 1; height: auto; }
   .area-parts { max-height: 55vh; overflow: auto; }
-  .area-result { overflow: auto; min-height: 0; align-self: stretch; }
+  .area-parts, .area-result { align-self: start; }
+  .area-result { overflow: auto; min-height: 0; max-height: 100%; }
+  .area-slice { align-self: end; }
   .area-result[hidden] + .area-slice { grid-row: 2 / 4; align-self: end; }
   .slice-bar { position: static; padding: 0; background: none; backdrop-filter: none; border: 0; }
   .slice-bar .primary { max-width: none; min-height: 52px; }
