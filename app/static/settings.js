@@ -390,6 +390,7 @@ function chooseBed() {
 }
 
 const bedLabel = (v) => bedOptions().find((b) => b.v === v)?.label || v;
+export const bedChoices = () => bedOptions();
 
 function renderBed() {
   // one line under Filament: the bed temperatures this filament gets on the printer's plate, and a Change link

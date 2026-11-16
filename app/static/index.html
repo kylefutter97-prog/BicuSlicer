@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=22">
+<link rel="stylesheet" href="/static/style.css?v=23">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -64,6 +64,7 @@
       <button class="tb" type="button" id="tb-paint" data-tool="paint" data-needs="one" title="Paint supports or seams">Paint ▾</button>
       <button class="tb" type="button" data-tool="more" title="More: rename, center, printable, fix, units, export">More ▾</button>
     </div>
+    <div class="plate-tabs" id="plate-tabs" role="tablist" aria-label="Plates" hidden></div>
     <div class="viewer-wrap">
       <div id="viewer" class="viewer"></div>
       <div id="empty" class="empty">
@@ -397,6 +398,19 @@
   </form>
 </dialog>
 
+<dialog id="plate-dlg">
+  <form method="dialog" class="plate-dlg">
+    <p><b id="plate-dlg-title">Plate</b> <span class="muted small">settings for this plate only</span></p>
+    <label>Name <input id="pl-name" type="text" maxlength="60" placeholder="e.g. Brackets"></label>
+    <label>Plate type <select id="pl-bed"></select></label>
+    <label>Print sequence <select id="pl-seq"></select></label>
+    <label>Spiral vase <select id="pl-spiral">
+      <option value="">Same as the print settings</option><option value="1">On</option><option value="0">Off</option>
+    </select></label>
+    <div class="actions"><button value="cancel" type="submit" formnovalidate>Cancel</button><button value="ok" class="primary" type="submit">Save</button></div>
+  </form>
+</dialog>
+
 <dialog id="keys" class="keys-dlg">
   <form method="dialog">
     <p><b>Keyboard shortcuts</b> <span class="muted small">Ctrl = ⌘ on a Mac</span></p>
@@ -460,6 +474,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=24"></script>
+<script type="module" src="/static/app.js?v=25"></script>
 </body>
 </html>

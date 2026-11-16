@@ -5,7 +5,7 @@ import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, strToU8 } from "three/addons/libs/fflate.module.js";
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
-import { initSettings, S, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
+import { initSettings, S, bedChoices, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview } from "./preview.js";
 import * as MO from "./meshops.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
@@ -15,16 +15,31 @@ const DOWN = new THREE.Vector3(0, 0, -1);
 const GAP = 6;          // mm between parts when arranging
 const MAX_COPIES = 50;
 
-let currentJob = null;
-// Every change to the plate or the slicing settings bumps this; a slice remembers the version it was made
-// from, and a result whose version no longer matches can't be sent or printed until the plate is sliced again.
+// Every change to the plate bumps this (for "unsaved changes"). Whether a plate's slice is still valid is decided
+// by plateKey(): a slice remembers the key of the plate it was made from, and a result whose key no longer
+// matches can't be sent or printed until that plate is sliced again.
 let plateVersion = 0;
-let currentJobVersion = -1;
-const jobIsCurrent = () => currentJobVersion === plateVersion;
+let settingsVersion = 0;      // bumped when presets or setting edits change: every plate's slice is out of date
+
+// Plates sit side by side, like OrcaSlicer's: plate i's bed starts at x = plateX(i). A copy of a part belongs to
+// the plate its centre is over, so dragging it across moves it to that plate. Each plate is sliced on its own.
+let nextPlateId = 1;
+function newPlate() { return { id: nextPlateId++, name: "", bedType: "", seq: "", spiral: "", job: null, jobKey: null }; }
+const plates = [newPlate()];
+let cur = 0;                  // the current plate (index)
+const curJob = () => plates[cur]?.job || null;
+const jobIsCurrent = (i = cur) => !!plates[i]?.job && plates[i].jobKey === plateKey(i);
+const slicingPlates = new Set();      // plate ids being sliced
 
 /* ================================================================ scene */
 
 const bed = { w: 220, d: 220, h: 300 };
+const plateGap = () => Math.max(20, Math.round(bed.w * 0.15));
+const plateX = (i) => i * (bed.w + plateGap());
+const plateAt = (x) => Math.max(0, Math.min(plates.length - 1, Math.round((x - bed.w / 2) / (bed.w + plateGap()))));
+const plateOf = (mesh) => plateAt(mesh.position.x);
+const meshesOn = (i) => models.flatMap((m) => m.meshes.filter((x) => plateOf(x) === i));
+const modelsOn = (i) => models.filter((m) => m.meshes.some((x) => plateOf(x) === i));
 const models = [];          // {id, name, geo, quat, scale (Vector3), meshes: [Mesh], overrides, printable, volumes, paint}
 let selected = null;          // the part the panel shows (last clicked)
 let selectedMesh = null;      // which copy of it was clicked (for its position)
@@ -80,6 +95,7 @@ function resize() {
 }
 
 function setBed() {
+  const keep = models.flatMap((m) => m.meshes.map((x) => { const i = plateOf(x); return [x, i, x.position.x - plateX(i)]; }));
   const v = machineValues();
   const pts = (v.printable_area || []).map((p) => String(p).split("x").map(Number));
   if (pts.length >= 3 && pts.every((p) => p.length === 2 && p.every(Number.isFinite))) {
@@ -88,39 +104,62 @@ function setBed() {
     bed.d = Math.max(...ys) - Math.min(...ys);
   }
   bed.h = parseFloat(v.printable_height) || 300;
+  for (const [x, i, lx] of keep) x.position.x = plateX(i) + lx;
+  placePreview();
   drawBed();
-  if (models.length) { if (!layoutOk().fits) arrange(); else refresh(); }
+  if (models.length) { const bad = layoutOk().bad; if (bad.size) for (const i of bad) arrange(i); else refresh(); }
 }
 
 function drawBed() {
   if (!view.scene) return;
-  if (view.bedGroup) view.scene.remove(view.bedGroup);
+  if (view.bedGroup) { view.scene.remove(view.bedGroup); view.bedGroup.traverse((o) => { o.geometry?.dispose(); o.material?.map?.dispose(); o.material?.dispose(); }); }
   const g = new THREE.Group();
-  const plate = new THREE.Mesh(new THREE.PlaneGeometry(bed.w, bed.d),
-    new THREE.MeshBasicMaterial({ color: css("--bed"), transparent: true, opacity: 0.6, side: THREE.DoubleSide }));
-  plate.position.set(bed.w / 2, bed.d / 2, -0.05);
-  plate.userData.bed = true;
-  g.add(plate);
   const size = Math.max(bed.w, bed.d);
-  const grid = new THREE.GridHelper(size, Math.round(size / 10), css("--muted"), css("--muted"));
-  grid.rotation.x = Math.PI / 2;
-  grid.position.set(bed.w / 2, bed.d / 2, 0);
-  grid.material.transparent = true; grid.material.opacity = 0.25;
-  g.add(grid);
-  const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(bed.w, bed.d, 0.01)),
-    new THREE.LineBasicMaterial({ color: css("--muted") }));
-  edge.position.set(bed.w / 2, bed.d / 2, 0);
-  g.add(edge);
+  plates.forEach((p, i) => {
+    const ox = plateX(i), on = i === cur;
+    const plate = new THREE.Mesh(new THREE.PlaneGeometry(bed.w, bed.d),
+      new THREE.MeshBasicMaterial({ color: css("--bed"), transparent: true, opacity: on || plates.length === 1 ? 0.6 : 0.3, side: THREE.DoubleSide }));
+    plate.position.set(ox + bed.w / 2, bed.d / 2, -0.05);
+    plate.userData.bed = i;
+    g.add(plate);
+    const grid = new THREE.GridHelper(size, Math.round(size / 10), css("--muted"), css("--muted"));
+    grid.rotation.x = Math.PI / 2;
+    grid.position.set(ox + bed.w / 2, bed.d / 2, 0);
+    grid.material.transparent = true; grid.material.opacity = on ? 0.25 : 0.12;
+    g.add(grid);
+    const edge = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(bed.w, bed.d, 0.01)),
+      new THREE.LineBasicMaterial({ color: on && plates.length > 1 ? css("--accent") : css("--muted") }));
+    edge.position.set(ox + bed.w / 2, bed.d / 2, 0);
+    g.add(edge);
+    if (plates.length > 1) g.add(plateLabel(`${i + 1}${p.name ? " · " + p.name : ""}`, ox, on));
+  });
   view.bedGroup = g;
   view.scene.add(g);
+}
+
+function plateLabel(text, ox, on) {
+  // the plate's number, lying flat in front of it
+  const c = document.createElement("canvas");
+  c.width = 512; c.height = 64;
+  const ctx = c.getContext("2d");
+  ctx.font = "600 40px system-ui, sans-serif";
+  ctx.fillStyle = on ? css("--accent") : css("--muted");
+  ctx.textBaseline = "middle";
+  ctx.fillText(text.length > 24 ? text.slice(0, 23) + "…" : text, 4, 32);
+  const tex = new THREE.CanvasTexture(c);
+  const w = Math.min(bed.w, 160), h = w / 8;
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(w, h), new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false }));
+  m.position.set(ox + w / 2, -h / 2 - 4, 0);
+  return m;
 }
 
 function fitView() {
   const r = Math.hypot(bed.w, bed.d) * 0.85;
   let top = 0;
-  for (const m of models) top = Math.max(top, (m.box?.max.z ?? 0));
-  view.camera.position.set(bed.w / 2 + r * 0.35, bed.d / 2 - r * 1.15, r * 0.95 + top * 0.6);
-  view.controls.target.set(bed.w / 2, bed.d / 2, Math.min(top / 3, 40));
+  for (const m of modelsOn(cur)) top = Math.max(top, m.size?.z ?? 0);
+  const cx = plateX(cur) + bed.w / 2;
+  view.camera.position.set(cx + r * 0.35, bed.d / 2 - r * 1.15, r * 0.95 + top * 0.6);
+  view.controls.target.set(cx, bed.d / 2, Math.min(top / 3, 40));
   view.controls.update();
 }
 
@@ -254,7 +293,7 @@ function volumeGeo(v) {
 
 function syncVolumes(m) {
   const need = m.meshes.length * m.volumes.length;
-  if ((m.volMeshes || []).length !== need || m.volMeshes.some((vm) => !m.volumes.includes(vm.userData.volume) || vm.geometry !== vm.userData.volume.geo)) {
+  if ((m.volMeshes || []).length !== need || m.volMeshes.some((vm) => !m.volumes.includes(vm.userData.volume) || vm.geometry !== vm.userData.volume.geo || !m.meshes.includes(vm.userData.copy))) {
     for (const vm of m.volMeshes || []) view.scene.remove(vm);
     m.volMeshes = [];
     for (const mesh of m.meshes) for (const v of m.volumes) {
@@ -305,7 +344,7 @@ function setCopies(m, n) {
     mesh.userData.model = m;
     const src = m.meshes[m.meshes.length - 1];
     if (src) mesh.position.copy(src.position);
-    else mesh.position.set(bed.w / 2, bed.d / 2, 0);
+    else mesh.position.set(plateX(cur) + bed.w / 2, bed.d / 2, 0);
     if (m.local) applyPose(m, mesh);
     m.meshes.push(mesh);
     view.scene.add(mesh);
@@ -317,19 +356,20 @@ function footprint(m, mesh) {
 }
 
 function layoutOk() {
+  // off / tall: parts with a copy off its plate or too tall; bad: plates (indices) with such a copy; overlaps: plates with overlapping copies
   const all = [];
-  for (const m of models) for (const mesh of m.meshes) all.push({ m, mesh, f: footprint(m, mesh) });
-  const off = new Set(), tall = new Set();
-  let overlap = false;
+  for (const m of models) for (const mesh of m.meshes) all.push({ m, mesh, f: footprint(m, mesh), p: plateOf(mesh) });
+  const off = new Set(), tall = new Set(), bad = new Set(), overlaps = new Set();
   for (const a of all) {
-    if (a.f.x0 < -0.5 || a.f.y0 < -0.5 || a.f.x1 > bed.w + 0.5 || a.f.y1 > bed.d + 0.5) off.add(a.m);
-    if (a.m.size.z > bed.h + 0.01) tall.add(a.m);
+    const ox = plateX(a.p);
+    if (a.f.x0 < ox - 0.5 || a.f.y0 < -0.5 || a.f.x1 > ox + bed.w + 0.5 || a.f.y1 > bed.d + 0.5) { off.add(a.m); bad.add(a.p); }
+    if (a.m.size.z > bed.h + 0.01) { tall.add(a.m); bad.add(a.p); }
   }
   for (let i = 0; i < all.length; i++) for (let j = i + 1; j < all.length; j++) {
     const a = all[i].f, b = all[j].f;
-    if (a.x0 < b.x1 - 0.2 && b.x0 < a.x1 - 0.2 && a.y0 < b.y1 - 0.2 && b.y0 < a.y1 - 0.2) overlap = true;
+    if (a.x0 < b.x1 - 0.2 && b.x0 < a.x1 - 0.2 && a.y0 < b.y1 - 0.2 && b.y0 < a.y1 - 0.2) overlaps.add(all[i].p);
   }
-  return { fits: off.size === 0 && tall.size === 0, off, tall, overlap };
+  return { fits: bad.size === 0, off, tall, bad, overlaps, overlap: overlaps.size > 0 };
 }
 
 function overlapsOthers(mesh) {
@@ -367,7 +407,8 @@ function takeSnapshot() {
   const prevPaint = new Map((prev?.models || []).map((pm) => [pm.id, pm.paint]));
   const keepOrCopy = (cur, old) => (!cur ? null : sameBytes(cur, old) ? old : cur.slice());
   const snap = {
-    sel: selected?.id ?? null, selVol: selectedVolume?.id ?? null, multi: [...multi].map((m) => m.id),
+    sel: selected?.id ?? null, selVol: selectedVolume?.id ?? null, multi: [...multi].map((m) => m.id), cur,
+    plates: plates.map((p) => ({ id: p.id, name: p.name, bedType: p.bedType, seq: p.seq, spiral: p.spiral })),
     models: models.map((m) => {
       const op = prevPaint.get(m.id);
       return {
@@ -376,11 +417,12 @@ function takeSnapshot() {
         overrides: JSON.stringify(m.overrides || {}), printable: m.printable !== false,
         volumes: (m.volumes || []).map((v) => ({ id: v.id, name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(),
           pos: v.pos.toArray(), overrides: JSON.stringify(v.overrides || {}), geo: v.geo })),
+        paintRev: m.paintRev || 0,
         paint: m.paint ? { fine: !!m.paint.fine, supports: keepOrCopy(m.paint.supports, op?.supports), seam: keepOrCopy(m.paint.seam, op?.seam) } : null,
       };
     }),
   };
-  snap.key = JSON.stringify(snap.models.map((sm) => [sm.id, sm.name, sm.geo.uuid, sm.quat, sm.scale, sm.copies, sm.overrides, sm.printable,
+  snap.key = JSON.stringify(snap.plates) + JSON.stringify(snap.models.map((sm) => [sm.id, sm.name, sm.geo.uuid, sm.quat, sm.scale, sm.copies, sm.overrides, sm.printable,
     sm.volumes.map((v) => [v.id, v.name, v.kind, v.shape, v.size, v.pos, v.overrides, v.geo.uuid]),
     sm.paint && [sm.paint.fine, arrId(sm.paint.supports), arrId(sm.paint.seam)]]));
   return snap;
@@ -429,9 +471,14 @@ function restoreSnapshot(s) {
     }
     models.length = 0;
     multi.clear();
+    const oldPlates = new Map(plates.map((p) => [p.id, p]));      // slices stay with their plate
+    plates.length = 0;
+    for (const sp of s.plates) { const o = oldPlates.get(sp.id); plates.push({ ...sp, job: o?.job || null, jobKey: o?.jobKey || null }); }
+    if (cur >= plates.length) cur = plates.length - 1;
     for (const sm of s.models) {
       const m = newModelRecord(sm.name, sm.geo);
       m.id = sm.id;
+      m.paintRev = sm.paintRev;
       m.quat.fromArray(sm.quat);
       m.scale.fromArray(sm.scale);
       m.overrides = JSON.parse(sm.overrides);
@@ -450,11 +497,13 @@ function restoreSnapshot(s) {
     selectedMesh = null;
     for (const id of s.multi) { const m = byId(id); if (m) multi.add(m); }
     selectedVolume = selected?.volumes.find((v) => v.id === s.selVol) || null;
-    plateChanged();       // invalidates the slice; not recorded while restoring
+    drawBed();
+    plateChanged();       // slices that no longer match go stale; not recorded while restoring
   } finally {
     history.restoring = false;
   }
   refresh();
+  showPlateResult();
   updateUndoButtons();
 }
 
@@ -482,9 +531,19 @@ function updateUndoButtons() {
 
 let viewMode = "model";
 let previewKey = null;          // "<job>/<plate>" currently loaded
+let previewPlateId = null;      // which of our plates that preview is for
+
+function placePreview() {
+  const pi = plates.findIndex((p) => p.id === previewPlateId);
+  if (view.preview?.group) view.preview.group.position.x = pi >= 0 ? plateX(pi) : 0;
+}
 
 function setViewMode(mode) {
-  if (mode === "preview" && !view.preview?.loaded) mode = "model";
+  if (mode === "preview" && (!view.preview?.loaded || previewPlateId !== plates[cur]?.id)) {
+    const j = curJob();      // the layers of this plate's slice, if it has a current one
+    if (j?.status === "done" && j.plates?.length && jobIsCurrent()) { showPreview(j, j.plates[0].plate); return; }
+    mode = "model";
+  }
   viewMode = mode;
   for (const m of models) { for (const mesh of m.meshes) mesh.visible = mode === "model"; syncVolumes(m); }
   view.preview?.setVisible(mode === "preview");
@@ -502,9 +561,12 @@ function plateChanged() {
   plateVersion++;
   scheduleHistory();
   updateProjectLabel();
+  updatePlateTabs();
   updateMainButton();
-  if (currentJob?.status === "done") renderJob(currentJob);
+  if (curJob()?.status === "done") renderJob(curJob());
   if (!view.preview?.loaded) return;
+  const pi = plates.findIndex((p) => p.id === previewPlateId);
+  if (pi >= 0 && jobIsCurrent(pi)) return;
   $("preview-stale").hidden = false;
   if (viewMode === "preview") setViewMode("model");
 }
@@ -534,6 +596,8 @@ async function showPreview(job, plate) {
       $("show-travel").checked = view.preview.showTravel;
       renderLegend();
     }
+    previewPlateId = plates[cur].id;
+    placePreview();
     $("preview-stale").hidden = true;
     $("preview-controls").hidden = false;
     renderLayerInfo();
@@ -545,30 +609,99 @@ async function showPreview(job, plate) {
   }
 }
 
-function settle(newMeshes = []) {
+function settle(newMeshes = [], home = cur) {
+  // New copies stay on their plate (the current one, or the plate of the copy they were made from). One that's off
+  // the plate or on top of something moves to the nearest free spot; only if there's none is the plate re-arranged.
+  for (const x of newMeshes) { const i = plateOf(x); if (i !== home) x.position.x += plateX(home) - plateX(i); }
   plateChanged();
-  if (!layoutOk().fits || newMeshes.some(overlapsOthers)) arrange();
+  let repack = false;
+  for (const x of newMeshes) {
+    const m = x.userData.model;
+    if (!m?.local) continue;
+    const f = footprint(m, x), ox = plateX(home);
+    if (f.x0 >= ox - 0.5 && f.x1 <= ox + bed.w + 0.5 && f.y0 >= -0.5 && f.y1 <= bed.d + 0.5 && !overlapsOthers(x)) continue;
+    const spot = findSpot(home, m, [x], x.position);
+    if (spot) { x.position.x = spot.x; x.position.y = spot.y; } else repack = true;
+  }
+  if (repack || layoutOk().bad.has(home)) arrange(home);
   else refresh();
 }
 
-function arrange() {
-  plateChanged();
-  // Shelf packing: tallest-footprint parts first, rows left→right, then centre the block on the bed.
-  const items = [];
-  for (const m of models) for (const mesh of m.meshes) items.push({ m, mesh, w: m.size.x, d: m.size.y });
-  items.sort((a, b) => b.d - a.d || b.w - a.w);
-  let x = 0, y = 0, rowD = 0, maxX = 0;
-  for (const it of items) {
-    if (x > 0 && x + it.w > bed.w) { y += rowD + GAP; x = 0; rowD = 0; }
-    it.px = x; it.py = y;
-    x += it.w + GAP; rowD = Math.max(rowD, it.d); maxX = Math.max(maxX, x - GAP);
+/** The free spot on plate pi nearest to `near` (default: the plate's centre) where part m fits, as a position for its copy; or null. */
+function findSpot(pi, m, skip = [], near = null) {
+  const w = m.size.x, d = m.size.y, ox = plateX(pi);
+  if (w > bed.w + 0.01 || d > bed.d + 0.01) return null;
+  const rects = [];
+  for (const o of models) for (const x of o.meshes) {
+    if (skip.includes(x) || plateOf(x) !== pi || !o.local) continue;
+    const f = footprint(o, x);
+    rects.push([f.x0 - ox - GAP, f.y0 - GAP, f.x1 - ox + GAP, f.y1 + GAP]);
   }
-  const totalD = y + rowD;
-  const ox = Math.max(0, (bed.w - maxX) / 2), oy = Math.max(0, (bed.d - totalD) / 2);
+  const tx = near ? near.x - ox + m.local.x0 + w / 2 : bed.w / 2, ty = near ? near.y + m.local.y0 + d / 2 : bed.d / 2;
+  const step = Math.max(1, Math.min(5, Math.min(w, d) / 3));
+  const xs = [], ys = [];
+  for (let x = 0; x < bed.w - w; x += step) xs.push(x);
+  xs.push(Math.max(0, bed.w - w));
+  for (let y = 0; y < bed.d - d; y += step) ys.push(y);
+  ys.push(Math.max(0, bed.d - d));
+  let best = null, bestD = Infinity;
+  for (const y of ys) for (const x of xs) {
+    const dd = (x + w / 2 - tx) ** 2 + (y + d / 2 - ty) ** 2;
+    if (dd >= bestD) continue;
+    if (rects.some((r) => x < r[2] && r[0] < x + w && y < r[3] && r[1] < y + d)) continue;
+    best = [x, y]; bestD = dd;
+  }
+  return best && { x: ox + best[0] - m.local.x0, y: best[1] - m.local.y0 };
+}
+
+function shelfPack(items) {
+  // Shelf packing: tallest-footprint parts first, rows left→right; a new group (plate) when the bed is full
+  items.sort((a, b) => b.d - a.d || b.w - a.w);
+  const groups = [];
+  let g = null, x = 0, y = 0, rowD = 0;
   for (const it of items) {
+    if (g && x > 0 && x + it.w > bed.w) { y += rowD + GAP; x = 0; rowD = 0; }
+    if (!g || (g.items.length && y + it.d > bed.d + 0.01)) { g = { items: [], maxX: 0, depth: 0 }; groups.push(g); x = 0; y = 0; rowD = 0; }
+    it.px = x; it.py = y;
+    g.items.push(it);
+    x += it.w + GAP; rowD = Math.max(rowD, it.d);
+    g.maxX = Math.max(g.maxX, x - GAP); g.depth = Math.max(g.depth, y + rowD);
+  }
+  return groups;
+}
+
+function placeGroup(gr, pi) {
+  // centre a packed group on plate pi
+  const ox = plateX(pi) + Math.max(0, (bed.w - gr.maxX) / 2), oy = Math.max(0, (bed.d - gr.depth) / 2);
+  for (const it of gr.items) {
     it.mesh.position.x = ox + it.px - it.m.local.x0;
     it.mesh.position.y = oy + it.py - it.m.local.y0;
   }
+}
+
+function arrange(pi = cur) {
+  if (typeof pi !== "number") pi = cur;      // called from a click
+  plateChanged();
+  // Pack plate pi. What doesn't fit goes into free space on the plates after it, then onto new plates, like OrcaSlicer.
+  const items = [];
+  for (const m of models) for (const mesh of m.meshes) if (plateOf(mesh) === pi) items.push({ m, mesh, w: m.size.x, d: m.size.y });
+  const groups = shelfPack(items);
+  if (groups.length) placeGroup(groups[0], pi);
+  let rest = groups.slice(1).flatMap((g) => g.items);
+  const went = new Set();
+  rest = rest.filter((it) => {
+    for (let j = pi + 1; j < plates.length; j++) {
+      const spot = findSpot(j, it.m, rest.filter((r) => !r.placed).map((r) => r.mesh));   // not-yet-placed spill doesn't block
+      if (spot) { it.mesh.position.x = spot.x; it.mesh.position.y = spot.y; went.add(j + 1); it.placed = true; return false; }
+    }
+    return true;
+  });
+  for (const gr of shelfPack(rest)) {
+    plates.push(newPlate());
+    placeGroup(gr, plates.length - 1);
+    went.add(plates.length);
+  }
+  if (went.size) { drawBed(); flash(`Not everything fits on plate ${pi + 1}: the rest went to plate ${[...went].sort((a, b) => a - b).join(", ")}.`, "ok"); }
   refresh();
 }
 
@@ -716,7 +849,9 @@ function wirePointer() {
 
   function endDrag() {
     const wasMoved = drag?.moved;
+    const moved = drag?.mesh;
     drag = null;
+    if (wasMoved && moved && plateOf(moved) !== cur) setCurrentPlate(plateOf(moved), false);   // dropped on another plate
     view.controls.enabled = true;
     view.el.classList.remove("dragging");
     if (wasMoved) { plateChanged(); refresh(); }
@@ -726,7 +861,7 @@ function wirePointer() {
   const finish = (e) => {
     pointers.delete(e.pointerId);
     cancelPress();
-    if (paint.painting) { paint.painting = false; view.controls.enabled = true; down = null; plateChanged(); refresh(); return; }
+    if (paint.painting) { paint.painting = false; view.controls.enabled = true; down = null; if (paint.model) paint.model.paintRev = (paint.model.paintRev || 0) + 1; plateChanged(); refresh(); return; }
     if (drag && endDrag()) { down = null; return; }   // a drag, not a tap
     if (!down || e.type === "pointercancel") { down = null; return; }
     const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
@@ -750,6 +885,10 @@ function wirePointer() {
         flash("Tap a face of the highlighted part.", "warn");
       }
       return;
+    }
+    if (!hit) {        // a tap on another plate's bed makes it the current plate
+      const bp = bedPoint(e);
+      if (bp && bp.y >= 0 && bp.y <= bed.d) { const i = plateAt(bp.x); if (i !== cur && bp.x >= plateX(i) && bp.x <= plateX(i) + bed.w) setCurrentPlate(i, false); }
     }
     pickPart(hit ? hit.object.userData.model : null, hit?.object, e.shiftKey || e.ctrlKey || e.metaKey);
   }
@@ -815,13 +954,16 @@ function refresh() {
     syncVolumes(m);
   }
   $("plate-toolbar").hidden = !has && history.at <= 0;     // stays up after Clear so it can be undone
+  $("plate-tabs").hidden = !has && plates.length < 2;
   updateToolbar();
+  updatePlateTabs();
   const parts = models.reduce((n, m) => n + m.meshes.length, 0);
-  $("plate-summary").textContent = has ? `${parts} part${parts === 1 ? "" : "s"}` : "";
+  $("plate-summary").textContent = has ? `${parts} part${parts === 1 ? "" : "s"}${plates.length > 1 ? ` · ${plates.length} plates` : ""}` : "";
+  const onPlates = (m) => [...new Set(m.meshes.map((x) => plateOf(x) + 1))].sort((a, b) => a - b).join(",");
   $("objects").innerHTML = models.map((m) => `
     <li class="${sel.has(m) && !selectedVolume ? "sel" : ""}${ok.off.has(m) || ok.tall.has(m) ? " bad" : ""}${m.printable === false ? " ghost" : ""}" data-id="${m.id}">
       <span class="name">${esc(m.name)}${m.printable === false ? ' <span class="muted small">(not printed)</span>' : ""}</span>
-      <span class="muted small">${m.overrides.brim_type === "brim_ears" ? '<span class="part-badge" title="Brim ears">ears</span> ' : ""}${m.paint && (m.paint.supports || m.paint.seam) ? '<span class="part-badge" title="Painted">🖌</span> ' : ""}${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
+      <span class="muted small">${plates.length > 1 ? `<span class="part-badge" title="On plate ${onPlates(m)}">P${onPlates(m)}</span> ` : ""}${m.overrides.brim_type === "brim_ears" ? '<span class="part-badge" title="Brim ears">ears</span> ' : ""}${m.paint && (m.paint.supports || m.paint.seam) ? '<span class="part-badge" title="Painted">🖌</span> ' : ""}${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
     </li>${m.volumes.map((v) => `
     <li class="vol${v === selectedVolume ? " sel" : ""}" data-id="${m.id}" data-vol="${v.id}">
       <span class="name">↳ ${esc(v.name)}</span><span class="muted small">${v.kind === "negative" ? "negative part" : "modifier"}${Object.keys(v.overrides).length ? ` · ⚙ ${Object.keys(v.overrides).length}` : ""}</span>
@@ -845,7 +987,8 @@ function refresh() {
   let warn = "";
   if (ok.tall.size) warn = `Too tall for this printer (max ${bed.h} mm): ${[...ok.tall].map((m) => m.name).join(", ")}.`;
   else if (ok.off.size) warn = `Doesn't fit on the bed: ${[...ok.off].map((m) => m.name).join(", ")}. Try Arrange, fewer copies, a smaller scale or another orientation.`;
-  else if (ok.overlap) warn = "Some parts overlap. Tap Arrange to space them out.";
+  else if (ok.overlaps.has(cur)) warn = "Some parts overlap. Tap Arrange to space them out.";
+  if (warn && plates.length > 1) warn = `${[...ok.bad].length && !ok.bad.has(cur) ? `Plate ${[...ok.bad].map((i) => i + 1).join(", ")}: ` : ""}${warn}`;
   const msg = $("plate-msg");
   msg.textContent = warn;
   msg.hidden = !warn;
@@ -887,18 +1030,21 @@ function meshXml(geo, matrix, paint) {
 const metaXml = (o, indent) => Object.entries(o || {}).map(([k, v]) =>
   `${indent}<metadata key="${esc(k)}" value="${esc(Array.isArray(v) ? v.join(",") : v)}"/>\n`).join("");
 
-function build3mf() {
+function build3mf(pi = cur) {
   // What the slicer sees is what's on screen: every placed copy of every printable part, baked in plate coordinates.
   // A part with modifier / negative parts becomes an object made of components, with each component's type and
   // settings in Metadata/model_settings.config (the layout OrcaSlicer itself writes; checked with test slices).
   const objects = [], items = [], configs = [];
   let id = 1;
+  const ox = plateX(pi);            // the plate's own coordinates
+  const toPlate = new THREE.Matrix4().makeTranslation(-ox, 0, 0);
   for (const m of models) {
     if (m.printable === false) continue;
     for (const mesh of m.meshes) {
+      if (plateOf(mesh) !== pi) continue;
       mesh.updateMatrixWorld(true);
       const bodyId = id++;
-      objects.push(`<object id="${bodyId}" type="model" name="${esc(m.name)}">${meshXml(m.geo, mesh.matrixWorld, m.paint)}</object>`);
+      objects.push(`<object id="${bodyId}" type="model" name="${esc(m.name)}">${meshXml(m.geo, toPlate.clone().multiply(mesh.matrixWorld), m.paint)}</object>`);
       if (!m.volumes.length) {
         // per-part settings: OrcaSlicer reads them from Metadata/model_settings.config, keyed by object id
         configs.push(`  <object id="${bodyId}">\n    <metadata key="name" value="${esc(m.name)}"/>\n${metaXml(m.overrides, "    ")}  </object>`);
@@ -909,7 +1055,7 @@ function build3mf() {
       const comps = [`<component objectid="${bodyId}"/>`];
       for (const v of m.volumes) {
         const vid = id++;
-        const mat = new THREE.Matrix4().makeTranslation(mesh.position.x + v.pos.x, mesh.position.y + v.pos.y, v.pos.z);
+        const mat = new THREE.Matrix4().makeTranslation(mesh.position.x - ox + v.pos.x, mesh.position.y + v.pos.y, v.pos.z);
         objects.push(`<object id="${vid}" type="model" name="${esc(v.name)}">${meshXml(v.geo, mat, null)}</object>`);
         comps.push(`<component objectid="${vid}"/>`);
         parts.push(`    <part id="${vid}" subtype="${v.kind === "negative" ? "negative_part" : "modifier_part"}">\n      <metadata key="name" value="${esc(v.name)}"/>\n${v.kind === "negative" ? "" : metaXml(v.overrides, "      ")}    </part>\n`);
@@ -930,9 +1076,25 @@ function build3mf() {
   return new Blob([zip], { type: "model/3mf" });
 }
 
-function plateName() {
-  if (models.length === 1) return models[0].name + (models[0].meshes.length > 1 ? ` x${models[0].meshes.length}` : "");
-  return `${models[0].name} +${models.length - 1}`;
+function plateName(pi = cur) {
+  if (plates[pi]?.name) return plates[pi].name;
+  const ms = modelsOn(pi);
+  if (!ms.length) return `Plate ${pi + 1}`;
+  const n = ms[0].meshes.filter((x) => plateOf(x) === pi).length;
+  return ms.length === 1 ? ms[0].name + (n > 1 ? ` x${n}` : "") : `${ms[0].name} +${ms.length - 1}`;
+}
+
+/** What plate pi's slice depends on: if this changes, its slice is out of date. */
+function plateKey(pi) {
+  const p = plates[pi];
+  if (!p) return "";
+  const ox = plateX(pi);
+  return JSON.stringify([settingsVersion, S.bedType, p.bedType, p.seq, p.spiral, models.map((m) => {
+    if (m.printable === false) return null;
+    const c = m.meshes.filter((x) => plateOf(x) === pi).map((x) => [+(x.position.x - ox).toFixed(3), +x.position.y.toFixed(3)]);
+    return c.length ? [m.id, m.geo.uuid, m.quat.toArray(), m.scale.toArray(), c, m.overrides, m.paintRev || 0,
+      m.volumes.map((v) => [v.kind, v.size.toArray(), v.pos.toArray(), v.overrides, v.geo.uuid])] : null;
+  }).filter(Boolean)]);
 }
 
 function fmtTime(s) {
@@ -988,59 +1150,86 @@ function renderJobInner(job) {
   }).join("");
 }
 
-async function poll(id) {
+async function poll(id, bp) {
   for (;;) {
     const job = await apiJson(`/api/jobs/${id}`);
-    currentJob = job;
-    renderJob(job);
+    if (bp.job?.id !== id && bp.job) return job;      // sliced again since: this one is old news
+    bp.job = job;
+    if (plates[cur] === bp) renderJob(job); else updatePlateTabs();
     if (job.status === "done" || job.status === "error") return job;
     await new Promise((r) => setTimeout(r, 1500));
   }
 }
 
-async function slice() {
-  if (!models.length || !layoutOk().fits) return;
-  if (!models.some((m) => m.printable !== false)) { $("result-card").hidden = false; $("result").innerHTML = `<p class="msg err">Every part is set to not printable.</p>`; return; }
+function resultMsg(bp, html) {
+  // the result card shows the current plate's slice
+  if (plates[cur] !== bp) return;
+  $("result-card").hidden = false;
+  $("result").innerHTML = html;
+}
+
+async function slice(pi = cur, quiet = false) {
+  const bp = plates[pi];
+  if (!bp || slicingPlates.has(bp.id)) return;
+  if (!modelsOn(pi).length || layoutOk().bad.has(pi)) return;
+  if (!modelsOn(pi).some((m) => m.printable !== false)) { resultMsg(bp, `<p class="msg err">Every part on this plate is set to not printable.</p>`); return; }
   if (!S.selected.machine || !S.selected.process || !S.selected.filament) {
-    $("result-card").hidden = false;
-    $("result").innerHTML = `<p class="msg err">Choose a printer, filament and print settings first.</p>`;
+    resultMsg(bp, `<p class="msg err">Choose a printer, filament and print settings first.</p>`);
     return;
   }
-  slicing = true;
+  slicingPlates.add(bp.id);
   updateMainButton();
-  $("result-card").hidden = false;
-  $("result").innerHTML = `<p><span class="spinner"></span>Preparing the plate…</p>`;
-  $("result-card").scrollIntoView({ behavior: "smooth", block: "start" });
-  const version = plateVersion;     // what this slice is made from
+  updatePlateTabs();
+  resultMsg(bp, `<p><span class="spinner"></span>Preparing the plate…</p>`);
+  if (!quiet && plates[cur] === bp) $("result-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  const key = plateKey(pi);     // what this slice is made from
   try {
     await new Promise((r) => setTimeout(r, 30));   // let the spinner paint before the heavy export
     const fd = new FormData();
     for (const k of ["machine", "process", "filament"]) fd.append(k, S.selected[k]);
-    // unsaved setting changes apply to this slice, plus the chosen plate type (OrcaSlicer's curr_bed_type)
-    fd.append("edits", JSON.stringify({ ...S.edits, process: { ...S.edits.process, ...(S.bedType ? { curr_bed_type: S.bedType } : {}) } }));
+    // unsaved setting changes apply to this slice, plus the plate type (OrcaSlicer's curr_bed_type) and this plate's own settings
+    const plateEdits = { curr_bed_type: bp.bedType || S.bedType || undefined, print_sequence: bp.seq || undefined, spiral_mode: bp.spiral || undefined };
+    for (const k of Object.keys(plateEdits)) if (plateEdits[k] === undefined) delete plateEdits[k];
+    fd.append("edits", JSON.stringify({ ...S.edits, process: { ...S.edits.process, ...plateEdits } }));
     fd.append("arrange", "0");
     fd.append("orient", "0");
-    fd.append("name", plateName());
-    fd.append("model", build3mf(), "plate.3mf");
-    const thumbs = plateThumbs();      // Mainsail's file preview (the headless slicer can't render one)
+    fd.append("name", plateName(pi));
+    fd.append("model", build3mf(pi), "plate.3mf");
+    const thumbs = plateThumbs(pi);      // Mainsail's file preview (the headless slicer can't render one)
     if (thumbs) fd.append("thumbs", new Blob([JSON.stringify(thumbs)], { type: "application/json" }), "thumbs.json");
-    $("result").innerHTML = `<p><span class="spinner"></span>Uploading…</p>`;
+    resultMsg(bp, `<p><span class="spinner"></span>Uploading…</p>`);
     const job = await apiJson("/api/slice", { method: "POST", body: fd });
-    currentJobVersion = version;
-    const done = await poll(job.id);
-    if (done.status === "done" && done.plates?.length && jobIsCurrent()) showPreview(done, done.plates[0].plate);
+    bp.job = job;
+    bp.jobKey = key;
+    const done = await poll(job.id, bp);
+    const i = plates.indexOf(bp);
+    if (!quiet && done.status === "done" && done.plates?.length && i === cur && jobIsCurrent(i)) showPreview(done, done.plates[0].plate);
   } catch (e) {
-    $("result").innerHTML = `<p class="msg err">${esc(e.message)}</p>`;
+    resultMsg(bp, `<p class="msg err">${esc(e.message)}</p>`);
   } finally {
-    slicing = false;
+    slicingPlates.delete(bp.id);
     refresh();
   }
 }
 
+async function sliceAll() {
+  // every plate with parts that isn't already sliced as it is, one after the other
+  const todo = plates.filter((p, i) => modelsOn(i).length && !jobIsCurrent(i) && !layoutOk().bad.has(i));
+  if (!todo.length) { flash("Every plate is already sliced.", "ok"); return; }
+  for (const bp of todo) { const i = plates.indexOf(bp); if (i >= 0) await slice(i, true); }
+  const j = curJob();
+  if (j?.status === "done" && jobIsCurrent()) showPreview(j, j.plates[0].plate);
+  flash(`Sliced ${todo.length} plate${todo.length === 1 ? "" : "s"}.`, "ok");
+}
+
 async function plateAction(act, plate, btn) {
-  const job = currentJob;
+  const bp = plates[cur];
+  const job = bp?.job;
   if (act === "reslice") { slice(); return; }
-  if (!jobIsCurrent() && act !== "printers") { renderJob(job); return; }   // never send or start an out-of-date slice
+  if (!job) return;
+  const valid = () => plates.includes(bp) && jobIsCurrent(plates.indexOf(bp));
+  const show = () => { if (plates[cur] === bp) renderJob(bp.job); };
+  if (!valid() && act !== "printers") { show(); return; }   // never send or start an out-of-date slice
   if (act === "preview") { showPreview(job, plate); return; }
   if (act === "printers") { openPrinters(true); return; }
   let startNow = false;
@@ -1048,14 +1237,14 @@ async function plateAction(act, plate, btn) {
     const p = job.plates.find((x) => String(x.plate) === plate);
     const choice = await sendDialog(p);
     if (!choice) return;
-    if (!jobIsCurrent()) { renderJob(job); return; }
+    if (!valid()) { show(); return; }
     startNow = choice === "print";
     act = "upload";
   }
   if (act === "start") {
     const p = job.plates.find((x) => String(x.plate) === plate);
     if (!(await confirmBox(`Start printing ${p.uploaded} (${fmtTime(p.time_s)})? Make sure the bed is clear.`, "Start print"))) return;
-    if (!jobIsCurrent()) { renderJob(job); return; }   // the plate changed while the question was open
+    if (!valid()) { show(); return; }   // the plate changed while the question was open
   }
   btn.disabled = true;
   const label = btn.textContent;
@@ -1067,9 +1256,10 @@ async function plateAction(act, plate, btn) {
     const res = await apiJson(`/api/jobs/${job.id}/plates/${plate}/${act}${q.toString() ? "?" + q : ""}`, { method: "POST" });
     if (res.note) toast(res.note, "warn");
     else if (res.started) toast(`Printing on ${res.printer}`);
-    currentJob = await apiJson(`/api/jobs/${job.id}`);
+    bp.job = await apiJson(`/api/jobs/${job.id}`);
     await refreshPrinter();
-    renderJob(currentJob);
+    show();
+    updatePlateTabs();
   } catch (e) {
     btn.disabled = false;
     btn.textContent = label;
@@ -1090,6 +1280,8 @@ function pickPart(m, mesh = null, additive = false, vol = null) {
   }
   selectedMesh = mesh && m?.meshes.includes(mesh) ? mesh : null;
   selectedVolume = vol;
+  const c = selectedMesh || (m && !m.meshes.some((x) => plateOf(x) === cur) ? m.meshes[0] : null);
+  if (c && plateOf(c) !== cur) setCurrentPlate(plateOf(c), false);
   refresh();
 }
 
@@ -1104,7 +1296,7 @@ function renderTransform() {
   const m = selected, c = selectedCopy();
   if (!m || !c) return;
   const set = (id, v) => { if (!focusedInput(id)) $(id).value = v; };
-  set("t-x", +c.position.x.toFixed(2));
+  set("t-x", +(c.position.x - plateX(plateOf(c))).toFixed(2));     // on its own plate
   set("t-y", +c.position.y.toFixed(2));
   const eu = new THREE.Euler().setFromQuaternion(m.quat, "XYZ");
   set("t-rx", deg(eu.x)); set("t-ry", deg(eu.y)); set("t-rz", deg(eu.z));
@@ -1117,7 +1309,7 @@ function renderTransform() {
 function setPosition(axis, v) {
   const c = selectedCopy();
   if (!c || !Number.isFinite(v)) return refresh();
-  c.position[axis] = v;
+  c.position[axis] = axis === "x" ? plateX(plateOf(c)) + v : v;
   plateChanged();
   refresh();
 }
@@ -1212,6 +1404,8 @@ function partMenu() {
     { label: "Auto-orient", run: () => selected && autoOrient(selected) },
     { label: "Pick face down", key: "F", run: () => setPickMode(true) },
     { label: "Center on the bed", run: centerSelected },
+    ...plates.map((p, i) => (i === cur ? null : { label: `Move to plate ${i + 1}${p.name ? ` · ${p.name}` : ""}`, run: () => moveToPlate(i) })),
+    { label: "Move to a new plate", run: () => moveToPlate(null) },
     { sep: true },
     ...mirrorItems().slice(1),
     { label: "Split into parts", run: splitSelected, disabled: many },
@@ -1233,7 +1427,9 @@ const plateMenu = () => [
   { label: "Add a model…", key: "Ctrl+I", run: () => document.querySelector(".file-input")?.click() },
   ...shapeItems().slice(1).map((it) => ({ ...it, label: `Add ${it.label.toLowerCase()}` })),
   { sep: true },
-  { label: "Arrange", key: "A", run: arrange, disabled: !models.length },
+  { label: "Arrange", key: "A", run: () => arrange(cur), disabled: !models.length },
+  { label: "Plate settings…", run: () => plateSettings(cur) },
+  { label: "Add a plate", run: addPlate },
   { label: "Auto-orient all", run: orientAll, disabled: !models.length },
   { label: "Export plate as 3MF", run: exportPlate3mf, disabled: !models.length },
 ];
@@ -1278,7 +1474,7 @@ function renameSelected() {
 function centerSelected() {
   const c = selectedCopy();
   if (!c) return;
-  c.position.x = bed.w / 2; c.position.y = bed.d / 2;
+  c.position.x = plateX(plateOf(c)) + bed.w / 2; c.position.y = bed.d / 2;
   settle([c]);
 }
 
@@ -1380,8 +1576,8 @@ function exportPartStl() {
 }
 
 function exportPlate3mf() {
-  if (!models.length) return;
-  saveBlob(build3mf(), `${plateName()}.3mf`);
+  if (!modelsOn(cur).length) return;
+  saveBlob(build3mf(cur), `${plateName(cur)}.3mf`);
 }
 
 /* ---- modifier and negative parts */
@@ -1589,6 +1785,7 @@ function paintOverhangs() {
   const st = m.paint.supports;
   for (const t of idx) st[t] = 1;
   recolour(m);
+  m.paintRev = (m.paintRev || 0) + 1;
   plateChanged();
   flash(`Painted ${idx.length.toLocaleString()} overhanging triangles (steeper than ${ang}°)`, "ok");
 }
@@ -1603,13 +1800,18 @@ function filamentColour() {
   return /^#[0-9a-f]{6}/i.test(c) ? c.slice(0, 7) : css("--model");
 }
 
-function plateThumbs() {
+function plateThumbs(pi = cur) {
   // the plate's parts from a three-quarter view, in the filament's colour, on a transparent background
   if (!models.length || !view.scene) return null;
   try {
     thumbRenderer ||= new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
     thumbRenderer.setPixelRatio(1);
-    const meshes = models.flatMap((m) => m.meshes);
+    const meshes = meshesOn(pi);
+    if (!meshes.length) return null;
+    const hide = models.flatMap((m) => m.meshes).filter((x) => !meshes.includes(x)).map((x) => [x, x.visible]);
+    for (const [x] of hide) x.visible = false;
+    const vols = models.flatMap((m) => m.volMeshes || []).map((x) => [x, x.visible]);
+    for (const [x] of vols) x.visible = false;
     const box = new THREE.Box3();
     for (const m of meshes) { m.updateMatrixWorld(true); box.expandByObject(m); }
     const sphere = box.getBoundingSphere(new THREE.Sphere());
@@ -1631,6 +1833,7 @@ function plateThumbs() {
     }
     for (const [m, mt, v] of meshState) { m.material = mt; m.visible = v; }
     for (const [o, v] of others) o.visible = v;
+    for (const [x, v] of [...hide, ...vols]) x.visible = v;
     mat.dispose();
     return out;
   } catch {
@@ -1645,7 +1848,7 @@ let clipboardModel = null;
 
 function viewFrom(dir) {
   const r = Math.hypot(bed.w, bed.d) * 1.15;
-  const c = new THREE.Vector3(bed.w / 2, bed.d / 2, 0);
+  const c = new THREE.Vector3(plateX(cur) + bed.w / 2, bed.d / 2, 0);
   const d = { top: [0, -0.001, 1], front: [0, -1, 0.25], back: [0, 1, 0.25], left: [-1, 0, 0.25], right: [1, 0, 0.25] }[dir];
   view.camera.position.copy(c).addScaledVector(new THREE.Vector3(...d).normalize(), r);
   view.controls.target.copy(c);
@@ -1672,7 +1875,7 @@ function pasteModel() {
   models.push(m);
   setCopies(m, 1);
   updateBox(m);
-  const ref = src.meshes[src.meshes.length - 1];
+  const ref = src.meshes.filter((x) => plateOf(x) === cur).pop();
   if (ref) { m.meshes[0].position.x = ref.position.x + m.size.x + GAP; m.meshes[0].position.y = ref.position.y; }
   selected = m;
   settle(m.meshes);
@@ -1740,12 +1943,11 @@ window.addEventListener("keydown", onKey);
 /* ================================================================ main button */
 // One button that follows the job, like OrcaSlicer's: Slice -> Send to <printer>... -> Start print -> Open <printer>.
 
-let slicing = false;
 let actionRunning = false;
 
 function mainState() {
-  if (slicing) return { label: "Slicing…", disabled: true };
-  const job = currentJob;
+  if (slicingPlates.has(plates[cur]?.id)) return { label: "Slicing…", disabled: true };
+  const job = curJob();
   if (job?.status === "done" && job.plates?.length && jobIsCurrent()) {
     const pr = printerStatus();
     const p = job.plates.find((x) => !x.started);
@@ -1755,7 +1957,7 @@ function mainState() {
     const ready = pr.idle && (!p.uploaded_to || p.uploaded_to === pr.id);
     return { label: ready ? "Start print" : pr.online ? `${pr.name} is busy` : `${pr.name} is offline`, act: "start", plate: p.plate, disabled: !ready, ready };
   }
-  return { label: "Slice", act: "slice", disabled: !(models.length && layoutOk().fits) };
+  return { label: plates.length > 1 ? `Slice plate ${cur + 1}` : "Slice", act: "slice", disabled: !(modelsOn(cur).length && !layoutOk().bad.has(cur)) };
 }
 
 function updateMainButton() {
@@ -1854,11 +2056,13 @@ async function saveProject(asNew) {
   const meta = {
     id: asNew ? undefined : project?.id, name,
     presets: { ...S.selected, bed_type: S.bedType }, edits: S.edits,
+    plates: plates.map((p) => ({ name: p.name, bed_type: p.bedType, print_sequence: p.seq, spiral_mode: p.spiral })),
     models: models.map((m, i) => ({
       mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale.toArray(), overrides: m.overrides, printable: m.printable !== false,
       volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides })),
       paint: m.paint ? { supports: m.paint.supports ? b64(m.paint.supports) : null, seam: m.paint.seam ? b64(m.paint.seam) : null } : null,
-      instances: m.meshes.map((x) => [+x.position.x.toFixed(3), +x.position.y.toFixed(3)]),
+      // [x, y, plate]: x and y on that plate
+      instances: m.meshes.map((x) => { const pi = plateOf(x); return [+(x.position.x - plateX(pi)).toFixed(3), +x.position.y.toFixed(3), pi]; }),
     })),
   };
   const fd = new FormData();
@@ -1886,6 +2090,12 @@ async function openProject(id) {
     clearPlate();
     const missing = await applyProjectPresets(meta.presets, meta.edits);
     if (!view.renderer) initViewer();
+    if (Array.isArray(meta.plates) && meta.plates.length) {
+      plates.length = 0;
+      for (const pp of meta.plates) plates.push({ ...newPlate(), name: String(pp.name || ""), bedType: pp.bed_type || "", seq: pp.print_sequence || "", spiral: pp.spiral_mode || "" });
+      cur = 0;
+      drawBed();
+    }
     for (const pm of meta.models) {
       const buf = await (await api(`/api/projects/${id}/mesh/${pm.mid}`)).arrayBuffer();
       const geo = mergeToGeometry(new THREE.Mesh(new STLLoader().parse(buf)));
@@ -1905,9 +2115,9 @@ async function openProject(id) {
       const unb = (x) => { const a = x ? unb64(x) : null; return a && a.length === tris ? a : null; };
       if (pm.paint) m.paint = { supports: unb(pm.paint.supports), seam: unb(pm.paint.seam) };
       models.push(m);
-      setCopies(m, (pm.instances || [[bed.w / 2, bed.d / 2]]).length);
+      setCopies(m, (pm.instances || [[bed.w / 2, bed.d / 2, 0]]).length);
       updateBox(m);
-      (pm.instances || []).forEach((xy, k) => { if (m.meshes[k]) { m.meshes[k].position.x = xy[0]; m.meshes[k].position.y = xy[1]; } });
+      (pm.instances || []).forEach((xy, k) => { if (m.meshes[k]) { m.meshes[k].position.x = xy[0] + (xy.length > 2 ? plateX(Math.min(xy[2], plates.length - 1)) : 0); m.meshes[k].position.y = xy[1]; } });
     }
     selected = null;
     plateChanged();
@@ -1981,9 +2191,15 @@ $("view-reset").addEventListener("click", fitView);
 function clearPlate() {
   for (const m of models) for (const mesh of m.meshes) view.scene.remove(mesh);
   for (const m of models) for (const vm of m.volMeshes || []) view.scene.remove(vm);
-  plateChanged();
   models.length = 0;
   multi.clear(); selectedVolume = null;
+  plates.length = 0;
+  plates.push(newPlate());
+  cur = 0;
+  previewPlateId = null;
+  drawBed();
+  plateChanged();
+  showPlateResult();
   view.preview.clear();
   previewKey = null;
   $("preview-controls").hidden = true;
@@ -1999,6 +2215,148 @@ $("clear").addEventListener("click", async () => {
   savedVersion = plateVersion;
   updateProjectLabel();
 });
+/* ---- plates: tabs, current plate, plate settings */
+
+function setCurrentPlate(i, moveView = true) {
+  if (i === cur || !plates[i]) return;
+  const dx = plateX(i) - plateX(cur);
+  cur = i;
+  if (moveView && view.camera) { view.camera.position.x += dx; view.controls.target.x += dx; view.controls.update(); }
+  if (selected && !selected.meshes.some((x) => plateOf(x) === cur)) { selected = null; selectedMesh = null; multi.clear(); selectedVolume = null; }
+  drawBed();
+  if (viewMode === "preview") setViewMode("preview");      // this plate's layers, or the model view
+  showPlateResult();
+  refresh();
+}
+
+function showPlateResult() {
+  // the result card follows the current plate
+  const j = curJob();
+  if (j) renderJob(j);
+  else if (!slicingPlates.has(plates[cur]?.id)) { $("result-card").hidden = true; $("result").innerHTML = ""; updateMainButton(); }
+}
+
+function plateState(i) {
+  const p = plates[i];
+  if (slicingPlates.has(p.id)) return ["slicing", "slicing…"];
+  if (!p.job) return ["", modelsOn(i).length ? "not sliced" : "empty"];
+  if (p.job.status === "error") return ["err", "slicing failed"];
+  if (!jobIsCurrent(i)) return ["stale", "changed since slicing"];
+  if (p.job.plates?.some((x) => x.started)) return ["printing", "sent and started"];
+  if (p.job.plates?.some((x) => x.uploaded)) return ["sent", "on the printer"];
+  return ["ok", "sliced"];
+}
+
+function updatePlateTabs() {
+  const el = $("plate-tabs");
+  if (!el) return;
+  el.innerHTML = plates.map((p, i) => {
+    const [st, what] = plateState(i);
+    return `<button type="button" class="ptab${i === cur ? " on" : ""}" data-pi="${i}" title="Plate ${i + 1}${p.name ? `: ${esc(p.name)}` : ""} · ${what}${i === cur ? " · tap for plate options" : ""}">`
+      + `<span class="pdot ${st}"></span>${i + 1}${p.name ? ` <span class="pname">${esc(p.name)}</span>` : ""}${i === cur ? ' <span class="caret">▾</span>' : ""}</button>`;
+  }).join("") + `<button type="button" class="ptab add" data-pi="add" title="Add a plate">+ Plate</button>`;
+}
+
+function addPlate() {
+  plates.push(newPlate());
+  drawBed();
+  setCurrentPlate(plates.length - 1);
+  plateChanged();
+  refresh();
+}
+
+async function deletePlate(i) {
+  if (plates.length < 2) return;
+  const on = meshesOn(i);
+  if (on.length && !(await confirmBox(`Delete plate ${i + 1} and the ${on.length} part${on.length === 1 ? "" : "s"} on it?`, "Delete plate", true))) return;
+  const w = plateX(1) - plateX(0);
+  for (const m of [...models]) {
+    const keep = m.meshes.filter((x) => plateOf(x) !== i);
+    for (const x of m.meshes) if (!keep.includes(x)) view.scene.remove(x);
+    if (!keep.length) { removeModel(m); continue; }
+    m.meshes = keep;
+  }
+  for (const m of models) for (const x of m.meshes) if (plateOf(x) > i) x.position.x -= w;   // later plates move up one
+  if (paint.on && !models.includes(paint.model)) stopPaint();
+  plates.splice(i, 1);
+  if (cur >= plates.length) cur = plates.length - 1;
+  else if (cur > i) cur--;
+  previewPlateId = plates.some((p) => p.id === previewPlateId) ? previewPlateId : null;
+  placePreview();
+  drawBed();
+  fitView();
+  plateChanged();
+  showPlateResult();
+  refresh();
+}
+
+function moveToPlate(target) {
+  // the selected parts' copies on the current plate move to another plate (a new one when target is null), keeping their spot
+  const from = cur;
+  if (target == null) { plates.push(newPlate()); target = plates.length - 1; drawBed(); }
+  const moved = [];
+  for (const m of selection()) for (const x of m.meshes) if (plateOf(x) === from) { x.position.x += plateX(target) - plateX(from); moved.push(x); }
+  if (!moved.length) return;
+  setCurrentPlate(target);
+  plateChanged();
+  if (layoutOk().bad.has(target) || moved.some(overlapsOthers)) arrange(target); else refresh();
+  flash(`Moved to plate ${target + 1}`, "ok");
+}
+
+const plateOptionsMenu = () => [
+  { head: `Plate ${cur + 1}${plates[cur].name ? ` · ${plates[cur].name}` : ""}` },
+  { label: "Plate settings…", run: () => plateSettings(cur) },
+  { label: "Arrange this plate", key: "A", run: () => arrange(cur), disabled: !modelsOn(cur).length },
+  { label: "Select everything on it", run: () => selectPlate(cur), disabled: !modelsOn(cur).length },
+  { sep: true },
+  { label: `Slice plate ${cur + 1}`, run: () => slice(cur), disabled: !modelsOn(cur).length },
+  { label: "Slice all plates", run: sliceAll, disabled: plates.length < 2 },
+  { sep: true },
+  { label: "Add a plate", run: addPlate },
+  { label: "Delete this plate", run: () => deletePlate(cur), disabled: plates.length < 2 },
+];
+
+function selectPlate(i) {
+  const ms = modelsOn(i);
+  multi.clear();
+  selected = ms[ms.length - 1] || null;
+  for (const m of ms) if (m !== selected) multi.add(m);
+  refresh();
+}
+
+async function plateSettings(i) {
+  // like OrcaSlicer's plate settings: a name, and the plate type, print sequence and spiral vase for this plate only
+  const p = plates[i], dlg = $("plate-dlg");
+  $("plate-dlg-title").textContent = `Plate ${i + 1}`;
+  $("pl-name").value = p.name;
+  const printerBed = bedChoices().find((b) => b.v === S.bedType);
+  $("pl-bed").innerHTML = `<option value="">Same as the printer${printerBed ? ` (${esc(printerBed.label)})` : ""}</option>`
+    + bedChoices().map((b) => `<option value="${esc(b.v)}"${b.v === p.bedType ? " selected" : ""}>${esc(b.label)}</option>`).join("");
+  const seq = S.catalog?.options?.print_sequence;
+  const seqVals = seq?.enum_values?.length ? seq.enum_values : ["by layer", "by object"];
+  $("pl-seq").innerHTML = `<option value="">Same as the print settings</option>`
+    + seqVals.map((v, k) => `<option value="${esc(v)}"${v === p.seq ? " selected" : ""}>${esc(seq?.enum_labels?.[k] || v)}</option>`).join("");
+  $("pl-spiral").value = p.spiral;
+  dlg.returnValue = "";
+  dlg.showModal();
+  await new Promise((r) => dlg.addEventListener("close", r, { once: true }));
+  if (dlg.returnValue !== "ok" || !plates.includes(p)) return;
+  Object.assign(p, { name: $("pl-name").value.trim().slice(0, 60), bedType: $("pl-bed").value, seq: $("pl-seq").value, spiral: $("pl-spiral").value });
+  drawBed();
+  plateChanged();
+  refresh();
+}
+
+$("plate-tabs").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-pi]");
+  if (!b) return;
+  if (b.dataset.pi === "add") { addPlate(); return; }
+  const i = Number(b.dataset.pi);
+  if (i !== cur) { setCurrentPlate(i); return; }
+  const r = b.getBoundingClientRect();
+  openMenu(r.left, r.bottom + 4, plateOptionsMenu());
+});
+
 $("lay-face").addEventListener("click", () => setPickMode(!pickMode));
 $("auto-orient").addEventListener("click", () => selected && autoOrient(selected));
 $("orient-reset").addEventListener("click", () => {
@@ -2037,10 +2395,13 @@ $("part-add").addEventListener("click", async () => {
 });
 $("copy-plus").addEventListener("click", () => {
   if (!selected || selected.meshes.length >= MAX_COPIES) return;
+  const from = selected.meshes.filter((x) => plateOf(x) === cur).pop() || selected.meshes[selected.meshes.length - 1];
+  const home = plateOf(from);
   setCopies(selected, selected.meshes.length + 1);
   const mesh = selected.meshes[selected.meshes.length - 1];
+  mesh.position.copy(from.position);
   mesh.position.x += selected.size.x + GAP;
-  settle([mesh]);
+  settle([mesh], home);
 });
 $("copy-minus").addEventListener("click", () => { if (selected) { setCopies(selected, selected.meshes.length - 1); plateChanged(); refresh(); } });
 $("obj-delete").addEventListener("click", () => {
@@ -2079,7 +2440,7 @@ $("vol-add").addEventListener("click", async () => {
 for (const b of document.querySelectorAll("[data-paint-tool]")) b.addEventListener("click", () => setPaintTool(Number(b.dataset.paintTool)));
 $("paint-radius").addEventListener("input", (e) => { paint.radius = parseFloat(e.target.value) || 3; $("paint-radius-val").textContent = `${paint.radius} mm`; });
 $("paint-overhangs").addEventListener("click", paintOverhangs);
-$("paint-clear").addEventListener("click", () => { const m = paint.model; if (!m) return; m.paint[paint.target].fill(0); recolour(m); plateChanged(); });
+$("paint-clear").addEventListener("click", () => { const m = paint.model; if (!m) return; m.paint[paint.target].fill(0); recolour(m); m.paintRev = (m.paintRev || 0) + 1; plateChanged(); });
 $("paint-done").addEventListener("click", stopPaint);
 $("open-projects").addEventListener("click", () => openProjects().catch((e) => toast(e.message, "err")));
 $("save-project").addEventListener("click", () => saveProject(false));
@@ -2150,11 +2511,11 @@ refresh();
 initPrinters({
   getMachine: () => S.selected.machine,
   machineNames: () => S.lists.machine.map((m) => m.name),
-  onStatus: () => { if (currentJob?.status === "done") renderJob(currentJob); },
+  onStatus: () => { if (curJob()?.status === "done") renderJob(curJob()); },
 });
 initSettings((what) => {
   if (what === "presets") { setBed(); refreshPrinter(); }
-  if (what === "presets" || what === "edits") plateChanged();
+  if (what === "presets" || what === "edits") { settingsVersion++; plateChanged(); }
 }).then(fitView).catch((e) => {
   $("result-card").hidden = false;
   $("result").innerHTML = `<p class="msg err">Couldn't load presets: ${esc(e.message)}</p>`;
