@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f4f5f7" media="(prefers-color-scheme: light)">
 <title>BicuSlicer</title>
-<link rel="stylesheet" href="/static/style.css?v=7">
+<link rel="stylesheet" href="/static/style.css?v=8">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -216,6 +216,45 @@
   </div>
 </dialog>
 
+<!-- ======================= physical printers -->
+<dialog id="printers" class="sheet printers">
+  <div class="sheet-head"><b>Printers</b><button class="btn icon" id="pr-close" type="button" aria-label="Close">✕</button></div>
+  <div class="wiz-body">
+    <div id="pr-view-list">
+      <div id="pr-list" class="pr-list"></div>
+      <div class="pr-foot"><button class="primary" id="pr-add" type="button">Add a printer</button></div>
+    </div>
+    <div id="pr-view-form" hidden>
+      <form id="pr-form" class="wiz-form" autocomplete="off">
+        <p><b id="pr-form-title">Add a printer</b></p>
+        <label class="field"><span>Name</span><input name="name" required maxlength="80" placeholder="e.g. Voron in the garage"></label>
+        <label class="field"><span>Host type</span><select name="host_type"></select></label>
+        <p class="muted small" id="pr-hint"></p>
+        <label class="field"><span>Hostname, IP or URL</span><input name="print_host" required maxlength="300" placeholder="192.168.1.50 or http://printer.local" inputmode="url" spellcheck="false"></label>
+        <label class="field" id="pr-auth-row"><span>Authorization type</span>
+          <select name="printhost_authorization_type"><option value="key">API key</option><option value="user">HTTP digest (username and password)</option></select></label>
+        <label class="field" id="pr-key-row"><span>API key</span><input name="printhost_apikey" type="password" maxlength="300" autocomplete="new-password" spellcheck="false"></label>
+        <label class="field" id="pr-user-row"><span>User</span><input name="printhost_user" maxlength="100" autocomplete="off" spellcheck="false"></label>
+        <label class="field" id="pr-pass-row"><span id="pr-pass-label">Password</span><input name="printhost_password" type="password" maxlength="300" autocomplete="new-password"></label>
+        <label class="check-inline" id="pr-tls-row"><input type="checkbox" name="verify_tls" checked> Check the HTTPS certificate (untick for self-signed)</label>
+        <details class="pr-more"><summary>More options</summary>
+          <label class="field"><span>Device UI address (optional)</span><input name="print_host_webui" maxlength="300" placeholder="Defaults to the printer's address" inputmode="url" spellcheck="false"></label>
+          <label class="field"><span>Upload folder (optional)</span><input name="upload_folder" maxlength="200" placeholder="e.g. bicuslicer" spellcheck="false"></label>
+        </details>
+        <div class="field"><span>Use this printer for these printer presets</span><div class="chips" id="pr-presets"></div></div>
+        <p id="pr-test-result" class="pr-test muted small"></p>
+        <div class="wiz-foot pr-form-foot">
+          <button class="btn danger" id="pr-delete" type="button">Remove</button>
+          <span></span>
+          <button class="btn" id="pr-cancel" type="button">Cancel</button>
+          <button class="btn" id="pr-test" type="button">Test connection</button>
+          <button class="primary" type="submit">Save</button>
+        </div>
+      </form>
+    </div>
+  </div>
+</dialog>
+
 <!-- ======================= small dialogs -->
 <dialog id="newp">
   <form method="dialog">
@@ -240,6 +279,6 @@
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 
-<script type="module" src="/static/app.js?v=7"></script>
+<script type="module" src="/static/app.js?v=8"></script>
 </body>
 </html>

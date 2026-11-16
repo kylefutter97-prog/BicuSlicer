@@ -6,9 +6,7 @@ services:
     user: "1000:1000"                 # must be able to read the OrcaSlicer folder and write ./data
     environment:
       TZ: Etc/UTC
-      MOONRAKER_URL: http://printer.local      # your Klipper host (Mainsail/Fluidd nginx or :7125)
-      # MOONRAKER_API_KEY: ""                  # only if Moonraker doesn't trust this host
-      # PRINTER_UI_URL: http://printer.local/  # defaults to the Moonraker host
+      # Printers (Klipper/Moonraker, OctoPrint, PrusaLink, Duet) are added in the page: tap the printer pill.
     volumes:
       # Optional: an OrcaSlicer desktop data folder whose user presets you want to see, read-only.
       # With the linuxserver/orcaslicer desktop container this is <its /config>/.config/OrcaSlicer.

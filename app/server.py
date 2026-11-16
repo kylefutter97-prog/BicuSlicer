@@ -20,15 +20,15 @@ from aiohttp import web
 
 import gcode_preview
 import presets as P
+import printhosts as H
 
 ORCA_BIN = os.environ.get("ORCA_BIN") or next(
     (p for p in ("/opt/orcaslicer/AppRun", "/opt/orcaslicer/bin/orca-slicer") if os.path.exists(p)), "orca-slicer")
 ORCA_DIR = Path(os.environ.get("ORCA_DIR", "/orca"))           # OrcaSlicer data dir (read-only)
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
-MOONRAKER = os.environ.get("MOONRAKER_URL", "http://localhost:7125").rstrip("/")
-MOONRAKER_API_KEY = os.environ.get("MOONRAKER_API_KEY", "")     # only needed if Moonraker doesn't trust this host
-PRINTER_UI_URL = os.environ.get("PRINTER_UI_URL", "")           # Mainsail/Fluidd link; default: the Moonraker host
-UPLOAD_FOLDER = os.environ.get("UPLOAD_FOLDER", "")             # sub-folder in Moonraker's gcodes root ("" = root)
+# Older single-printer settings: on first start they become a saved printer connection (see printhosts.migrate)
+MOONRAKER = os.environ.get("MOONRAKER_URL", "").rstrip("/")
+PRINTER_UI_URL = os.environ.get("PRINTER_UI_URL", "")
 KEEP_JOBS = int(os.environ.get("KEEP_JOBS", "20"))
 SLICE_TIMEOUT = int(os.environ.get("SLICE_TIMEOUT", "900"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "300"))
@@ -305,42 +305,38 @@ async def run_slice(job: dict, form: dict) -> None:
         save_meta(job)
 
 
-# ---------------------------------------------------------------- moonraker
+# ---------------------------------------------------------------- printer connections
 
-async def moonraker(method: str, path: str, **kw) -> dict:
-    timeout = aiohttp.ClientTimeout(total=kw.pop("timeout", 10))
-    headers = {"X-Api-Key": MOONRAKER_API_KEY} if MOONRAKER_API_KEY else {}
-    async with aiohttp.ClientSession(timeout=timeout, headers=headers) as s:
-        async with s.request(method, MOONRAKER + path, **kw) as r:
-            body = await r.text()
-            if r.status >= 400:
+printers = H.Store(DATA_DIR / "printers.json")
+
+
+def migrate_printers() -> None:
+    machines = []
+    if lib:
+        for src in (lib.user, lib.orca):
+            for name in src["machine"]:
                 try:
-                    msg = json.loads(body)["error"]["message"]
-                except (ValueError, KeyError, TypeError):
-                    msg = body[:200]
-                raise web.HTTPBadGateway(text=f"Printer said: {msg}")
-            return json.loads(body).get("result", {})
+                    values = lib.resolve("machine", name)
+                except P.PresetError:
+                    # the vendor library may not be loaded yet at startup: the preset's own fields are enough here
+                    values = {k: v for k, v in lib.find("machine", name)[1].items() if k not in P.META_KEYS}
+                machines.append((name, values))
+    H.migrate(printers, MOONRAKER, PRINTER_UI_URL, machines)
 
 
-async def printer_status() -> dict:
-    q = "/printer/objects/query?webhooks&print_stats=state,filename&virtual_sdcard=progress&extruder=temperature,target&heater_bed=temperature,target"
+def pick_printer(request, job: dict | None = None) -> dict:
+    pid = request.query.get("printer")
+    p = printers.get(pid) if pid else printers.for_machine(request.query.get("machine") or (job or {}).get("machine"))
+    if not p:
+        raise web.HTTPConflict(text="No printer connection set up yet: add one under Printers")
+    return p
+
+
+async def host_call(coro):
     try:
-        st = (await moonraker("GET", q, timeout=5))["status"]
-    except Exception as e:
-        return {"online": False, "message": str(e)[:200] or "Printer not reachable"}
-    klippy = st.get("webhooks", {}).get("state")
-    pstate = st.get("print_stats", {}).get("state")
-    return {
-        "online": True,
-        "klippy": klippy,
-        "message": st.get("webhooks", {}).get("state_message"),
-        "state": pstate,
-        "file": st.get("print_stats", {}).get("filename"),
-        "progress": st.get("virtual_sdcard", {}).get("progress"),
-        "nozzle": st.get("extruder", {}),
-        "bed": st.get("heater_bed", {}),
-        "idle": klippy == "ready" and pstate in IDLE_PRINT_STATES,
-    }
+        return await coro
+    except H.HostError as e:
+        raise web.HTTPBadGateway(text=str(e))
 
 
 # ---------------------------------------------------------------- routes
@@ -550,17 +546,71 @@ async def api_setup(request):
     return web.json_response({"ok": True, "created": created, "machines": st["machines"]})
 
 
-def printer_ui_url() -> str:
-    if PRINTER_UI_URL:
-        return PRINTER_UI_URL
-    from urllib.parse import urlsplit
-    host = urlsplit(MOONRAKER).hostname or "localhost"
-    return "" if host in ("localhost", "127.0.0.1") else f"http://{host}/"
-
-
 @routes.get("/api/printer")
-async def api_printer(_):
-    return web.json_response({**await printer_status(), "ui": printer_ui_url()})
+async def api_printer(request):
+    """Status of the printer for ?machine= (its linked connection, else the active one), or ?printer=<id>."""
+    try:
+        p = pick_printer(request)
+    except web.HTTPConflict:
+        return web.json_response({"configured": False, "online": False, "message": "No printer connection"})
+    info = {"configured": True, "id": p["id"], "name": p["name"], "type": p["host_type"], "ui": H.webui_url(p)}
+    try:
+        st = await H.backend(p).status()
+    except H.HostError as e:
+        st = {"online": False, "message": str(e), "idle": False}
+    return web.json_response({**st, **info})
+
+
+@routes.get("/api/printers")
+async def api_printers(_):
+    return web.json_response({"printers": [printers.public(p) for p in printers.printers],
+                              "active": printers.data.get("active"), "types": H.types_info()})
+
+
+@routes.post("/api/printers")
+async def api_printer_save(request):
+    body = await request.json()
+    try:
+        p = printers.upsert(body)
+    except H.HostError as e:
+        raise web.HTTPBadRequest(text=str(e))
+    return web.json_response(printers.public(p))
+
+
+@routes.delete("/api/printers/{id}")
+async def api_printer_delete(request):
+    printers.delete(request.match_info["id"])
+    return web.json_response({"deleted": request.match_info["id"]})
+
+
+@routes.post("/api/printers/active")
+async def api_printer_active(request):
+    body = await request.json()
+    if not printers.get(body.get("id")):
+        raise web.HTTPNotFound(text="No such printer")
+    printers.data["active"] = body["id"]
+    printers.save()
+    return web.json_response({"active": body["id"]})
+
+
+@routes.post("/api/printers/test")
+async def api_printer_test(request):
+    """Try a connection as entered in the form (blank secrets fall back to the saved ones)."""
+    body = await request.json()
+    saved = printers.get(body.get("id")) or {}
+    p = {**saved, **{k: v for k, v in body.items() if k in H.FIELDS and not (k in H.SECRET_FIELDS and not v)}}
+    p.setdefault("name", "test")
+    try:
+        b = H.backend(p)
+        res = await b.test()
+        try:
+            st = await b.status()
+            res["state"] = st.get("state")
+        except H.HostError:
+            pass
+        return web.json_response(res)
+    except H.HostError as e:
+        return web.json_response({"ok": False, "message": str(e)})
 
 
 @routes.post("/api/slice")
@@ -731,18 +781,11 @@ async def api_preview(request):
 async def api_upload(request):
     job = get_job(request.match_info["id"])
     pl = plate_of(job, request.match_info["n"])
-    name = gcode_name(job, pl)
-    data = aiohttp.FormData()
-    data.add_field("root", "gcodes")
-    if UPLOAD_FOLDER:
-        data.add_field("path", UPLOAD_FOLDER)
-    path = JOBS / job["id"] / "out" / pl["file"]
-    with path.open("rb") as fh:
-        data.add_field("file", fh, filename=name, content_type="application/octet-stream")
-        res = await moonraker("POST", "/server/files/upload", data=data, timeout=300)
-    pl["uploaded"] = res.get("item", {}).get("path") or (f"{UPLOAD_FOLDER}/{name}" if UPLOAD_FOLDER else name)
+    p = pick_printer(request, job)
+    remote = await host_call(H.backend(p).upload(JOBS / job["id"] / "out" / pl["file"], gcode_name(job, pl)))
+    pl.update(uploaded=remote, uploaded_to=p["id"], uploaded_name=p["name"], started=None)
     save_meta(job)
-    return web.json_response({"uploaded": pl["uploaded"]})
+    return web.json_response({"uploaded": remote, "printer": p["name"]})
 
 
 @routes.post("/api/jobs/{id}/plates/{n}/start")
@@ -751,14 +794,15 @@ async def api_start(request):
     pl = plate_of(job, request.match_info["n"])
     if not pl.get("uploaded"):
         raise web.HTTPConflict(text="Send it to the printer first")
-    st = await printer_status()
+    p = printers.get(pl.get("uploaded_to")) or pick_printer(request, job)
+    b = H.backend(p)
+    st = await host_call(b.status())
     if not st.get("idle"):
-        why = st.get("message") if not st.get("online") or st.get("klippy") != "ready" else f"printer is {st.get('state')}"
-        raise web.HTTPConflict(text=f"Printer is not ready to start: {why}")
-    await moonraker("POST", "/printer/print/start", params={"filename": pl["uploaded"]})
+        raise web.HTTPConflict(text=f"{p['name']} isn't ready to start: {st.get('message') or st.get('state') or 'busy'}")
+    await host_call(b.start(pl["uploaded"]))
     pl["started"] = time.time()
     save_meta(job)
-    return web.json_response({"started": pl["uploaded"]})
+    return web.json_response({"started": pl["uploaded"], "printer": p["name"]})
 
 
 @web.middleware
@@ -773,6 +817,7 @@ async def errors_as_text(request, handler):
 
 async def on_startup(app):
     await asyncio.to_thread(build_library)          # user + OrcaSlicer presets work straight away
+    await asyncio.to_thread(migrate_printers)
     app["orca_task"] = asyncio.get_running_loop().create_task(ensure_orca_data())
 
 

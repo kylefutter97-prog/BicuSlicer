@@ -24,7 +24,12 @@ Lay out a plate in the browser, slice it with the real OrcaSlicer engine using t
   - laptops and tablets get two;
   - phones get one, with a fixed Slice button.
 - **Results:** print time, filament weight and length, layer count and cost.
-- **Printer:** send the G-code to Moonraker, then start the print with a separate, confirmed tap. Starting is refused unless Klipper is ready and the printer is idle. A status pill shows printer state and temperatures.
+- **Physical printers, like OrcaSlicer's:**
+  - Add printers with **Moonraker (Klipper)**, **OctoPrint** (also Klipper through Moonraker's OctoPrint compatibility), **PrusaLink** or **Duet (RepRapFirmware)** connections. Each uses OrcaSlicer's fields: host or IP, device UI, API key, HTTP digest user and password, and HTTPS check.
+  - Test a connection before saving it, and link a connection to printer presets so choosing a preset picks its printer.
+  - Send G-code, then start the print with a separate, confirmed tap. Starting is refused unless the printer reports it's idle.
+  - A status pill shows the printer's state and temperatures.
+  - Credentials stay on the server (`DATA_DIR/printers.json`, mode 600) and are never sent back to the page.
 
 What the page shows is what gets sliced. The page bakes every placed part into one 3MF in bed coordinates, and the server slices that 3MF with `--arrange 0`.
 
@@ -41,7 +46,7 @@ What the page shows is what gets sliced. The page bakes every placed part into o
 ```sh
 git clone https://github.com/<you>/BicuSlicer.git
 cd BicuSlicer
-cp docker-compose.example.yml docker-compose.yml   # then edit the paths and MOONRAKER_URL
+cp docker-compose.example.yml docker-compose.yml   # then edit the paths
 docker compose up -d --build
 ```
 
@@ -54,10 +59,7 @@ Open `http://<host>:8000`.
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `MOONRAKER_URL` | `http://localhost:7125` | Moonraker's base URL (Mainsail/Fluidd's nginx on port 80 also works) |
-| `MOONRAKER_API_KEY` | – | Only needed if Moonraker doesn't list this host in `trusted_clients` |
-| `PRINTER_UI_URL` | Moonraker's host | Link used by the status pill and "Open printer" |
-| `UPLOAD_FOLDER` | – (gcodes root) | Sub-folder in Moonraker's `gcodes` for uploads |
+| `MOONRAKER_URL`, `MOONRAKER_API_KEY`, `PRINTER_UI_URL`, `UPLOAD_FOLDER` | – | Optional, from older versions: read once on first start to create a printer connection. Add printers in the page instead (tap the printer pill). |
 | `ORCA_DIR` | `/orca` | Optional: an OrcaSlicer data folder whose user presets you want to see (mount it read-only) |
 | `DATA_DIR` | `/data` | Jobs and temporary files |
 | `KEEP_JOBS` | `20` | How many recent jobs to keep |

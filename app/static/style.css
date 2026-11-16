@@ -313,3 +313,27 @@ dialog.sheet[open] { display: flex; flex-direction: column; }
 .lg .sw { width: 11px; height: 11px; border-radius: 3px; flex: none; }
 .lg.off { opacity: .45; text-decoration: line-through; }
 @media (min-width: 1280px) { .area-plate .preview-controls { flex: none; } }
+
+/* ================================================================ printers */
+dialog.sheet.printers { width: min(720px, 96vw); height: auto; max-height: 92vh; }
+.pr-list { display: grid; gap: 10px; }
+.pr-card { border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px; display: grid; gap: 10px; }
+.pr-card.current { border-color: var(--accent); }
+.pr-main { display: flex; gap: 10px; align-items: flex-start; }
+.pr-main .dot { margin-top: 6px; }
+.dot.ok { background: var(--ok); } .dot.busy { background: var(--warn); } .dot.bad { background: var(--bad); }
+.pr-names { display: grid; gap: 2px; min-width: 0; }
+.pr-names span { overflow-wrap: anywhere; }
+.pr-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+.pr-actions .btn { min-height: 36px; font-size: 14px; }
+a.btn { text-decoration: none; display: inline-flex; align-items: center; justify-content: center; }
+.default-tag { padding: 0 8px; }
+.pr-foot { margin-top: 14px; display: flex; justify-content: flex-end; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.pr-more { margin: 4px 0 10px; }
+.pr-more > summary { cursor: pointer; color: var(--muted); font-size: 14px; padding: 6px 0; }
+.pr-test { min-height: 1.3em; margin: 4px 0; }
+.pr-test.ok { color: var(--ok); } .pr-test.err { color: var(--bad); }
+.pr-form-foot { flex-wrap: wrap; }
+.pr-form-foot .btn, .pr-form-foot .primary { min-width: 0; flex: 0 1 auto; }
+#pr-form .field input[type=password] { font-family: inherit; }

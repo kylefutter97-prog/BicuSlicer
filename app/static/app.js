@@ -7,13 +7,13 @@ import { zipSync, strToU8 } from "three/addons/libs/fflate.module.js";
 import { $, esc, apiJson, confirmBox } from "./util.js";
 import { initSettings, S, machineValues } from "./settings.js";
 import { Preview } from "./preview.js";
+import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const DOWN = new THREE.Vector3(0, 0, -1);
 const GAP = 6;          // mm between parts when arranging
 const MAX_COPIES = 50;
 
-let printer = { idle: false };
 let currentJob = null;
 
 /* ================================================================ scene */
@@ -604,7 +604,7 @@ function fmtTime(s) {
 }
 
 function printerUrl() {
-  return printer.ui || "";
+  return printerStatus().ui || "";
 }
 
 function renderJob(job) {
@@ -618,10 +618,16 @@ function renderJob(job) {
   const warn = (job.warnings || []).filter(Boolean).map((w) => `<p class="msg warn">${esc(w)}</p>`).join("");
   out.innerHTML = warn + job.plates.map((p) => {
     const title = job.plates.length > 1 ? `<h3>Plate ${p.plate}</h3>` : "";
-    const sent = p.uploaded ? `<p class="msg ok">On the printer as <b>${esc(p.uploaded)}</b>${p.started ? " · print started" : ""}</p>` : "";
+    const pr = printerStatus();
+    const sent = p.uploaded ? `<p class="msg ok">On ${esc(p.uploaded_name || "the printer")} as <b>${esc(p.uploaded)}</b>${p.started ? " · print started" : ""}</p>` : "";
     let action;
-    if (!p.uploaded) action = `<button class="primary" data-act="upload" data-plate="${p.plate}">Send to printer</button>`;
-    else if (!p.started) action = `<button class="primary" data-act="start" data-plate="${p.plate}" ${printer.idle ? "" : "disabled"}>${printer.idle ? "Start print" : "Printer busy"}</button>`;
+    if (!p.uploaded) action = pr.configured
+      ? `<button class="primary" data-act="upload" data-plate="${p.plate}">Send to ${esc(pr.name)}</button>`
+      : `<button class="primary" data-act="printers" data-plate="${p.plate}">Add a printer…</button>`;
+    else if (!p.started) {
+      const ready = pr.idle && (!p.uploaded_to || p.uploaded_to === pr.id);
+      action = `<button class="primary" data-act="start" data-plate="${p.plate}" ${ready ? "" : "disabled"}>${ready ? "Start print" : pr.online ? "Printer busy" : "Printer offline"}</button>`;
+    }
     else action = printerUrl() ? `<a class="btn" href="${esc(printerUrl())}" target="_blank" rel="noopener">Open printer</a>` : "";
     return `<div class="plate">${title}
       <div class="stats">
@@ -686,6 +692,7 @@ async function slice() {
 async function plateAction(act, plate, btn) {
   const job = currentJob;
   if (act === "preview") { showPreview(job, plate); return; }
+  if (act === "printers") { openPrinters(true); return; }
   if (act === "start") {
     const p = job.plates.find((x) => String(x.plate) === plate);
     if (!(await confirmBox(`Start printing ${p.uploaded} (${fmtTime(p.time_s)})? Make sure the bed is clear.`, "Start print"))) return;
@@ -694,7 +701,8 @@ async function plateAction(act, plate, btn) {
   const label = btn.textContent;
   btn.innerHTML = `<span class="spinner"></span>${act === "upload" ? "Sending…" : "Starting…"}`;
   try {
-    await apiJson(`/api/jobs/${job.id}/plates/${plate}/${act}`, { method: "POST" });
+    const target = act === "upload" && printerStatus().id ? `?printer=${printerStatus().id}` : "";
+    await apiJson(`/api/jobs/${job.id}/plates/${plate}/${act}${target}`, { method: "POST" });
     currentJob = await apiJson(`/api/jobs/${job.id}`);
     await refreshPrinter();
     renderJob(currentJob);
@@ -703,26 +711,6 @@ async function plateAction(act, plate, btn) {
     btn.textContent = label;
     $("result").insertAdjacentHTML("afterbegin", `<p class="msg err">${esc(e.message)}</p>`);
   }
-}
-
-/* ================================================================ printer */
-
-const fmtTemp = (h) => (h && typeof h.temperature === "number" ? `${Math.round(h.temperature)}°` : "–");
-
-async function refreshPrinter() {
-  const pill = $("printer");
-  try { printer = await apiJson("/api/printer"); } catch (e) { printer = { online: false, message: e.message }; }
-  pill.className = "pill";
-  let text;
-  if (!printer.online) { pill.classList.add("bad"); text = "Printer offline"; }
-  else if (printer.klippy !== "ready") { pill.classList.add("bad"); text = printer.message || `Klipper ${printer.klippy}`; }
-  else if (printer.state === "printing" || printer.state === "paused") {
-    pill.classList.add("busy");
-    text = `${printer.state === "paused" ? "Paused" : "Printing"} ${Math.round((printer.progress || 0) * 100)}%`;
-  } else { pill.classList.add("ok"); text = `Ready · ${fmtTemp(printer.nozzle)} / ${fmtTemp(printer.bed)}`; }
-  $("printer-text").textContent = text;
-  pill.title = printer.message || text;
-  if (currentJob?.status === "done") renderJob(currentJob);
 }
 
 /* ================================================================ wiring */
@@ -815,15 +803,17 @@ $("result").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-act]");
   if (b) plateAction(b.dataset.act, b.dataset.plate, b);
 });
-$("printer").addEventListener("click", () => { if (printerUrl()) window.open(printerUrl(), "_blank", "noopener"); });
 
 initViewer();
 drawBed();
 fitView();
 refresh();
-initSettings((what) => { if (what === "presets") setBed(); }).then(fitView).catch((e) => {
+initPrinters({
+  getMachine: () => S.selected.machine,
+  machineNames: () => S.lists.machine.map((m) => m.name),
+  onStatus: () => { if (currentJob?.status === "done") renderJob(currentJob); },
+});
+initSettings((what) => { if (what === "presets") { setBed(); refreshPrinter(); } }).then(fitView).catch((e) => {
   $("result-card").hidden = false;
   $("result").innerHTML = `<p class="msg err">Couldn't load presets: ${esc(e.message)}</p>`;
 });
-refreshPrinter();
-setInterval(refreshPrinter, 10000);
