@@ -71,14 +71,29 @@ class Editor {
     return out;
   }
 
+  // The search box is created once and never replaced (rebuilding it while typing loses the cursor);
+  // render() only rebuilds the tabs and settings below it.
+  shell() {
+    if (!this.main || !this.root.contains(this.main)) {
+      this.root.innerHTML = `<div class="editor-head"><input class="search" type="search" placeholder="Search settings" data-search></div><div class="editor-main"></div>`;
+      this.main = this.root.querySelector(".editor-main");
+      this.search = this.root.querySelector("[data-search]");
+      this.search.value = this.query;
+    }
+    return this.main;
+  }
+
   render() {
+    const main = this.shell();
     if (!S.catalog) {
-      this.root.innerHTML = `<p class="muted small">${esc(S.state?.orca?.status === "failed"
+      this.search.hidden = true;
+      main.innerHTML = `<p class="muted small">${esc(S.state?.orca?.status === "failed"
         ? "Couldn't download OrcaSlicer's settings list: " + (S.state.orca.error || "") : "Loading OrcaSlicer's settings list…")}</p>`;
       return;
     }
     const { detail } = this.get();
-    if (!detail) { this.root.innerHTML = `<p class="muted small">Choose a preset.</p>`; return; }
+    this.search.hidden = !detail;
+    if (!detail) { main.innerHTML = `<p class="muted small">Choose a preset.</p>`; return; }
     const pages = this.pages();
     if (this.page >= pages.length) this.page = 0;
     const shown = this.query ? pages : pages.slice(this.page, this.page + 1);
@@ -93,19 +108,8 @@ class Editor {
         ${g.options.map((k) => this.field(k)).join("")}
       </details>`;
     }).join("")).join("");
-    const searchVal = esc(this.query);
-    this.root.innerHTML = `
-      <div class="editor-head">
-        <input class="search" type="search" placeholder="Search settings" value="${searchVal}" data-search>
-      </div>
-      ${tabs}
+    main.innerHTML = `${tabs}
       <div class="editor-body">${body || `<p class="muted small">${this.query ? "No settings match." : "Nothing to show in this mode."}</p>`}</div>`;
-    if (this.focusSearch) {
-      const s = this.root.querySelector("[data-search]");
-      s.focus();
-      s.setSelectionRange(s.value.length, s.value.length);
-      this.focusSearch = false;
-    }
   }
 
   field(key) {
@@ -163,9 +167,7 @@ class Editor {
 
   onInput(e, commit) {
     if (e.target.matches("[data-search]")) {
-      this.query = e.target.value;
-      this.focusSearch = true;
-      this.render();
+      if (this.query !== e.target.value) { this.query = e.target.value; this.render(); }
       return;
     }
     const k = e.target.dataset.key;
@@ -319,6 +321,7 @@ function pmSetType(type) {
   PM.editor.type = type;
   PM.editor.page = 0;
   PM.editor.query = "";
+  if (PM.editor.search) PM.editor.search.value = "";
   PM.editor.openGroups = null;
   PM.filter = "";
   $("pm-filter").value = "";
