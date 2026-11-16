@@ -80,6 +80,17 @@ ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
 OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
 ```
 
+## occt-import-js 0.0.22 / Open CASCADE Technology (downloaded at run time, not in this repository or the image)
+
+STEP and IGES files are converted to meshes in the browser by [occt-import-js](https://github.com/kovacsv/occt-import-js),
+a WebAssembly build of [Open CASCADE Technology](https://dev.opencascade.org/). Both are licensed under the
+**GNU Lesser General Public License 2.1** (Open CASCADE with its additional exception). BicuSlicer doesn't include or
+modify them: the first time a STEP file is opened, the server downloads the unmodified `occt-import-js.js` and
+`occt-import-js.wasm` (version 0.0.22, from `OCCT_URL`, default unpkg.com), checks them against pinned SHA-256
+checksums (see `app/server.py`), stores them in `DATA_DIR/ext/` and serves them to the page. Their source code is at
+https://github.com/kovacsv/occt-import-js and https://github.com/Open-Cascade-SAS/OCCT; you may replace them with
+your own build of the same interface (point `OCCT_URL` at it and update the checksums).
+
 ## OrcaSlicer (in the Docker image, not in this repository)
 
 The Docker image built from this repository's `Dockerfile` contains an unmodified copy of OrcaSlicer, unpacked from its official Linux AppImage for the version set by the `ORCA_VERSION` build argument (default 2.5.1).

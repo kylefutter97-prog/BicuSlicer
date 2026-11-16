@@ -9,7 +9,7 @@ Lay out a plate in the browser, slice it with the real OrcaSlicer engine using t
 ## What it does
 
 - **Plate editing on a phone:**
-  - add several STL / 3MF / OBJ models;
+  - add several STL / 3MF / OBJ / **STEP** models (STEP and IGES are converted in the browser by OpenCascade, fetched once on first use);
   - drag parts around the bed;
   - tap a face to put it on the bed;
   - run OrcaSlicer's own auto-orient and check the result in the 3D view;
@@ -100,6 +100,7 @@ Open `http://<host>:8000`.
 | `SLICE_TIMEOUT` | `900` | Seconds before a slice is stopped |
 | `MAX_UPLOAD_MB` | `300` | Largest upload |
 | `PORT` | `8000` | Listen port |
+| `OCCT_URL` | unpkg.com | Where the server fetches the STEP reader (occt-import-js 0.0.22) the first time a STEP file is opened. Files are checked against pinned checksums. |
 | `ALLOW_POST_PROCESS` | – | `1` lets print settings run their post-processing scripts. Off by default: OrcaSlicer runs them on the server, and presets and projects can come from anywhere. |
 
 The OrcaSlicer version is the `ORCA_VERSION` build argument (`docker compose build --build-arg ORCA_VERSION=2.5.1`). Build with the same version as any OrcaSlicer desktop install whose presets you import, so presets saved by one version load in the other.

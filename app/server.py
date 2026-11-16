@@ -755,6 +755,58 @@ async def api_printer_active(request):
     return web.json_response({"active": body["id"]})
 
 
+# ---------------------------------------------------------------- STEP import: OpenCascade in the browser
+# The OrcaSlicer CLI can't read STEP. The page converts it with occt-import-js (OpenCascade compiled to WebAssembly,
+# LGPL-2.1, https://github.com/kovacsv/occt-import-js). Its 7.8 MB aren't bundled: the server fetches them the first
+# time someone opens a STEP file, checks them against these checksums, and serves them from DATA_DIR afterwards.
+
+OCCT_VERSION = "0.0.22"
+OCCT_FILES = {
+    "occt-import-js.js": "626b2d27e29f079d43e2d30e035a11779dc28208df373bf4cc90e6321e559df5",
+    "occt-import-js.wasm": "08201564f0954a19d55f289226c85bbe909a9f1762d5cf4c44ee626d83d8cbee",
+}
+OCCT_URL = os.environ.get("OCCT_URL", f"https://unpkg.com/occt-import-js@{OCCT_VERSION}/dist/").rstrip("/") + "/"
+OCCT_DIR = DATA_DIR / "ext" / f"occt-import-js-{OCCT_VERSION}"
+_occt_lock = asyncio.Lock()
+
+
+async def fetch_occt() -> None:
+    import hashlib
+    OCCT_DIR.mkdir(parents=True, exist_ok=True)
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=300)) as s:
+        for name, sha in OCCT_FILES.items():
+            dest = OCCT_DIR / name
+            if dest.is_file():
+                continue
+            async with s.get(OCCT_URL + name) as r:
+                if r.status != 200:
+                    raise RuntimeError(f"{name}: download answered {r.status}")
+                data = await r.read()
+            if hashlib.sha256(data).hexdigest() != sha:
+                raise RuntimeError(f"{name}: the download doesn't match its checksum")
+            tmp = dest.with_suffix(dest.suffix + ".tmp")
+            tmp.write_bytes(data)
+            tmp.replace(dest)
+
+
+@routes.get("/ext/occt/{file}")
+async def ext_occt(request):
+    name = request.match_info["file"]
+    if name not in OCCT_FILES:
+        raise web.HTTPNotFound()
+    path = OCCT_DIR / name
+    if not path.is_file():
+        async with _occt_lock:
+            if not path.is_file():
+                try:
+                    await fetch_occt()
+                except (aiohttp.ClientError, TimeoutError, RuntimeError, OSError) as e:
+                    raise web.HTTPServiceUnavailable(
+                        text=f"Opening STEP files needs a one-off download of OpenCascade (7.8 MB), which failed: {e}")
+    ctype = "application/wasm" if name.endswith(".wasm") else "text/javascript"
+    return web.FileResponse(path, headers={"Content-Type": ctype, "Cache-Control": "public, max-age=31536000, immutable"})
+
+
 # ---------------------------------------------------------------- printer view (OrcaSlicer's Device tab)
 
 def printer_or_404(request) -> dict:

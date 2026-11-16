@@ -11,6 +11,7 @@ import { Preview } from "./preview.js";
 import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
 import * as CAL from "./calibration.js";
+import { readStep } from "./step.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters, openPrinterView } from "./printers.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -202,16 +203,29 @@ async function parseFile(f) {
   if (ext === "stl") return mergeToGeometry(new THREE.Mesh(new STLLoader().parse(await f.arrayBuffer())));
   if (ext === "obj") return mergeToGeometry(new OBJLoader().parse(await f.text()));
   if (ext === "3mf") return mergeToGeometry(new ThreeMFLoader().parse(await f.arrayBuffer()));
-  if (ext === "step" || ext === "stp") throw new Error("STEP files can't be sliced here. Export it as STL or 3MF (SolidCraft can) and add that");
-  throw new Error("use an STL, 3MF or OBJ file");
+  if (["step", "stp", "iges", "igs"].includes(ext)) {
+    // CAD files: OpenCascade turns them into a mesh in the browser; several bodies come in as one part (Split separates them)
+    const { bodies } = await readStep(await f.arrayBuffer(), f.name, "normal", (t) => busy(t));
+    const group = new THREE.Group();
+    for (const b of bodies) {
+      const g = new THREE.BufferGeometry();
+      g.setAttribute("position", new THREE.BufferAttribute(b.pos, 3));
+      group.add(new THREE.Mesh(g));
+    }
+    const geo = mergeToGeometry(group);
+    if (bodies.length > 1) geo.userData.note = `${f.name} has ${bodies.length} bodies, added as one part: use Split to separate them.`;
+    return geo;
+  }
+  throw new Error("use an STL, 3MF, OBJ or STEP file");
 }
 
 async function addFiles(files) {
   if (!files.length) return;
   if (!view.renderer) initViewer();
   const problems = [], added = [];
-  const ok = /\.(stl|3mf|obj)$/i;
-  for (const f of files.filter((x) => !ok.test(x.name))) problems.push(`${f.name}: use an STL, 3MF or OBJ file`);
+  const ok = /\.(stl|3mf|obj|step|stp|iges|igs)$/i;
+  for (const f of files.filter((x) => !ok.test(x.name))) problems.push(`${f.name}: use an STL, 3MF, OBJ or STEP file`);
+  const notes = [];
   files = files.filter((x) => ok.test(x.name));
   const projects = [];
   for (const f of files) {
@@ -233,6 +247,7 @@ async function addFiles(files) {
         }
       }
       const geo = await parseFile(f);
+      if (geo.userData.note) notes.push(geo.userData.note);
       const m = newModelRecord(f.name.replace(/\.[^.]+$/, ""), geo);
       models.push(m);
       setCopies(m, 1);
@@ -246,6 +261,7 @@ async function addFiles(files) {
   busy(null);
   if (added.length) { settle(added); fitView(); }
   if (problems.length) flash(problems.join(" · "), "err");
+  else if (notes.length) flash(notes.join(" · "), "ok");
   for (const [name, proj] of projects) await openProject3mf(name, proj);
 }
 
