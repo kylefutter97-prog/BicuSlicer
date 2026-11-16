@@ -312,8 +312,19 @@ async function saveEdits(t, asNew) {
 
 const PM = { type: "machine", name: null, detail: null, edits: {}, editor: null, list: [], filter: "", view: "list" };
 
-async function pmOpen(type = "machine") {
+function pmSetType(type) {
+  // one place that switches the window to a preset type: the tabs, the list and the settings editor together
   PM.type = type;
+  PM.editor.type = type;
+  PM.editor.page = 0;
+  PM.editor.query = "";
+  PM.editor.openGroups = null;
+  PM.filter = "";
+  $("pm-filter").value = "";
+}
+
+async function pmOpen(type = "machine") {
+  pmSetType(type);
   PM.name = S.selected[type];
   PM.edits = {};
   $("pm").showModal();
@@ -451,7 +462,7 @@ async function pmImport(files) {
     await pmLoadList();
     if (ok.length) {
       const first = ok.find((r) => r.type === PM.type) || ok[0];
-      if (first.type !== PM.type) { PM.type = first.type; await pmLoadList(); }
+      if (first.type !== PM.type) { pmSetType(first.type); await pmLoadList(); }
       await pmSelect(first.name);
     }
     await refreshLists(true);
@@ -475,11 +486,7 @@ function wirePM() {
     b.addEventListener("click", async () => {
       if (Object.keys(PM.edits).length && !(await confirmBox("Discard your unsaved changes to this preset?", "Discard"))) return;
       PM.edits = {};
-      PM.type = b.dataset.pmType;
-      PM.editor.type = PM.type;
-      PM.editor.page = 0;
-      PM.filter = "";
-      $("pm-filter").value = "";
+      pmSetType(b.dataset.pmType);
       await pmLoadList();
       await pmSelect(S.selected[PM.type]);
     });
