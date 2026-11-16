@@ -755,6 +755,143 @@ async def api_printer_active(request):
     return web.json_response({"active": body["id"]})
 
 
+# ---------------------------------------------------------------- printer view (OrcaSlicer's Device tab)
+
+def printer_or_404(request) -> dict:
+    p = printers.get(request.match_info["id"])
+    if not p:
+        raise web.HTTPNotFound(text="No such printer")
+    return p
+
+
+@routes.get("/api/printers/{id}/detail")
+async def api_printer_detail(request):
+    p = printer_or_404(request)
+    info = {"configured": True, "id": p["id"], "name": p["name"], "type": p["host_type"], "ui": H.webui_url(p)}
+    try:
+        st = await H.backend(p).detail()
+    except H.HostError as e:
+        st = {"online": False, "message": str(e), "idle": False}
+    return web.json_response({**st, **info})
+
+
+@routes.post("/api/printers/{id}/action")
+async def api_printer_action(request):
+    """Pause, resume, cancel, emergency stop, firmware restart, home; or set nozzle / bed temperature, speed, flow, fan."""
+    p = printer_or_404(request)
+    body = await request.json()
+    name = body.get("action")
+    if name not in H.ACTIONS:
+        raise web.HTTPBadRequest(text="Unknown action")
+    value = None
+    if H.ACTIONS[name]:
+        lo, hi = H.ACTIONS[name]
+        try:
+            value = float(body.get("value"))
+        except (TypeError, ValueError):
+            raise web.HTTPBadRequest(text="Enter a number")
+        if not lo <= value <= hi:
+            raise web.HTTPBadRequest(text=f"Enter a value from {lo} to {hi}")
+    try:
+        await H.backend(p).action(name, value)
+    except H.HostError as e:
+        raise web.HTTPBadGateway(text=str(e))
+    return web.json_response({"ok": True})
+
+
+_cams: dict[str, tuple[float, list]] = {}
+
+
+async def printer_cams(p: dict) -> list:
+    hit = _cams.get(p["id"])
+    if hit and time.time() - hit[0] < 60:
+        return hit[1]
+    try:
+        cams = await H.backend(p).webcams()
+    except H.HostError:
+        cams = []
+    _cams[p["id"]] = (time.time(), cams)
+    return cams
+
+
+@routes.get("/api/printers/{id}/webcams")
+async def api_printer_webcams(request):
+    p = printer_or_404(request)
+    cams = await printer_cams(p)
+    # the page gets our own URLs (proxied, same origin), never the camera's
+    return web.json_response([{"index": i, "name": c["name"], "service": c["service"], "stream": bool(c["stream"]),
+                               "snapshot": bool(c["snapshot"]), "flip_h": c["flip_h"], "flip_v": c["flip_v"],
+                               "rotation": c["rotation"], "aspect": c["aspect"]} for i, c in enumerate(cams)])
+
+
+def cam_or_404(cams: list, request) -> dict:
+    try:
+        return cams[int(request.match_info["n"])]
+    except (ValueError, IndexError):
+        raise web.HTTPNotFound(text="No such camera")
+
+
+@routes.get("/api/printers/{id}/webcam/{n}/snapshot")
+async def api_printer_snapshot(request):
+    """One camera frame, fetched by the server (the camera is often only reachable on the LAN, or behind a login)."""
+    p = printer_or_404(request)
+    cam = cam_or_404(await printer_cams(p), request)
+    if not cam["snapshot"]:
+        raise web.HTTPNotFound(text="This camera has no snapshot URL")
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(cam["snapshot"], ssl=H._ssl(p)) as r:
+                if r.status != 200:
+                    raise web.HTTPBadGateway(text=f"Camera answered {r.status}")
+                data = await r.read()
+                ctype = r.headers.get("Content-Type", "image/jpeg").split(";")[0]
+    except (aiohttp.ClientError, TimeoutError):
+        raise web.HTTPBadGateway(text="Can't reach the camera")
+    if not ctype.startswith("image/"):
+        raise web.HTTPBadGateway(text="The camera didn't send an image")
+    return web.Response(body=data, content_type=ctype, headers={"Cache-Control": "no-store"})
+
+
+@routes.get("/api/printers/{id}/webcam/{n}/stream")
+async def api_printer_stream(request):
+    """The camera's MJPEG stream, passed through (multipart/x-mixed-replace), until the page closes it."""
+    p = printer_or_404(request)
+    cam = cam_or_404(await printer_cams(p), request)
+    if not cam["stream"] or "mjpeg" not in cam["service"].lower():
+        raise web.HTTPNotFound(text="No MJPEG stream for this camera")
+    resp = None
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=None, sock_connect=10, sock_read=30)) as s:
+            async with s.get(cam["stream"], ssl=H._ssl(p)) as r:
+                ctype = r.headers.get("Content-Type", "")
+                if r.status != 200 or not ctype.lower().startswith("multipart/"):
+                    raise web.HTTPBadGateway(text="The camera isn't sending an MJPEG stream")
+                resp = web.StreamResponse(headers={"Content-Type": ctype, "Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+                await resp.prepare(request)
+                async for chunk in r.content.iter_any():
+                    await resp.write(chunk)
+    except (aiohttp.ClientError, TimeoutError):
+        if resp is None:
+            raise web.HTTPBadGateway(text="Can't reach the camera")
+    except (ConnectionResetError, asyncio.CancelledError):
+        pass               # the page closed the stream
+    return resp or web.Response(status=204)
+
+
+@routes.get("/api/printers/{id}/thumb")
+async def api_printer_thumb(request):
+    """The thumbnail inside the G-code file the printer is printing (Moonraker)."""
+    p = printer_or_404(request)
+    fn = request.query.get("file", "")
+    try:
+        data = await H.backend(p).file_thumb(fn) if fn else None
+    except H.HostError:
+        data = None
+    if not data:
+        raise web.HTTPNotFound(text="No thumbnail")
+    return web.Response(body=data, content_type="image/png", headers={"Cache-Control": "max-age=3600"})
+
+
 @routes.post("/api/printers/test")
 async def api_printer_test(request):
     """Try a connection as entered in the form (blank secrets fall back to the saved ones)."""

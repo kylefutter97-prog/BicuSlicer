@@ -11,7 +11,7 @@ import { Preview } from "./preview.js";
 import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
 import * as CAL from "./calibration.js";
-import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
+import { initPrinters, printerStatus, refreshPrinter, openPrinters, openPrinterView } from "./printers.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
 const DOWN = new THREE.Vector3(0, 0, -1);
@@ -1412,7 +1412,7 @@ function renderJobInner(job) {
     const title = job.plates.length > 1 ? `<h3>Plate ${p.plate}</h3>` : "";
     const sent = p.uploaded ? `<p class="msg ok">On ${esc(p.uploaded_name || "the printer")} as <b>${esc(p.uploaded)}</b>${p.started ? " · print started" : ""}</p>` : "";
     // sending and starting live on the main button; the card keeps the details
-    const action = p.started && printerUrl() ? `<a class="btn" href="${esc(printerUrl())}" target="_blank" rel="noopener">Open printer</a>` : "";
+    const action = p.started && printerStatus().id ? `<button class="btn" data-act="watch" type="button">Watch the print</button>` : "";
     return `<div class="plate">${title}
       <div class="stats">
         <div class="stat"><b>${fmtTime(p.time_s)}</b><span>print time</span></div>
@@ -2339,7 +2339,7 @@ function mainState() {
   if (job?.status === "done" && job.plates?.length && jobIsCurrent()) {
     const pr = printerStatus();
     const p = job.plates.find((x) => !x.started);
-    if (!p) return printerUrl() ? { label: `Open ${pr.name || "printer"}`, act: "open" } : { label: "Printing", disabled: true };
+    if (!p) return pr.id ? { label: `Watch on ${pr.name || "the printer"}`, act: "open" } : { label: "Printing", disabled: true };
     if (!pr.configured) return { label: "Add a printer…", act: "printers", plate: p.plate };
     if (!p.uploaded) return { label: `Send to ${pr.name}…`, act: "send", plate: p.plate, ready: true };
     const ready = pr.idle && (!p.uploaded_to || p.uploaded_to === pr.id);
@@ -3001,12 +3001,13 @@ $("slice").addEventListener("click", async () => {
   const b = $("slice");
   const act = b.dataset.act;
   if (act === "slice") return slice();
-  if (act === "open") { window.open(printerUrl(), "_blank", "noopener"); return; }
+  if (act === "open") { openPrinterView(printerStatus().id); return; }
   if (!act) return;
   actionRunning = true;
   try { await plateAction(act, b.dataset.plate, b); } finally { actionRunning = false; updateMainButton(); }
 });
 $("result").addEventListener("click", (e) => {
+  if (e.target.closest("[data-act=watch]")) { openPrinterView(printerStatus().id); return; }
   const b = e.target.closest("button[data-act]");
   if (b) plateAction(b.dataset.act, b.dataset.plate, b);
 });

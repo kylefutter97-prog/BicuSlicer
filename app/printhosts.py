@@ -19,7 +19,7 @@ import ssl
 import time
 import uuid
 from pathlib import Path
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urljoin, urlsplit
 
 import aiohttp
 
@@ -281,8 +281,41 @@ def _status(**kw) -> dict:
 
 
 # ====================================================================== backends
+# Each backend: test(), status() (the pill), upload(), start(); and for the printer view: detail() (status plus job
+# times, layers, fan, speed), action(name, value) (pause, resume, cancel, temperatures, speed, ...) and webcams().
 
-class Moonraker:
+ACTIONS = {          # name: (min, max) for a value, or None
+    "pause": None, "resume": None, "cancel": None, "estop": None, "restart": None, "home": None,
+    "nozzle": (0, 350), "bed": (0, 150), "speed": (10, 300), "flow": (50, 150), "fan": (0, 100),
+}
+
+
+def cam_url(p: dict, url: str) -> str:
+    """A webcam URL as the printer reports it, made absolute (relative ones live on the printer's web server)."""
+    if not url:
+        return ""
+    if re.match(r"^https?://", url, re.I):
+        return url
+    u = urlsplit(base_url(p))
+    root = f"{u.scheme}://{u.hostname}/" if p.get("host_type") == "moonraker" and u.port == 7125 else f"{u.scheme}://{u.netloc}/"
+    return urljoin(root, url)
+
+
+class Base:
+    async def detail(self):
+        return await self.status()
+
+    async def action(self, name: str, value=None):
+        raise HostError("That isn't available for this kind of printer connection yet")
+
+    async def webcams(self) -> list[dict]:
+        return []
+
+    async def file_thumb(self, filename: str):
+        return None
+
+
+class Moonraker(Base):
     IDLE = {"standby", "complete", "cancelled", "error"}
 
     def __init__(self, p): self.c = Client(p); self.p = p
@@ -315,8 +348,101 @@ class Moonraker:
     async def start(self, remote: str):
         await self.c.json("POST", "/printer/print/start", params={"filename": remote})
 
+    _meta: dict = {}
 
-class OctoPrint:
+    async def metadata(self, filename: str) -> dict:
+        key = (self.c.base, filename)
+        if key not in Moonraker._meta:
+            try:
+                Moonraker._meta[key] = (await self.c.json("GET", "/server/files/metadata", params={"filename": filename}, timeout=5)).get("result", {})
+            except HostError:
+                return {}
+            if len(Moonraker._meta) > 50:
+                Moonraker._meta.pop(next(iter(Moonraker._meta)))
+        return Moonraker._meta[key]
+
+    async def detail(self):
+        q = ("/printer/objects/query?webhooks&print_stats&virtual_sdcard=progress,is_active&display_status=progress,message"
+             "&extruder=temperature,target,power&heater_bed=temperature,target,power&fan=speed"
+             "&gcode_move=speed_factor,extrude_factor,gcode_position&toolhead=homed_axes")
+        st = (await self.c.json("GET", q, timeout=5)).get("result", {}).get("status", {})
+        klippy = st.get("webhooks", {}).get("state")
+        ps = st.get("print_stats", {})
+        pstate = ps.get("state")
+        fn = ps.get("filename") or None
+        meta = await self.metadata(fn) if fn else {}
+        prog = st.get("virtual_sdcard", {}).get("progress")
+        dur = ps.get("print_duration") or 0
+        est = meta.get("estimated_time")
+        remaining = None
+        if pstate in ("printing", "paused"):
+            if est:
+                remaining = max(0.0, est - dur)              # the slicer's estimate, as Mainsail shows it
+            elif prog and prog > 0.01:
+                remaining = dur / prog - dur
+        info = ps.get("info") or {}
+        gm = st.get("gcode_move", {})
+        pos = gm.get("gcode_position") or [None, None, None]
+        return _status(
+            state=pstate if klippy == "ready" else f"klipper {klippy}", message=st.get("webhooks", {}).get("state_message") or ps.get("message"),
+            progress=prog, file=fn, nozzle=st.get("extruder", {}), bed=st.get("heater_bed", {}),
+            idle=klippy == "ready" and pstate in self.IDLE, printing=pstate in ("printing", "paused"), klippy=klippy,
+            layer=info.get("current_layer"), layers=info.get("total_layer") or meta.get("layer_count"),
+            elapsed=dur, total_elapsed=ps.get("total_duration"), remaining=remaining, estimate=est,
+            filament_used=ps.get("filament_used"), filament_total=meta.get("filament_total"),
+            speed_factor=gm.get("speed_factor"), flow_factor=gm.get("extrude_factor"), fan=st.get("fan", {}).get("speed"),
+            z=pos[2] if len(pos) > 2 else None, homed=st.get("toolhead", {}).get("homed_axes"),
+            display=st.get("display_status", {}).get("message"), has_thumb=bool(meta.get("thumbnails")),
+            object_height=meta.get("object_height"), slicer=meta.get("slicer"))
+
+    async def gcode(self, script: str):
+        await self.c.json("POST", "/printer/gcode/script", params={"script": script}, timeout=60)
+
+    async def action(self, name: str, value=None):
+        if name in ("pause", "resume", "cancel"):
+            await self.c.json("POST", f"/printer/print/{name}")
+        elif name == "estop":
+            await self.c.json("POST", "/printer/emergency_stop")
+        elif name == "restart":
+            await self.c.json("POST", "/printer/firmware_restart")
+        elif name == "home":
+            await self.gcode("G28")
+        elif name == "nozzle":
+            await self.gcode(f"M104 S{value:g}")
+        elif name == "bed":
+            await self.gcode(f"M140 S{value:g}")
+        elif name == "speed":
+            await self.gcode(f"M220 S{value:g}")
+        elif name == "flow":
+            await self.gcode(f"M221 S{value:g}")
+        elif name == "fan":
+            await self.gcode(f"M106 S{round(value * 2.55)}" if value > 0 else "M107")
+        else:
+            await super().action(name, value)
+
+    async def webcams(self):
+        res = (await self.c.json("GET", "/server/webcams/list", timeout=5)).get("result", {})
+        out = []
+        for w in res.get("webcams", []):
+            if w.get("enabled") is False:
+                continue
+            out.append({"name": w.get("name") or "Camera", "service": w.get("service") or "",
+                        "stream": cam_url(self.p, w.get("stream_url") or ""), "snapshot": cam_url(self.p, w.get("snapshot_url") or ""),
+                        "flip_h": bool(w.get("flip_horizontal")), "flip_v": bool(w.get("flip_vertical")), "rotation": w.get("rotation") or 0,
+                        "aspect": w.get("aspect_ratio") or "4:3"})
+        return out
+
+    async def file_thumb(self, filename: str):
+        meta = await self.metadata(filename)
+        th = sorted(meta.get("thumbnails") or [], key=lambda t: t.get("width", 0) * t.get("height", 0))
+        if not th:
+            return None
+        folder = filename.rsplit("/", 1)[0] + "/" if "/" in filename else ""
+        status, body = await self.c.request("GET", "/server/files/gcodes/" + quote(folder + th[-1]["relative_path"]), timeout=10)
+        return body if status == 200 else None
+
+
+class OctoPrint(Base):
     def __init__(self, p): self.c = Client(p); self.p = p
 
     async def test(self):
@@ -356,8 +482,54 @@ class OctoPrint:
     async def start(self, remote: str):
         await self.c.json("POST", "/api/files/local/" + quote(remote), ok=(200, 204), json={"command": "select", "print": True})
 
+    async def detail(self):
+        st = await self.status()
+        try:
+            job = await self.c.json("GET", "/api/job", timeout=5)
+            pr = job.get("progress") or {}
+            st.update(elapsed=pr.get("printTime"), remaining=pr.get("printTimeLeft"),
+                      estimate=(job.get("job") or {}).get("estimatedPrintTime"))
+        except HostError:
+            pass
+        return st
 
-class PrusaLink:
+    async def action(self, name: str, value=None):
+        post = lambda path, body: self.c.json("POST", path, ok=(200, 204), json=body)
+        if name == "pause":
+            await post("/api/job", {"command": "pause", "action": "pause"})
+        elif name == "resume":
+            await post("/api/job", {"command": "pause", "action": "resume"})
+        elif name == "cancel":
+            await post("/api/job", {"command": "cancel"})
+        elif name == "nozzle":
+            await post("/api/printer/tool", {"command": "target", "targets": {"tool0": value}})
+        elif name == "bed":
+            await post("/api/printer/bed", {"command": "target", "target": value})
+        elif name == "speed":
+            await post("/api/printer/printhead", {"command": "feedrate", "factor": int(value)})
+        elif name == "flow":
+            await post("/api/printer/tool", {"command": "flowrate", "factor": int(value)})
+        elif name == "home":
+            await post("/api/printer/printhead", {"command": "home", "axes": ["x", "y", "z"]})
+        elif name in ("fan", "estop"):
+            cmd = "M112" if name == "estop" else (f"M106 S{round(value * 2.55)}" if value > 0 else "M107")
+            await post("/api/printer/command", {"commands": [cmd]})
+        else:
+            await super().action(name, value)
+
+    async def webcams(self):
+        try:
+            w = (await self.c.json("GET", "/api/settings", timeout=5)).get("webcam") or {}
+        except HostError:
+            return []
+        if not (w.get("streamUrl") or w.get("snapshotUrl")):
+            return []
+        return [{"name": "Camera", "service": "mjpegstreamer", "stream": cam_url(self.p, w.get("streamUrl") or ""),
+                 "snapshot": cam_url(self.p, w.get("snapshotUrl") or ""), "flip_h": bool(w.get("flipH")), "flip_v": bool(w.get("flipV")),
+                 "rotation": 90 if w.get("rotate90") else 0, "aspect": "16:9"}]
+
+
+class PrusaLink(Base):
     def __init__(self, p): self.c = Client(p); self.p = p
 
     async def test(self):
@@ -399,8 +571,28 @@ class PrusaLink:
         if status not in (200, 201, 204):
             raise HostError(_err(status, body))
 
+    async def detail(self):
+        st = await self.status()
+        try:
+            job = (await self.c.json("GET", "/api/v1/status", timeout=5)).get("job") or {}
+            st.update(elapsed=job.get("time_printing"), remaining=job.get("time_remaining"), job_id=job.get("id"))
+        except HostError:
+            pass
+        return st
 
-class Duet:
+    async def action(self, name: str, value=None):
+        if name not in ("pause", "resume", "cancel"):
+            return await super().action(name, value)
+        job = (await self.c.json("GET", "/api/v1/status", timeout=5)).get("job") or {}
+        if not job.get("id"):
+            raise HostError("There's no print to control")
+        method, path = ("DELETE", f"/api/v1/job/{job['id']}") if name == "cancel" else ("PUT", f"/api/v1/job/{job['id']}/{name}")
+        status, body = await self.c.request(method, path)
+        if status not in (200, 204):
+            raise HostError(_err(status, body))
+
+
+class Duet(Base):
     """RepRapFirmware in standalone mode (the board's own web server, as DWC uses)."""
 
     def __init__(self, p): self.c = Client(p); self.p = p
@@ -435,6 +627,18 @@ class Duet:
     async def start(self, remote: str):
         await self.connect()
         await self.c.json("GET", "/rr_gcode?gcode=" + quote(f'M32 "{remote}"'))
+
+    async def action(self, name: str, value=None):
+        codes = {"pause": "M25", "resume": "M24", "cancel": "M0", "estop": "M112", "home": "G28"}
+        if name in codes:
+            g = codes[name]
+        elif name in ("nozzle", "bed", "speed", "flow", "fan"):
+            g = {"nozzle": f"M104 S{value:g}", "bed": f"M140 S{value:g}", "speed": f"M220 S{value:g}", "flow": f"M221 S{value:g}",
+                 "fan": f"M106 S{value / 100:.2f}"}[name]
+        else:
+            return await super().action(name, value)
+        await self.connect()
+        await self.c.json("GET", "/rr_gcode?gcode=" + quote(g))
 
 
 BACKENDS = {"moonraker": Moonraker, "octoprint": OctoPrint, "prusalink": PrusaLink, "duet": Duet}

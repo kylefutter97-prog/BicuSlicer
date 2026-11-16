@@ -1,5 +1,6 @@
 // Physical printer connections (OrcaSlicer's "physical printer" dialog): list, add/edit, test, link to printer presets.
 import { $, esc, apiJson, postJson, api, toast, confirmBox } from "./util.js";
+import { initPrinterView, openPrinterView } from "./printerview.js";
 
 let getMachine = () => null;
 let machineNames = () => [];
@@ -22,6 +23,8 @@ export function describe(st) {
   if (!st.idle) return { cls: "bad", text: `${st.name}: ${st.message || st.state || "not ready"}` };
   return { cls: "ok", text: `${st.name} · ${fmtTemp(st.nozzle)} / ${fmtTemp(st.bed)}` };
 }
+
+export { openPrinterView };
 
 export async function refreshPrinter() {
   try {
@@ -182,7 +185,10 @@ export async function openPrinters(addNew = false) {
 
 export function initPrinters(opts) {
   ({ getMachine, machineNames, onStatus } = { ...{ getMachine, machineNames, onStatus }, ...opts });
-  for (const id of ["printer", "open-printers"]) $(id).addEventListener("click", () => openPrinters().catch((e) => toast(e.message, "err")));
+  // the pill opens the printer view (OrcaSlicer's Device tab); the Printers button manages connections
+  $("open-printers").addEventListener("click", () => openPrinters().catch((e) => toast(e.message, "err")));
+  $("printer").addEventListener("click", () => (status.configured && status.id ? openPrinterView(status.id) : openPrinters()).catch?.((e) => toast(e.message, "err")));
+  initPrinterView({ onConnections: () => openPrinters().catch((e) => toast(e.message, "err")) });
   $("pr-close").addEventListener("click", () => $("printers").close());
   $("pr-add").addEventListener("click", () => showForm(null));
   $("pr-cancel").addEventListener("click", backToList);

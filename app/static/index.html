@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=29">
+<link rel="stylesheet" href="/static/style.css?v=31">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -444,6 +444,38 @@
   </form>
 </dialog>
 
+<dialog id="pv" class="sheet pv-sheet" aria-label="Printer">
+  <div class="sheet-head pv-head">
+    <b id="pv-name">Printer</b><span id="pv-state" class="pv-state"></span>
+    <span class="pv-head-btns">
+      <a id="pv-ui" class="btn ghost small-btn" target="_blank" rel="noopener" title="Open the printer's own web page"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-printer"/></svg>Web UI ↗</a>
+      <button class="btn ghost small-btn" id="pv-conn" type="button" title="Printer connections"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-sliders-horizontal"/></svg>Connections</button>
+      <button class="btn icon" id="pv-close" type="button" aria-label="Close">✕</button>
+    </span>
+  </div>
+  <div class="pv-body">
+    <div class="pv-cam" id="pv-cam"><img id="pv-img" alt="Printer camera"><p id="pv-cam-msg" class="muted small"></p></div>
+    <div class="pv-side">
+      <div class="pv-job" id="pv-job" hidden>
+        <div class="pv-job-top"><img id="pv-thumb" alt="" hidden><div><b id="pv-file"></b><div class="pv-progress"><div id="pv-bar"></div></div></div><b id="pv-pct" class="pv-pct"></b></div>
+        <div class="pv-stats" id="pv-stats"></div>
+      </div>
+      <p class="small pv-msg" id="pv-msg"></p>
+      <div class="pv-ctl">
+        <button class="btn" id="pv-pause" type="button" hidden><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-pause"/></svg>Pause</button>
+        <button class="btn primary" id="pv-resume" type="button" hidden>Resume</button>
+        <button class="btn danger" id="pv-cancel" type="button" hidden>Cancel print</button>
+        <button class="btn" id="pv-restart" type="button" hidden>Firmware restart</button>
+      </div>
+      <div class="pv-tiles" id="pv-tiles"></div>
+      <div class="pv-more">
+        <button class="btn small-btn" id="pv-home" type="button">Home all</button>
+        <button class="btn small-btn danger" id="pv-estop" type="button">Emergency stop</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
 <dialog id="calib-dlg">
   <form method="dialog" class="plate-dlg calib-dlg">
     <p><b id="calib-title"></b></p>
@@ -541,6 +573,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=31"></script>
+<script type="module" src="/static/app.js?v=32"></script>
 </body>
 </html>
