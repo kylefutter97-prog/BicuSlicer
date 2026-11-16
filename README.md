@@ -30,7 +30,7 @@ What the page shows is what gets sliced. The page bakes every placed part into o
 
 ## Requirements
 
-- Docker on an **x86-64** host. The image is built on [linuxserver/orcaslicer](https://docs.linuxserver.io/images/docker-orcaslicer/), which is amd64-only and about 7 GB.
+- Docker on an x86-64 or ARM64 host (e.g. a Raspberry Pi 5). The image is about 1.8 GB and contains OrcaSlicer's slicing engine: no separate OrcaSlicer install is needed.
 - Optional: an OrcaSlicer desktop data folder, if you want its user presets available. For example, the linuxserver/orcaslicer desktop container's `/config/.config/OrcaSlicer`. Without one, start from the vendor library or a custom printer.
 - Internet access on first start, to fetch OrcaSlicer's settings catalogue and vendor profiles (see below).
 - A Klipper printer with Moonraker, reachable from the container.
@@ -65,7 +65,7 @@ Open `http://<host>:8000`.
 | `MAX_UPLOAD_MB` | `300` | Largest upload |
 | `PORT` | `8000` | Listen port |
 
-The OrcaSlicer version comes from the base image tag in the `Dockerfile`. Keep it the same as your desktop OrcaSlicer, so presets saved by one version load in the other.
+The OrcaSlicer version is the `ORCA_VERSION` build argument (`docker compose build --build-arg ORCA_VERSION=2.5.1`). Build with the same version as any OrcaSlicer desktop install whose presets you import, so presets saved by one version load in the other.
 
 ## Where the OrcaSlicer data comes from
 
@@ -104,4 +104,9 @@ docker restart bicuslicer
 
 ## Licence
 
-[MIT](LICENSE). Vendored third-party code is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). OrcaSlicer itself (AGPL-3.0) is not part of this repository. It comes from the base image and runs as a separate program.
+**Short version:**
+- BicuSlicer's own code is MIT.
+- The Docker image also contains OrcaSlicer, which is AGPL-3.0, so publishing the image means passing on OrcaSlicer's licence and source link. [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) has the details.
+
+
+[MIT](LICENSE) for this repository. Vendored third-party code is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md). OrcaSlicer itself (AGPL-3.0) is not part of this repository. The `Dockerfile` downloads its official release into the image, where it runs as a separate program.

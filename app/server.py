@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import sys
 import time
 import uuid
 from pathlib import Path
@@ -20,7 +21,8 @@ from aiohttp import web
 import gcode_preview
 import presets as P
 
-ORCA_BIN = os.environ.get("ORCA_BIN", "/opt/orcaslicer/bin/orca-slicer")
+ORCA_BIN = os.environ.get("ORCA_BIN") or next(
+    (p for p in ("/opt/orcaslicer/AppRun", "/opt/orcaslicer/bin/orca-slicer") if os.path.exists(p)), "orca-slicer")
 ORCA_DIR = Path(os.environ.get("ORCA_DIR", "/orca"))           # OrcaSlicer data dir (read-only)
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 MOONRAKER = os.environ.get("MOONRAKER_URL", "http://localhost:7125").rstrip("/")
@@ -87,7 +89,7 @@ async def ensure_orca_data() -> None:
         if not (d / "catalog.json").is_file() or not (d / "profiles").is_dir():
             orca["status"] = "downloading"
             proc = await asyncio.create_subprocess_exec(
-                "/lsiopy/bin/python3" if Path("/lsiopy/bin/python3").exists() else "python3",
+                sys.executable or "python3",
                 str(TOOLS / "orca_data.py"), "--tag", tag, "--out", str(d),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
             out, _ = await proc.communicate()

@@ -58,6 +58,14 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-## OrcaSlicer (not included)
+## OrcaSlicer (in the Docker image, not in this repository)
 
-OrcaSlicer (AGPL-3.0, https://github.com/OrcaSlicer/OrcaSlicer) is provided by the `lscr.io/linuxserver/orcaslicer` base image and is run as a separate program; none of its code is in this repository.
+The Docker image built from this repository's `Dockerfile` contains an unmodified copy of OrcaSlicer, unpacked from its official Linux AppImage for the version set by the `ORCA_VERSION` build argument (default 2.5.1).
+
+- Licence: GNU Affero General Public License v3.0. The full text ships inside the image with OrcaSlicer and is at https://github.com/OrcaSlicer/OrcaSlicer/blob/main/LICENSE.
+- Source for the exact version: https://github.com/OrcaSlicer/OrcaSlicer/tree/v2.5.1, or the tag matching `ORCA_VERSION`.
+- BicuSlicer runs OrcaSlicer as a separate program, its command line, and does not link to or modify it.
+
+On first start, BicuSlicer also downloads OrcaSlicer's settings definitions and vendor profiles from that repository, for the same version, into its data folder (`DATA_DIR/orca/<tag>/`). These are OrcaSlicer's work under the same licence and are not part of this repository.
+
+The image also contains Ubuntu 24.04 packages (GTK, WebKitGTK, Python, aiohttp and their dependencies) under their own licences. They are listed in each package's `/usr/share/doc/<package>/copyright`.
