@@ -411,3 +411,44 @@ dialog.keys-dlg { width: min(520px, 94vw); }
 .keys td { padding: 5px 0; border-top: 1px solid var(--line); vertical-align: top; }
 .keys td:first-child { white-space: nowrap; padding-right: 14px; }
 kbd { font: inherit; font-size: 12.5px; border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 6px; padding: 1px 6px; background: var(--field); }
+
+/* ================================================================ plate tools */
+.plate-toolbar { display: flex; gap: 4px; flex-wrap: nowrap; overflow-x: auto; padding: 2px 0 8px; scrollbar-width: thin; }
+.tb { flex: none; min-height: 34px; padding: 0 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--field);
+  color: var(--text); font: inherit; font-size: 13.5px; white-space: nowrap; cursor: pointer; display: inline-flex; align-items: center; }
+.tb:disabled { opacity: .4; cursor: default; }
+.tb.on { background: var(--accent); color: var(--accent-text); border-color: transparent; }
+.tb-sep { flex: none; width: 1px; background: var(--line); margin: 4px 3px; }
+.menu { position: fixed; z-index: 70; min-width: 210px; max-width: 300px; max-height: 80vh; overflow: auto; padding: 6px; border-radius: 12px;
+  border: 1px solid var(--line); background: var(--card); box-shadow: 0 10px 30px rgba(0,0,0,.3); }
+.menu button { display: flex; align-items: center; gap: 8px; width: 100%; text-align: left; padding: 8px 10px; border: 0; border-radius: 8px;
+  background: none; color: var(--text); font: inherit; font-size: 14px; cursor: pointer; }
+.menu button:hover:not(:disabled), .menu button:focus-visible { background: var(--field); outline: none; }
+.menu button:disabled { opacity: .4; cursor: default; }
+.menu button kbd { margin-left: auto; font-size: 11px; }
+.menu .tick { width: 14px; color: var(--accent); flex: none; }
+.menu hr { border: 0; border-top: 1px solid var(--line); margin: 5px 4px; }
+.menu-head { font-size: 11.5px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); padding: 8px 10px 3px; }
+.xform { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)) auto; gap: 6px 8px; align-items: end; margin-top: 6px; }
+.xform label { display: grid; gap: 2px; font-size: 12px; color: var(--muted); min-width: 0; }
+.xform input { width: 100%; min-width: 0; min-height: 34px; font: inherit; font-size: 14px; color: var(--text); background: var(--field);
+  border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; }
+.xform .unit { padding-bottom: 9px; }
+.xform > label:nth-child(1), .xform > label:nth-child(2) { grid-column: span 1; }
+.xform > span.unit:nth-of-type(1) { grid-column: 4; grid-row: 1; }
+.xform-opts { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-top: 8px; }
+.objects li.vol { margin-left: 18px; padding-top: 5px; padding-bottom: 5px; }
+.objects li.ghost .name { opacity: .6; }
+.paint-panel { position: absolute; left: 10px; top: 10px; z-index: 3; width: min(300px, calc(100% - 20px)); padding: 10px 12px; border-radius: 12px;
+  border: 1px solid var(--line); background: color-mix(in srgb, var(--card) 94%, transparent); box-shadow: 0 4px 16px rgba(0,0,0,.2); display: grid; gap: 8px; }
+.paint-head { display: flex; justify-content: space-between; align-items: center; }
+.paint-head .btn { min-height: 32px; }
+.paint-tools button { min-height: 32px; font-size: 13.5px; }
+.paint-radius { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; font-size: 13px; }
+.paint-radius input { accent-color: var(--accent); }
+.paint-actions { display: flex; gap: 6px; }
+.paint-actions .btn { min-height: 32px; font-size: 13px; flex: 1; }
+.paint-panel p { margin: 0; }
+dialog.cut-dlg { position: fixed; inset: auto 16px 16px auto; margin: 0; width: min(380px, calc(100vw - 32px)); z-index: 40; }
+.cut-row { display: grid; grid-template-columns: 1fr 90px; gap: 8px; align-items: center; }
+.cut-row input[type=range] { accent-color: var(--accent); }

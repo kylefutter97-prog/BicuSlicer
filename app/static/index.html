@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=20">
+<link rel="stylesheet" href="/static/style.css?v=21">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -44,6 +44,23 @@
       <h2>Plate <span id="project-name" class="project-name"></span></h2>
       <span id="plate-summary" class="muted"></span>
     </div>
+    <div class="plate-toolbar" id="plate-toolbar" role="toolbar" aria-label="Plate tools" hidden>
+      <label class="tb file-btn" title="Add models (Ctrl+I)">＋ Add<input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple></label>
+      <button class="tb" type="button" data-tool="shape" title="Add a box, cylinder, sphere or cone">Shape ▾</button>
+      <span class="tb-sep"></span>
+      <button class="tb" type="button" data-tool="arrange" title="Arrange (A)">Arrange</button>
+      <button class="tb" type="button" data-tool="orient-all" title="Auto-orient every part">Orient all</button>
+      <span class="tb-sep"></span>
+      <button class="tb" type="button" data-tool="split" data-needs="one" title="Split into separate parts">Split</button>
+      <button class="tb" type="button" data-tool="merge" data-needs="many" title="Merge the selected parts (Shift-click to select several)">Merge</button>
+      <button class="tb" type="button" data-tool="cut" data-needs="one" title="Cut at a height">Cut</button>
+      <button class="tb" type="button" data-tool="mirror" data-needs="one" title="Mirror">Mirror ▾</button>
+      <button class="tb" type="button" data-tool="volume" data-needs="one" title="Add a modifier or negative part">Modifier ▾</button>
+      <span class="tb-sep"></span>
+      <button class="tb" type="button" id="tb-ears" data-tool="ears" data-needs="one" title="Brim ears: small tabs on sharp corners to hold the part down">Brim ears</button>
+      <button class="tb" type="button" id="tb-paint" data-tool="paint" data-needs="one" title="Paint supports or seams">Paint ▾</button>
+      <button class="tb" type="button" data-tool="more" title="More: rename, center, printable, fix, units, export">More ▾</button>
+    </div>
     <div class="viewer-wrap">
       <div id="viewer" class="viewer"></div>
       <div id="empty" class="empty">
@@ -55,6 +72,18 @@
       </div>
       <div id="hint" class="hint" hidden></div>
       <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text"></span></div>
+      <div id="paint-panel" class="paint-panel" hidden>
+        <div class="paint-head"><b id="paint-title">Paint</b><button class="btn" id="paint-done" type="button">Done</button></div>
+        <div class="seg paint-tools">
+          <button type="button" data-paint-tool="1" id="paint-t1">Enforce</button>
+          <button type="button" data-paint-tool="2" id="paint-t2">Block</button>
+          <button type="button" data-paint-tool="0">Erase</button>
+        </div>
+        <label class="paint-radius">Brush <input type="range" id="paint-radius" min="0.5" max="20" step="0.5" value="3"><span id="paint-radius-val">3 mm</span></label>
+        <div class="paint-actions"><button class="btn" id="paint-overhangs" type="button">Paint overhangs</button><button class="btn" id="paint-clear" type="button">Clear all</button></div>
+        <p class="muted small" id="paint-note"></p>
+        <p class="muted small">Drag on the part to paint; drag elsewhere to turn the view.</p>
+      </div>
     </div>
     <div id="preview-controls" class="preview-controls" hidden>
       <div class="pv-top">
@@ -93,6 +122,25 @@
     <ul id="objects" class="objects"></ul>
     <div id="obj-panel" class="obj-panel" hidden>
       <div class="panel-head"><b id="obj-name"></b><span id="obj-size" class="muted small"></span></div>
+      <div class="group-label">Position, rotation and size <span class="muted" id="t-copy"></span></div>
+      <div class="xform">
+        <label>X <input id="t-x" type="number" step="0.1" inputmode="decimal"></label>
+        <label>Y <input id="t-y" type="number" step="0.1" inputmode="decimal"></label>
+        <span class="unit">mm</span>
+        <label>Rot X <input id="t-rx" type="number" step="1" inputmode="decimal"></label>
+        <label>Rot Y <input id="t-ry" type="number" step="1" inputmode="decimal"></label>
+        <label>Rot Z <input id="t-rz" type="number" step="1" inputmode="decimal"></label>
+        <span class="unit">°</span>
+        <label>Size X <input id="t-sx" type="number" step="0.1" min="0.01" inputmode="decimal"></label>
+        <label>Size Y <input id="t-sy" type="number" step="0.1" min="0.01" inputmode="decimal"></label>
+        <label>Size Z <input id="t-sz" type="number" step="0.1" min="0.01" inputmode="decimal"></label>
+        <span class="unit">mm</span>
+      </div>
+      <div class="xform-opts">
+        <label class="check-inline"><input type="checkbox" id="t-lock" checked> Keep proportions</label>
+        <label class="check-inline"><input type="checkbox" id="t-printable" checked> Printable</label>
+        <label class="check-inline"><input type="checkbox" id="t-ears"> Brim ears</label>
+      </div>
       <div class="group-label">Orientation</div>
       <div class="toolbar">
         <button class="btn" id="lay-face" type="button">Pick face down</button>
@@ -113,6 +161,27 @@
       <div class="group-label">Settings for this part <span class="muted" id="part-count"></span></div>
       <div id="part-settings" class="part-settings"></div>
       <div class="toolbar"><button class="btn" id="part-add" type="button">+ Add setting</button><button class="btn danger" id="obj-delete" type="button">Remove part</button></div>
+    </div>
+    <div id="vol-panel" class="obj-panel" hidden>
+      <div class="panel-head"><b id="vol-name"></b><button class="btn" id="vol-back" type="button">‹ Part</button></div>
+      <p class="muted small" id="vol-kind"></p>
+      <div class="xform">
+        <label>Size X <input id="v-sx" type="number" step="0.5" min="0.1" inputmode="decimal"></label>
+        <label>Size Y <input id="v-sy" type="number" step="0.5" min="0.1" inputmode="decimal"></label>
+        <label>Size Z <input id="v-sz" type="number" step="0.5" min="0.1" inputmode="decimal"></label>
+        <span class="unit">mm</span>
+        <label>Offset X <input id="v-px" type="number" step="0.5" inputmode="decimal"></label>
+        <label>Offset Y <input id="v-py" type="number" step="0.5" inputmode="decimal"></label>
+        <label>Height <input id="v-pz" type="number" step="0.5" inputmode="decimal"></label>
+        <span class="unit">mm</span>
+      </div>
+      <p class="muted small">Offset is from the part's centre; height is the shape's centre above the bed.</p>
+      <div id="vol-settings-wrap">
+        <div class="group-label">Settings inside it</div>
+        <div id="vol-settings" class="part-settings"></div>
+        <div class="toolbar"><button class="btn" id="vol-add" type="button">+ Add setting</button></div>
+      </div>
+      <div class="toolbar"><button class="btn danger" id="vol-remove" type="button">Remove</button></div>
     </div>
   </section>
 
@@ -303,6 +372,23 @@
 </dialog>
 
 <!-- ======================= small dialogs -->
+<div id="menu" class="menu" role="menu" hidden></div>
+
+<dialog id="cut-dlg" class="cut-dlg">
+  <form method="dialog">
+    <p><b>Cut</b> <span class="muted" id="cut-name"></span></p>
+    <label class="field"><span>Height above the bed (mm)</span>
+      <div class="cut-row"><input type="range" id="cut-range" min="0" step="0.1"><input type="number" id="cut-h" min="0" step="0.1" inputmode="decimal"></div>
+    </label>
+    <label class="field"><span>Keep</span>
+      <select id="cut-keep"><option value="both">Both parts</option><option value="bottom">Bottom only</option><option value="top">Top only</option></select>
+    </label>
+    <label class="check-inline"><input type="checkbox" id="cut-flip" checked> Turn the top part over, cut face on the bed</label>
+    <p class="muted small">The cut faces are filled in, so both parts stay solid.</p>
+    <div class="actions"><button value="cancel" class="btn" type="submit">Cancel</button><button value="ok" class="primary" type="submit">Cut</button></div>
+  </form>
+</dialog>
+
 <dialog id="keys" class="keys-dlg">
   <form method="dialog">
     <p><b>Keyboard shortcuts</b> <span class="muted small">Ctrl = ⌘ on a Mac</span></p>
@@ -364,6 +450,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=22"></script>
+<script type="module" src="/static/app.js?v=23"></script>
 </body>
 </html>

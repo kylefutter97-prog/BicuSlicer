@@ -836,6 +836,35 @@ async def api_orient(request: web.Request):
         shutil.rmtree(work, ignore_errors=True)
 
 
+@routes.post("/api/repair")
+async def api_repair(request: web.Request):
+    """OrcaSlicer's "Fix model": close holes and cracks, fix normals. STL in (the part as the page has it), STL out."""
+    work = DATA_DIR / "tmp" / uuid.uuid4().hex
+    work.mkdir(parents=True)
+    try:
+        stl = await read_single_upload(request, {".stl"}, work)
+        out = work / "out"
+        out.mkdir()
+        log = await run_orca_tool(work, ["--repair", "--arrange", "0", "--orient", "0", "--export-stls", str(out), str(stl)], timeout=300)
+        stls = sorted(out.glob("*.stl"))
+        if not stls:
+            raise web.HTTPUnprocessableEntity(text="OrcaSlicer couldn't repair this part. " + " / ".join(log.strip().splitlines()[-2:]))
+        if len(stls) == 1:
+            body = stls[0].read_bytes()
+        else:   # repair can split a part into shells: join them back into one STL
+            tris, count = [], 0
+            for f in stls:
+                d = f.read_bytes()
+                c = int.from_bytes(d[80:84], "little")
+                tris.append(d[84:84 + c * 50])
+                count += c
+            body = b"\0" * 80 + count.to_bytes(4, "little") + b"".join(tris)
+        fixed = re.findall(r"(?i)(\d+)\s+(?:facets? reversed|edges? fixed|holes? filled|degenerate)", log)
+        return web.Response(body=body, content_type="model/stl", headers={"X-Repair-Log": str(len(fixed))})
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
 @routes.get("/api/jobs/{id}")
 async def api_job(request):
     job = get_job(request.match_info["id"])

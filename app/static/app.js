@@ -4,9 +4,10 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, strToU8 } from "three/addons/libs/fflate.module.js";
-import { $, esc, api, apiJson, postJson, confirmBox, ask, toast } from "./util.js";
+import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
 import { initSettings, S, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview } from "./preview.js";
+import * as MO from "./meshops.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -24,8 +25,12 @@ const jobIsCurrent = () => currentJobVersion === plateVersion;
 /* ================================================================ scene */
 
 const bed = { w: 220, d: 220, h: 300 };
-const models = [];          // {id, name, geo, quat, scale, meshes: [Mesh], box}
-let selected = null;
+const models = [];          // {id, name, geo, quat, scale (Vector3), meshes: [Mesh], overrides, printable, volumes, paint}
+let selected = null;          // the part the panel shows (last clicked)
+let selectedMesh = null;      // which copy of it was clicked (for its position)
+const multi = new Set();      // extra parts picked with Shift/Ctrl-click (merge, delete, ...)
+let selectedVolume = null;    // a modifier / negative part of the selected part, when one is picked in the list
+const selection = () => [...new Set([...multi, ...(selected ? [selected] : [])])].filter((m) => models.includes(m));
 let pickMode = false;
 let nextId = 1;
 
@@ -50,11 +55,18 @@ function initViewer() {
     normal: new THREE.MeshStandardMaterial({ color: css("--model-dim"), roughness: 0.65, metalness: 0.05 }),
     selected: new THREE.MeshStandardMaterial({ color: css("--model"), roughness: 0.55, metalness: 0.05 }),
     bad: new THREE.MeshStandardMaterial({ color: css("--bad"), roughness: 0.6, metalness: 0.05 }),
+    // a part switched to "not printable": stays on the plate, not sliced
+    ghost: new THREE.MeshStandardMaterial({ color: css("--model-dim"), roughness: 0.7, transparent: true, opacity: 0.25, depthWrite: false }),
+    modifier: new THREE.MeshStandardMaterial({ color: css("--ok"), transparent: true, opacity: 0.28, depthWrite: false }),
+    modifierSel: new THREE.MeshStandardMaterial({ color: css("--ok"), transparent: true, opacity: 0.55, depthWrite: false }),
+    negative: new THREE.MeshStandardMaterial({ color: css("--bad"), transparent: true, opacity: 0.28, depthWrite: false }),
+    negativeSel: new THREE.MeshStandardMaterial({ color: css("--bad"), transparent: true, opacity: 0.55, depthWrite: false }),
   };
   Object.assign(view, { el, renderer, scene, camera, controls, mats, bedGroup: null, raycaster: new THREE.Raycaster() });
   new ResizeObserver(resize).observe(el);
   renderer.setAnimationLoop(() => { controls.update(); renderer.render(scene, camera); });
   wirePointer();
+  wireContextMenu();
   view.preview = new Preview(scene);
   resize();
 }
@@ -160,7 +172,7 @@ async function addFiles(files) {
     busy(`Loading ${f.name}…`);
     try {
       const geo = await parseFile(f);
-      const m = { id: nextId++, name: f.name.replace(/\.[^.]+$/, ""), geo, quat: new THREE.Quaternion(), scale: 1, meshes: [], box: null, overrides: {} };
+      const m = newModelRecord(f.name.replace(/\.[^.]+$/, ""), geo);
       models.push(m);
       setCopies(m, 1);
       updateBox(m);
@@ -178,9 +190,95 @@ async function addFiles(files) {
 
 /* ---------------------------------------------------------------- model maths */
 
+function newModelRecord(name, geo) {
+  return { id: nextId++, name, geo, quat: new THREE.Quaternion(), scale: new THREE.Vector3(1, 1, 1), meshes: [], box: null,
+    overrides: {}, printable: true, volumes: [], volMeshes: [], paint: null };
+}
+
+function centered(geo) {
+  // recentre a geometry on its bounding-box centre; returns the offset it had
+  geo.computeBoundingBox();
+  const c = geo.boundingBox.getCenter(new THREE.Vector3());
+  geo.translate(-c.x, -c.y, -c.z);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return c;
+}
+
+/** Put a new part on the plate. xy = where its centre goes (default: bed centre). */
+function addModel(name, geo, xy = null, from = null) {
+  const c = centered(geo);
+  const m = newModelRecord(name, geo);
+  if (from) { m.overrides = JSON.parse(JSON.stringify(from.overrides || {})); }
+  models.push(m);
+  setCopies(m, 1);
+  updateBox(m);
+  if (xy) { m.meshes[0].position.x = xy.x; m.meshes[0].position.y = xy.y; }
+  return { m, center: c };
+}
+
+function removeModel(m) {
+  for (const mesh of m.meshes) view.scene.remove(mesh);
+  for (const vm of m.volMeshes || []) view.scene.remove(vm);
+  m.volMeshes = [];
+  m.geo.dispose();
+  const i = models.indexOf(m);
+  if (i >= 0) models.splice(i, 1);
+  multi.delete(m);
+  if (selected === m) { selected = null; selectedVolume = null; }
+}
+
+/** The part's mesh with its rotation and scale applied (centred), for operations that work in plate axes. */
+function bakedGeo(m) {
+  return MO.bake(m.geo, new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, m.scale));
+}
+
+/** Replace a part's mesh with one already in plate axes (rotation/scale reset), keeping it where it was. */
+function replaceGeo(m, geo) {
+  const keepXY = m.meshes.map((x) => [x.position.x, x.position.y]);
+  const c = centered(geo);
+  m.geo.dispose();
+  m.geo = geo;
+  m.quat.identity();
+  m.scale.set(1, 1, 1);
+  m.paint = null;
+  m.meshes.forEach((x, i) => { x.geometry = geo; x.position.x = keepXY[i][0] + c.x; x.position.y = keepXY[i][1] + c.y; });
+  updateBox(m);
+}
+
+/* ---- modifier / negative parts: shown as see-through shapes that follow each copy of their part */
+
+function volumeGeo(v) {
+  const s = v.size;
+  const g = v.shape === "cylinder" ? MO.cylinder(1, 1) : v.shape === "sphere" ? MO.sphere(1) : v.shape === "cone" ? MO.cone(1, 1) : MO.box(1, 1, 1);
+  return MO.bake(g, new THREE.Matrix4().makeScale(s.x, s.y, s.z));
+}
+
+function syncVolumes(m) {
+  const need = m.meshes.length * m.volumes.length;
+  if ((m.volMeshes || []).length !== need || m.volMeshes.some((vm) => !m.volumes.includes(vm.userData.volume) || vm.geometry !== vm.userData.volume.geo)) {
+    for (const vm of m.volMeshes || []) view.scene.remove(vm);
+    m.volMeshes = [];
+    for (const mesh of m.meshes) for (const v of m.volumes) {
+      const vm = new THREE.Mesh(v.geo, v.kind === "negative" ? view.mats.negative : view.mats.modifier);
+      vm.userData = { model: m, volume: v, copy: mesh };
+      vm.renderOrder = 2;
+      m.volMeshes.push(vm);
+      view.scene.add(vm);
+    }
+  }
+  for (const vm of m.volMeshes) {
+    const v = vm.userData.volume, c = vm.userData.copy;
+    vm.position.set(c.position.x + v.pos.x, c.position.y + v.pos.y, v.pos.z);
+    vm.visible = viewMode === "model";
+    vm.material = v === selectedVolume ? (v.kind === "negative" ? view.mats.negativeSel : view.mats.modifierSel)
+      : (v.kind === "negative" ? view.mats.negative : view.mats.modifier);
+  }
+}
+
 function updateBox(m) {
   // Exact bounding box of the part as rotated and scaled (iterates the vertices once).
-  const mat = new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, new THREE.Vector3(m.scale, m.scale, m.scale));
+  const mat = new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, m.scale);
   const e = mat.elements, p = m.geo.getAttribute("position").array;
   let x0 = Infinity, y0 = Infinity, z0 = Infinity, x1 = -Infinity, y1 = -Infinity, z1 = -Infinity;
   for (let i = 0; i < p.length; i += 3) {
@@ -197,7 +295,7 @@ function updateBox(m) {
 
 function applyPose(m, mesh) {
   mesh.quaternion.copy(m.quat);
-  mesh.scale.setScalar(m.scale);
+  mesh.scale.copy(m.scale);
   mesh.position.z = -m.local.z0;            // sit on the bed
 }
 
@@ -255,7 +353,7 @@ let previewKey = null;          // "<job>/<plate>" currently loaded
 function setViewMode(mode) {
   if (mode === "preview" && !view.preview?.loaded) mode = "model";
   viewMode = mode;
-  for (const m of models) for (const mesh of m.meshes) mesh.visible = mode === "model";
+  for (const m of models) { for (const mesh of m.meshes) mesh.visible = mode === "model"; syncVolumes(m); }
   view.preview?.setVisible(mode === "preview");
   for (const b of document.querySelectorAll("[data-view]")) b.classList.toggle("on", b.dataset.view === mode);
   $("pv-layers").hidden = $("legend").hidden = mode !== "preview";
@@ -359,7 +457,7 @@ function stlOf(m, withScale = false) {
   const buf = new ArrayBuffer(84 + tris * 50);
   const dv = new DataView(buf);
   dv.setUint32(80, tris, true);
-  const mat = new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, new THREE.Vector3().setScalar(withScale ? m.scale : 1));
+  const mat = new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, withScale ? m.scale : new THREE.Vector3(1, 1, 1));
   const e = mat.elements;
   let o = 84;
   for (let i = 0; i < p.length; i += 9) {
@@ -421,18 +519,41 @@ function wirePointer() {
   // One finger / left button on a part drags it across the bed; anywhere else turns the view
   // (two fingers zoom and pan). A short tap selects. Pick-face mode never drags.
   const el = view.renderer.domElement;
-  let down = null, drag = null;
+  let down = null, drag = null, press = null;
   const pointers = new Set();
+  const cancelPress = () => { clearTimeout(press); press = null; };
 
   el.addEventListener("pointerdown", (e) => {
     pointers.add(e.pointerId);
+    closeMenu();
     if (viewMode === "preview") { down = null; return; }   // layers view: the pointer only turns the view
     if (pointers.size > 1) {                  // second finger: hand over to zoom/pan
       if (drag) endDrag();
+      cancelPress();
+      paint.painting = false;
       down = null;
       return;
     }
     down = { x: e.clientX, y: e.clientY, t: performance.now() };
+    if (paint.on && e.button === 0 && paintAt(e)) {   // painting: a drag on the part paints, elsewhere turns the view
+      paint.painting = true;
+      view.controls.enabled = false;
+      el.setPointerCapture(e.pointerId);
+      return;
+    }
+    if (e.pointerType === "touch") {
+      // long-press on a part opens its menu (the touch version of right-click)
+      const sx = e.clientX, sy = e.clientY;
+      press = setTimeout(() => {
+        press = null;
+        const hit = hitPart({ clientX: sx, clientY: sy });
+        if (!hit) return;
+        if (drag) { drag = null; view.controls.enabled = true; view.el.classList.remove("dragging"); }
+        down = null;
+        if (!selection().includes(hit.object.userData.model)) pickPart(hit.object.userData.model, hit.object);
+        openMenu(sx, sy, partMenu());
+      }, 550);
+    }
     if (pickMode || e.button > 0) return;
     const hit = hitPart(e);
     const p = hit && bedPoint(e);
@@ -441,10 +562,13 @@ function wirePointer() {
     drag = { mesh, offset: new THREE.Vector2(p.x - mesh.position.x, p.y - mesh.position.y), moved: false };
     view.controls.enabled = false;            // runs before OrbitControls sees this pointerdown (capture phase)
     el.setPointerCapture(e.pointerId);
-    if (selected !== mesh.userData.model) { selected = mesh.userData.model; refresh(); }
+    if (!selection().includes(mesh.userData.model)) pickPart(mesh.userData.model, mesh, e.shiftKey || e.ctrlKey || e.metaKey);
+    else { selectedMesh = mesh; }
   }, { capture: true });
 
   el.addEventListener("pointermove", (e) => {
+    if (press && down && Math.hypot(e.clientX - down.x, e.clientY - down.y) > 8) cancelPress();
+    if (paint.painting) { paintAt(e); return; }
     if (!drag) return;
     if (!drag.moved && down && Math.hypot(e.clientX - down.x, e.clientY - down.y) < 6) return;
     const p = bedPoint(e);
@@ -453,6 +577,7 @@ function wirePointer() {
     view.el.classList.add("dragging");
     drag.mesh.position.x = p.x - drag.offset.x;
     drag.mesh.position.y = p.y - drag.offset.y;
+    syncVolumes(drag.mesh.userData.model);
   });
 
   function endDrag() {
@@ -466,6 +591,8 @@ function wirePointer() {
 
   const finish = (e) => {
     pointers.delete(e.pointerId);
+    cancelPress();
+    if (paint.painting) { paint.painting = false; view.controls.enabled = true; down = null; plateChanged(); refresh(); return; }
     if (drag && endDrag()) { down = null; return; }   // a drag, not a tap
     if (!down || e.type === "pointercancel") { down = null; return; }
     const moved = Math.hypot(e.clientX - down.x, e.clientY - down.y);
@@ -490,9 +617,20 @@ function wirePointer() {
       }
       return;
     }
-    selected = hit ? hit.object.userData.model : null;
-    refresh();
+    pickPart(hit ? hit.object.userData.model : null, hit?.object, e.shiftKey || e.ctrlKey || e.metaKey);
   }
+}
+
+function wireContextMenu() {
+  view.renderer.domElement.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (viewMode === "preview" || paint.on) return;
+    const hit = hitPart(e);
+    if (hit) {
+      if (!selection().includes(hit.object.userData.model)) pickPart(hit.object.userData.model, hit.object);
+      openMenu(e.clientX, e.clientY, partMenu());
+    } else openMenu(e.clientX, e.clientY, plateMenu());
+  });
 }
 
 function setPickMode(on) {
@@ -531,24 +669,39 @@ function refresh() {
   $("tip").hidden = !has;
   $("parts-card").hidden = !has;
   if (!models.includes(selected)) selected = null;
-  if (!selected) setPickMode(false);
+  if (!selected) { setPickMode(false); selectedVolume = null; }
+  if (selectedVolume && !selected.volumes.includes(selectedVolume)) selectedVolume = null;
   const ok = layoutOk();
-  for (const m of models) for (const mesh of m.meshes) {
-    mesh.material = ok.off.has(m) || ok.tall.has(m) ? view.mats.bad : m === selected ? view.mats.selected : view.mats.normal;
+  const sel = new Set(selection());
+  for (const m of models) {
+    for (const mesh of m.meshes) {
+      mesh.material = m.printable === false ? view.mats.ghost : ok.off.has(m) || ok.tall.has(m) ? view.mats.bad
+        : sel.has(m) ? (paint.on && m === selected ? mesh.material : view.mats.selected) : view.mats.normal;
+    }
+    syncVolumes(m);
   }
+  $("plate-toolbar").hidden = !has;
+  updateToolbar();
   const parts = models.reduce((n, m) => n + m.meshes.length, 0);
   $("plate-summary").textContent = has ? `${parts} part${parts === 1 ? "" : "s"}` : "";
   $("objects").innerHTML = models.map((m) => `
-    <li class="${m === selected ? "sel" : ""}${ok.off.has(m) || ok.tall.has(m) ? " bad" : ""}" data-id="${m.id}">
-      <span class="name">${esc(m.name)}</span>
-      <span class="muted small">${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
-    </li>`).join("");
+    <li class="${sel.has(m) && !selectedVolume ? "sel" : ""}${ok.off.has(m) || ok.tall.has(m) ? " bad" : ""}${m.printable === false ? " ghost" : ""}" data-id="${m.id}">
+      <span class="name">${esc(m.name)}${m.printable === false ? ' <span class="muted small">(not printed)</span>' : ""}</span>
+      <span class="muted small">${m.overrides.brim_type === "brim_ears" ? '<span class="part-badge" title="Brim ears">ears</span> ' : ""}${m.paint && (m.paint.supports || m.paint.seam) ? '<span class="part-badge" title="Painted">🖌</span> ' : ""}${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
+    </li>${m.volumes.map((v) => `
+    <li class="vol${v === selectedVolume ? " sel" : ""}" data-id="${m.id}" data-vol="${v.id}">
+      <span class="name">↳ ${esc(v.name)}</span><span class="muted small">${v.kind === "negative" ? "negative part" : "modifier"}${Object.keys(v.overrides).length ? ` · ⚙ ${Object.keys(v.overrides).length}` : ""}</span>
+    </li>`).join("")}`).join("");
   const panel = $("obj-panel");
-  panel.hidden = !selected;
+  panel.hidden = !selected || !!selectedVolume;
+  renderVolumePanel();
+  if (selected) renderTransform();
   if (selected) {
     $("obj-name").textContent = selected.name;
     $("obj-size").textContent = `${fmtMm(selected.size.x)} × ${fmtMm(selected.size.y)} × ${fmtMm(selected.size.z)} mm`;
-    if (document.activeElement !== $("obj-scale")) $("obj-scale").value = Math.round(selected.scale * 1000) / 10;
+    const uni = Math.abs(selected.scale.x - selected.scale.y) < 1e-9 && Math.abs(selected.scale.y - selected.scale.z) < 1e-9;
+    if (document.activeElement !== $("obj-scale")) $("obj-scale").value = uni ? Math.round(selected.scale.x * 1000) / 10 : "";
+    $("obj-scale").placeholder = uni ? "" : "mixed";
     $("copy-count").textContent = selected.meshes.length;
     if (partEditor.model !== selected) { partEditor.model = selected; partEditor.render(); }
     const n = Object.keys(selected.overrides).length;
@@ -567,39 +720,70 @@ function refresh() {
 
 /* ================================================================ slicing */
 
+function meshXml(geo, matrix, paint) {
+  // a 3MF <mesh> with the vertices baked into plate coordinates; identical corners become one vertex.
+  // paint (optional): per-triangle paint states for supports / seam, written the way OrcaSlicer reads them.
+  const p = geo.getAttribute("position").array;
+  const index = new Map(), uniq = [], tris = new Uint32Array(p.length / 3);
+  for (let i = 0; i < p.length; i += 3) {
+    const key = p[i] + "," + p[i + 1] + "," + p[i + 2];
+    let v = index.get(key);
+    if (v === undefined) { v = uniq.length / 3; index.set(key, v); uniq.push(p[i], p[i + 1], p[i + 2]); }
+    tris[i / 3] = v;
+  }
+  const e = matrix.elements;
+  const vx = [];
+  for (let i = 0; i < uniq.length; i += 3) {
+    const x = uniq[i], y = uniq[i + 1], z = uniq[i + 2];
+    vx.push(`<vertex x="${(e[0] * x + e[4] * y + e[8] * z + e[12]).toFixed(4)}" y="${(e[1] * x + e[5] * y + e[9] * z + e[13]).toFixed(4)}" z="${(e[2] * x + e[6] * y + e[10] * z + e[14]).toFixed(4)}"/>`);
+  }
+  const flip = matrix.determinant() < 0;      // a mirrored transform turns faces inside out: swap two corners back
+  const tx = [];
+  for (let t = 0; t < tris.length; t += 3) {
+    const a = tris[t], b = flip ? tris[t + 2] : tris[t + 1], c = flip ? tris[t + 1] : tris[t + 2];
+    if (a === b || b === c || a === c) continue;
+    const k = t / 3;
+    const ps = paint?.supports ? MO.paintCode(paint.supports[k]) : "";
+    const pm = paint?.seam ? MO.paintCode(paint.seam[k]) : "";
+    tx.push(`<triangle v1="${a}" v2="${b}" v3="${c}"${ps ? ` paint_supports="${ps}"` : ""}${pm ? ` paint_seam="${pm}"` : ""}/>`);
+  }
+  return `<mesh><vertices>${vx.join("")}</vertices><triangles>${tx.join("")}</triangles></mesh>`;
+}
+
+const metaXml = (o, indent) => Object.entries(o || {}).map(([k, v]) =>
+  `${indent}<metadata key="${esc(k)}" value="${esc(Array.isArray(v) ? v.join(",") : v)}"/>\n`).join("");
+
 function build3mf() {
-  // One 3MF object per placed part, vertices baked in bed coordinates (what the slicer sees is what's on screen).
+  // What the slicer sees is what's on screen: every placed copy of every printable part, baked in plate coordinates.
+  // A part with modifier / negative parts becomes an object made of components, with each component's type and
+  // settings in Metadata/model_settings.config (the layout OrcaSlicer itself writes; checked with test slices).
   const objects = [], items = [], configs = [];
   let id = 1;
   for (const m of models) {
-    const p = m.geo.getAttribute("position").array;
-    // shared vertices (the loaders give triangle soup; identical corners become one vertex)
-    const index = new Map(), uniq = [], tris = new Uint32Array(p.length / 3);
-    for (let i = 0; i < p.length; i += 3) {
-      const key = p[i] + "," + p[i + 1] + "," + p[i + 2];
-      let v = index.get(key);
-      if (v === undefined) { v = uniq.length / 3; index.set(key, v); uniq.push(p[i], p[i + 1], p[i + 2]); }
-      tris[i / 3] = v;
-    }
+    if (m.printable === false) continue;
     for (const mesh of m.meshes) {
       mesh.updateMatrixWorld(true);
-      const e = mesh.matrixWorld.elements;
-      const vx = [];
-      for (let i = 0; i < uniq.length; i += 3) {
-        const x = uniq[i], y = uniq[i + 1], z = uniq[i + 2];
-        vx.push(`<vertex x="${(e[0] * x + e[4] * y + e[8] * z + e[12]).toFixed(4)}" y="${(e[1] * x + e[5] * y + e[9] * z + e[13]).toFixed(4)}" z="${(e[2] * x + e[6] * y + e[10] * z + e[14]).toFixed(4)}"/>`);
+      const bodyId = id++;
+      objects.push(`<object id="${bodyId}" type="model" name="${esc(m.name)}">${meshXml(m.geo, mesh.matrixWorld, m.paint)}</object>`);
+      if (!m.volumes.length) {
+        // per-part settings: OrcaSlicer reads them from Metadata/model_settings.config, keyed by object id
+        configs.push(`  <object id="${bodyId}">\n    <metadata key="name" value="${esc(m.name)}"/>\n${metaXml(m.overrides, "    ")}  </object>`);
+        items.push(`<item objectid="${bodyId}"/>`);
+        continue;
       }
-      const tx = [];
-      for (let t = 0; t < tris.length; t += 3) {
-        const a = tris[t], b = tris[t + 1], c = tris[t + 2];
-        if (a !== b && b !== c && a !== c) tx.push(`<triangle v1="${a}" v2="${b}" v3="${c}"/>`);
+      const parts = [`    <part id="${bodyId}" subtype="normal_part">\n      <metadata key="name" value="${esc(m.name)}"/>\n    </part>\n`];
+      const comps = [`<component objectid="${bodyId}"/>`];
+      for (const v of m.volumes) {
+        const vid = id++;
+        const mat = new THREE.Matrix4().makeTranslation(mesh.position.x + v.pos.x, mesh.position.y + v.pos.y, v.pos.z);
+        objects.push(`<object id="${vid}" type="model" name="${esc(v.name)}">${meshXml(v.geo, mat, null)}</object>`);
+        comps.push(`<component objectid="${vid}"/>`);
+        parts.push(`    <part id="${vid}" subtype="${v.kind === "negative" ? "negative_part" : "modifier_part"}">\n      <metadata key="name" value="${esc(v.name)}"/>\n${v.kind === "negative" ? "" : metaXml(v.overrides, "      ")}    </part>\n`);
       }
-      objects.push(`<object id="${id}" type="model" name="${esc(m.name)}"><mesh><vertices>${vx.join("")}</vertices><triangles>${tx.join("")}</triangles></mesh></object>`);
-      // per-part settings: OrcaSlicer reads them from Metadata/model_settings.config, keyed by object id
-      configs.push(`  <object id="${id}">\n    <metadata key="name" value="${esc(m.name)}"/>\n${Object.entries(m.overrides).map(([k, v]) =>
-        `    <metadata key="${esc(k)}" value="${esc(Array.isArray(v) ? v.join(",") : v)}"/>\n`).join("")}  </object>`);
-      items.push(`<item objectid="${id}"/>`);
-      id++;
+      const objId = id++;
+      objects.push(`<object id="${objId}" type="model" name="${esc(m.name)}"><components>${comps.join("")}</components></object>`);
+      configs.push(`  <object id="${objId}">\n    <metadata key="name" value="${esc(m.name)}"/>\n${metaXml(m.overrides, "    ")}${parts.join("")}  </object>`);
+      items.push(`<item objectid="${objId}"/>`);
     }
   }
   const model = `<?xml version="1.0" encoding="UTF-8"?>\n<model unit="millimeter" xml:lang="en-US" xmlns="http://schemas.microsoft.com/3dmanufacturing/core/2015/02"><resources>${objects.join("")}</resources><build>${items.join("")}</build></model>`;
@@ -682,6 +866,7 @@ async function poll(id) {
 
 async function slice() {
   if (!models.length || !layoutOk().fits) return;
+  if (!models.some((m) => m.printable !== false)) { $("result-card").hidden = false; $("result").innerHTML = `<p class="msg err">Every part is set to not printable.</p>`; return; }
   if (!S.selected.machine || !S.selected.process || !S.selected.filament) {
     $("result-card").hidden = false;
     $("result").innerHTML = `<p class="msg err">Choose a printer, filament and print settings first.</p>`;
@@ -758,6 +943,524 @@ async function plateAction(act, plate, btn) {
   }
 }
 
+/* ================================================================ plate tools (toolbar, right-click menu, transforms) */
+
+function pickPart(m, mesh = null, additive = false, vol = null) {
+  if (paint.on && m !== paint.model) stopPaint();
+  if (additive && m) {
+    if (multi.has(m) || (selected === m && multi.size)) { multi.delete(m); if (selected === m) selected = [...multi].pop() || null; multi.delete(selected); }
+    else { if (selected && selected !== m) multi.add(selected); selected = m; }
+  } else {
+    multi.clear();
+    selected = m;
+  }
+  selectedMesh = mesh && m?.meshes.includes(mesh) ? mesh : null;
+  selectedVolume = vol;
+  refresh();
+}
+
+const focusedInput = (id) => document.activeElement === $(id);
+const deg = (r) => Math.round(THREE.MathUtils.radToDeg(r) * 100) / 100;
+
+function selectedCopy() {
+  return selected && (selected.meshes.includes(selectedMesh) ? selectedMesh : selected.meshes[0]);
+}
+
+function renderTransform() {
+  const m = selected, c = selectedCopy();
+  if (!m || !c) return;
+  const set = (id, v) => { if (!focusedInput(id)) $(id).value = v; };
+  set("t-x", +c.position.x.toFixed(2));
+  set("t-y", +c.position.y.toFixed(2));
+  const eu = new THREE.Euler().setFromQuaternion(m.quat, "XYZ");
+  set("t-rx", deg(eu.x)); set("t-ry", deg(eu.y)); set("t-rz", deg(eu.z));
+  set("t-sx", +m.size.x.toFixed(2)); set("t-sy", +m.size.y.toFixed(2)); set("t-sz", +m.size.z.toFixed(2));
+  $("t-copy").textContent = m.meshes.length > 1 ? `copy ${m.meshes.indexOf(c) + 1} of ${m.meshes.length}` : "";
+  $("t-printable").checked = m.printable !== false;
+  $("t-ears").checked = m.overrides.brim_type === "brim_ears";
+}
+
+function setPosition(axis, v) {
+  const c = selectedCopy();
+  if (!c || !Number.isFinite(v)) return refresh();
+  c.position[axis] = v;
+  plateChanged();
+  refresh();
+}
+
+function setRotation() {
+  const m = selected;
+  const r = ["t-rx", "t-ry", "t-rz"].map((id) => THREE.MathUtils.degToRad(parseFloat($(id).value) || 0));
+  m.quat.setFromEuler(new THREE.Euler(r[0], r[1], r[2], "XYZ"));
+  updateBox(m);
+  settle(m.meshes);
+}
+
+function setSize(axis, mm) {
+  const m = selected;
+  const i = "xyz".indexOf(axis);
+  const cur = m.size.getComponent(i);
+  if (!(mm > 0) || !(cur > 0)) return refresh();
+  const f = mm / cur;
+  if ($("t-lock").checked) m.scale.multiplyScalar(f);
+  else {
+    // scale the part's own axis that lines up best with this plate axis
+    const e = new THREE.Matrix4().makeRotationFromQuaternion(m.quat).elements;
+    let j = 0, best = -1;
+    for (let k = 0; k < 3; k++) { const w = Math.abs(e[k * 4 + i]); if (w > best) { best = w; j = k; } }
+    m.scale.setComponent(j, m.scale.getComponent(j) * f);
+  }
+  updateBox(m);
+  settle(m.meshes);
+}
+
+/* ---- menus (toolbar drop-downs and the right-click / long-press menu) */
+
+let menuItems = [];
+function openMenu(x, y, items) {
+  const el = $("menu");
+  menuItems = items.filter(Boolean);
+  el.innerHTML = menuItems.map((it, i) => it.sep ? `<hr>` : it.head ? `<div class="menu-head">${esc(it.head)}</div>`
+    : `<button type="button" role="menuitem" data-i="${i}" ${it.disabled ? "disabled" : ""}>${it.check !== undefined ? `<span class="tick">${it.check ? "✓" : ""}</span>` : ""}${esc(it.label)}${it.key ? `<kbd>${esc(it.key)}</kbd>` : ""}</button>`).join("");
+  el.hidden = false;
+  const r = el.getBoundingClientRect();
+  el.style.left = `${Math.max(8, Math.min(x, innerWidth - r.width - 8))}px`;
+  el.style.top = `${Math.max(8, Math.min(y, innerHeight - r.height - 8))}px`;
+  el.querySelector("button:not([disabled])")?.focus({ preventScroll: true });
+}
+function closeMenu() { $("menu").hidden = true; menuItems = []; }
+$("menu").addEventListener("click", (e) => {
+  const b = e.target.closest("button[data-i]");
+  if (!b) return;
+  const it = menuItems[Number(b.dataset.i)];
+  closeMenu();
+  it?.run?.();
+});
+document.addEventListener("pointerdown", (e) => { if (!$("menu").hidden && !e.target.closest("#menu")) closeMenu(); }, true);
+window.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("menu").hidden) { e.stopPropagation(); closeMenu(); } }, true);
+window.addEventListener("resize", closeMenu);
+
+const shapeItems = () => [
+  { head: "Add a shape" },
+  { label: "Box", run: () => addShape("box") }, { label: "Cylinder", run: () => addShape("cylinder") },
+  { label: "Sphere", run: () => addShape("sphere") }, { label: "Cone", run: () => addShape("cone") },
+];
+const mirrorItems = () => [{ head: "Mirror" }, ...["x", "y", "z"].map((a) => ({ label: `Mirror along ${a.toUpperCase()}`, run: () => mirrorSelected(a), disabled: !selected }))];
+const volumeItems = () => [
+  { head: "Modifier (own settings inside it)" },
+  ...["box", "cylinder", "sphere"].map((s) => ({ label: `Modifier: ${s}`, run: () => addVolume("modifier", s), disabled: !selected })),
+  { head: "Negative part (cut away)" },
+  ...["box", "cylinder", "sphere"].map((s) => ({ label: `Negative part: ${s}`, run: () => addVolume("negative", s), disabled: !selected })),
+];
+const paintItems = () => [
+  { head: "Paint on the part" },
+  { label: "Supports (enforce / block)", run: () => startPaint("supports"), disabled: !selected },
+  { label: "Seam (here / avoid)", run: () => startPaint("seam"), disabled: !selected },
+];
+const moreItems = () => [
+  { label: "Rename…", run: renameSelected, disabled: !selected },
+  { label: "Center on the bed", run: centerSelected, disabled: !selected },
+  { label: "Printable", check: selected?.printable !== false, run: togglePrintable, disabled: !selected },
+  { label: "Fix model", run: fixSelected, disabled: !selected },
+  { label: "Convert from inches (×25.4)", run: () => convertUnits(25.4), disabled: !selected },
+  { label: "Convert to inches (÷25.4)", run: () => convertUnits(1 / 25.4), disabled: !selected },
+  { sep: true },
+  { label: "Export part as STL", run: exportPartStl, disabled: !selected },
+  { label: "Export plate as 3MF", run: exportPlate3mf, disabled: !models.length },
+];
+
+function partMenu() {
+  const many = selection().length > 1;
+  return [
+    { head: many ? `${selection().length} parts` : selected?.name },
+    { label: "Rename…", run: renameSelected, disabled: many },
+    { label: "Add a copy", key: "+", run: () => $("copy-plus").click() },
+    { label: "Auto-orient", run: () => selected && autoOrient(selected) },
+    { label: "Pick face down", key: "F", run: () => setPickMode(true) },
+    { label: "Center on the bed", run: centerSelected },
+    { sep: true },
+    ...mirrorItems().slice(1),
+    { label: "Split into parts", run: splitSelected, disabled: many },
+    { label: "Cut…", run: openCut, disabled: many },
+    { label: "Merge selected parts", run: mergeSelected, disabled: !many },
+    { sep: true },
+    ...volumeItems().filter((it) => !it.head).slice(0, 1), { label: "Negative part: box", run: () => addVolume("negative", "box") },
+    { label: "Brim ears", check: selected?.overrides.brim_type === "brim_ears", run: toggleEars },
+    { label: "Paint supports…", run: () => startPaint("supports") },
+    { label: "Paint seam…", run: () => startPaint("seam") },
+    { label: "Printable", check: selected?.printable !== false, run: togglePrintable },
+    { sep: true },
+    { label: "Fix model", run: fixSelected, disabled: many },
+    { label: "Export as STL", run: exportPartStl, disabled: many },
+    { label: many ? "Remove parts" : "Remove", key: "Del", run: () => $("obj-delete").click() },
+  ];
+}
+const plateMenu = () => [
+  { label: "Add a model…", key: "Ctrl+I", run: () => document.querySelector(".file-input")?.click() },
+  ...shapeItems().slice(1).map((it) => ({ ...it, label: `Add ${it.label.toLowerCase()}` })),
+  { sep: true },
+  { label: "Arrange", key: "A", run: arrange, disabled: !models.length },
+  { label: "Auto-orient all", run: orientAll, disabled: !models.length },
+  { label: "Export plate as 3MF", run: exportPlate3mf, disabled: !models.length },
+];
+
+function updateToolbar() {
+  const one = !!selected, many = selection().length > 1;
+  for (const b of document.querySelectorAll("#plate-toolbar [data-needs]")) {
+    b.disabled = b.dataset.needs === "one" ? !one || many : b.dataset.needs === "many" ? !many : false;
+  }
+  $("tb-ears").classList.toggle("on", !!selected && selected.overrides.brim_type === "brim_ears");
+  $("tb-paint").classList.toggle("on", paint.on);
+}
+
+$("plate-toolbar").addEventListener("click", (e) => {
+  const b = e.target.closest("[data-tool]");
+  if (!b || b.disabled) return;
+  const r = b.getBoundingClientRect();
+  const at = (items) => openMenu(r.left, r.bottom + 4, items);
+  ({
+    shape: () => at(shapeItems()), arrange, "orient-all": orientAll, split: splitSelected, merge: mergeSelected, cut: openCut,
+    mirror: () => at(mirrorItems()), volume: () => at(volumeItems()), ears: toggleEars,
+    paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()),
+  })[b.dataset.tool]?.();
+});
+
+/* ---- actions */
+
+function addShape(kind) {
+  if (!view.renderer) initViewer();
+  const g = { box: () => MO.box(20, 20, 20), cylinder: () => MO.cylinder(20, 20), sphere: () => MO.sphere(20), cone: () => MO.cone(20, 20) }[kind]();
+  const { m } = addModel(kind[0].toUpperCase() + kind.slice(1), g);
+  selected = m; multi.clear();
+  settle(m.meshes);
+}
+
+function renameSelected() {
+  if (!selected) return;
+  const m = selected;
+  ask("Rename part", m.name, "Rename").then((name) => { if (name) { m.name = name; plateChanged(); refresh(); } });
+}
+
+function centerSelected() {
+  const c = selectedCopy();
+  if (!c) return;
+  c.position.x = bed.w / 2; c.position.y = bed.d / 2;
+  settle([c]);
+}
+
+function togglePrintable() {
+  for (const m of selection()) m.printable = m.printable === false;
+  plateChanged();
+  refresh();
+}
+
+function toggleEars() {
+  // OrcaSlicer's "Mouse ear" brim: small round tabs on sharp corners, found automatically
+  const on = !(selected?.overrides.brim_type === "brim_ears");
+  for (const m of selection()) { if (on) m.overrides.brim_type = "brim_ears"; else delete m.overrides.brim_type; }
+  if (selected) partEditor.model = null;
+  plateChanged();
+  refresh();
+  flash(on ? "Brim ears on: tabs on the sharp corners (tune them under the part's own settings)" : "Brim ears off", "ok");
+}
+
+function convertUnits(f) {
+  for (const m of selection()) { m.scale.multiplyScalar(f); updateBox(m); }
+  settle(selection().flatMap((m) => m.meshes));
+}
+
+function mirrorSelected(axis) {
+  for (const m of selection()) {
+    const g = MO.mirror(bakedGeo(m), axis);
+    replaceGeo(m, g);
+  }
+  settle(selection().flatMap((m) => m.meshes));
+}
+
+function splitSelected() {
+  const m = selected;
+  if (!m) return;
+  busy("Splitting…");
+  setTimeout(() => {
+    try {
+      const pieces = MO.splitParts(bakedGeo(m));
+      if (pieces.length < 2) { flash(`${m.name} is a single piece: nothing to split.`, "warn"); return; }
+      const base = selectedCopy().position.clone();
+      removeModel(m);
+      const added = pieces.map((g, i) => {
+        const r = addModel(`${m.name} ${i + 1}`, g, null, m);
+        r.m.meshes[0].position.x = base.x + r.center.x;
+        r.m.meshes[0].position.y = base.y + r.center.y;
+        return r.m;
+      });
+      selected = added[0]; multi.clear(); added.slice(1).forEach((x) => multi.add(x));
+      settle(added.flatMap((x) => x.meshes));
+      flash(`Split into ${pieces.length} parts`, "ok");
+    } catch (e) { flash(`Couldn't split: ${e.message}`, "err"); } finally { busy(null); }
+  }, 20);
+}
+
+function mergeSelected() {
+  const list = selection();
+  if (list.length < 2) return;
+  const geos = [];
+  for (const m of list) for (const mesh of m.meshes) { mesh.updateMatrixWorld(true); geos.push(MO.bake(m.geo, mesh.matrixWorld)); }
+  const g = MO.mergeGeometries(geos);
+  const first = list[0];
+  for (const m of list) removeModel(m);
+  g.computeBoundingBox();
+  const c = g.boundingBox.getCenter(new THREE.Vector3());
+  const { m } = addModel(`${first.name} (merged)`, g, { x: c.x, y: c.y }, first);
+  selected = m; multi.clear();
+  settle([]);
+  flash(`Merged ${list.length} parts into one`, "ok");
+}
+
+async function fixSelected() {
+  const m = selected;
+  if (!m) return;
+  busy(`Fixing ${m.name}…`);
+  try {
+    const fd = new FormData();
+    fd.append("model", meshStl(m.geo), "part.stl");
+    const buf = await (await api("/api/repair", { method: "POST", body: fd })).arrayBuffer();
+    const g = mergeToGeometry(new THREE.Mesh(new STLLoader().parse(buf)));
+    const before = m.geo.getAttribute("position").count / 3, after = g.getAttribute("position").count / 3;
+    const keep = { quat: m.quat.clone(), scale: m.scale.clone() };
+    replaceGeo(m, g);
+    m.quat.copy(keep.quat); m.scale.copy(keep.scale);
+    updateBox(m);
+    settle(m.meshes);
+    flash(`Fixed ${m.name} (${before.toLocaleString()} → ${after.toLocaleString()} triangles)`, "ok");
+  } catch (e) { flash(e.message, "err"); } finally { busy(null); }
+}
+
+async function orientAll() {
+  for (const m of [...models]) await autoOrient(m);
+  arrange();
+}
+
+function exportPartStl() {
+  if (!selected) return;
+  saveBlob(stlOf(selected, true), `${selected.name}.stl`);
+}
+
+function exportPlate3mf() {
+  if (!models.length) return;
+  saveBlob(build3mf(), `${plateName()}.3mf`);
+}
+
+/* ---- modifier and negative parts */
+
+function addVolume(kind, shape) {
+  const m = selected;
+  if (!m) return;
+  const s = m.size;
+  const v = { id: nextId++, kind, shape, name: `${kind === "negative" ? "Negative" : "Modifier"} ${shape}`,
+    size: new THREE.Vector3(Math.max(2, s.x * 0.5), Math.max(2, s.y * 0.5), Math.max(2, s.z * 0.5)),
+    pos: new THREE.Vector3(0, 0, s.z / 2), overrides: {} };
+  if (kind === "modifier") v.overrides.sparse_infill_density = "40%";   // a sensible start, change it below
+  v.geo = volumeGeo(v);
+  m.volumes.push(v);
+  selectedVolume = v;
+  plateChanged();
+  refresh();
+  flash(kind === "negative" ? "Negative part added: it is cut away from the part when slicing." : "Modifier added: its settings apply inside it.", "ok");
+}
+
+function renderVolumePanel() {
+  const v = selectedVolume, el = $("vol-panel");
+  el.hidden = !v;
+  if (!v) return;
+  $("vol-name").textContent = v.name;
+  $("vol-kind").textContent = v.kind === "negative" ? "Negative part: cut away from the part" : "Modifier: these settings apply inside it";
+  const set = (id, val) => { if (!focusedInput(id)) $(id).value = +val.toFixed(2); };
+  set("v-sx", v.size.x); set("v-sy", v.size.y); set("v-sz", v.size.z);
+  set("v-px", v.pos.x); set("v-py", v.pos.y); set("v-pz", v.pos.z);
+  $("vol-settings-wrap").hidden = v.kind === "negative";
+  if (volEditor.vol !== v) { volEditor.vol = v; volEditor.render(); }
+}
+
+function volumeChanged() {
+  const v = selectedVolume;
+  if (!v) return;
+  const n = (id) => parseFloat($(id).value);
+  const size = new THREE.Vector3(n("v-sx"), n("v-sy"), n("v-sz"));
+  if ([size.x, size.y, size.z].every((x) => x > 0)) v.size.copy(size);
+  const pos = new THREE.Vector3(n("v-px"), n("v-py"), n("v-pz"));
+  if ([pos.x, pos.y, pos.z].every(Number.isFinite)) v.pos.copy(pos);
+  v.geo.dispose();
+  v.geo = volumeGeo(v);
+  plateChanged();
+  refresh();
+}
+
+/* ---- cut at a height */
+
+let cutPlane = null;
+function openCut() {
+  const m = selected;
+  if (!m) return;
+  const dlg = $("cut-dlg");
+  $("cut-name").textContent = m.name;
+  const h = $("cut-h"), r = $("cut-range");
+  r.max = h.max = m.size.z.toFixed(2);
+  h.value = r.value = (m.size.z / 2).toFixed(2);
+  const c = selectedCopy();
+  cutPlane = new THREE.Mesh(new THREE.PlaneGeometry(m.size.x * 1.3 + 4, m.size.y * 1.3 + 4),
+    new THREE.MeshBasicMaterial({ color: css("--accent"), transparent: true, opacity: 0.35, side: THREE.DoubleSide, depthWrite: false }));
+  cutPlane.position.set(c.position.x, c.position.y, m.size.z / 2);
+  view.scene.add(cutPlane);
+  const sync = (src) => { (src === h ? r : h).value = src.value; cutPlane.position.z = parseFloat(src.value) || 0; };
+  h.oninput = () => sync(h);
+  r.oninput = () => sync(r);
+  dlg.returnValue = "";
+  dlg.show();      // not modal: the plate stays visible with the cut plane
+  dlg.onclose = () => {
+    view.scene.remove(cutPlane);
+    cutPlane = null;
+    if (dlg.returnValue === "ok") doCut(m, parseFloat(h.value), $("cut-keep").value, $("cut-flip").checked);
+  };
+}
+
+function doCut(m, height, keep, flip) {
+  if (!models.includes(m) || !(height > 0) || !(height < m.size.z)) { flash("Pick a height inside the part.", "warn"); return; }
+  busy("Cutting…");
+  setTimeout(() => {
+    try {
+      const g = bakedGeo(m);
+      const { top, bottom, openLoops } = MO.cutAtZ(g, m.local.z0 + height, { capTop: true, capBottom: true });
+      const base = selectedCopy().position.clone();
+      removeModel(m);
+      const made = [];
+      if (bottom && keep !== "top") {
+        const r = addModel(`${m.name} (bottom)`, bottom, null, m);
+        r.m.meshes[0].position.set(base.x + r.center.x, base.y + r.center.y, 0);
+        made.push(r.m);
+      }
+      if (top && keep !== "bottom") {
+        const t = flip ? MO.bake(top, new THREE.Matrix4().makeRotationX(Math.PI)) : top;
+        const r = addModel(`${m.name} (top)`, t, null, m);
+        r.m.meshes[0].position.set(base.x + r.center.x + (keep === "both" ? m.size.x + GAP : 0), base.y + r.center.y, 0);
+        made.push(r.m);
+      }
+      selected = made[0] || null; multi.clear();
+      settle(made.flatMap((x) => x.meshes));
+      flash(openLoops ? `Cut, but ${openLoops} cut outline(s) weren't closed (the model has holes): try Fix model first.` : "Cut done", openLoops ? "warn" : "ok");
+    } catch (e) { flash(`Couldn't cut: ${e.message}`, "err"); } finally { busy(null); }
+  }, 20);
+}
+
+/* ---- painting supports and seams */
+
+const paint = { on: false, model: null, target: "supports", tool: 1, radius: 3, centroids: null, painting: false };
+const PAINT_COLOURS = {
+  supports: { 0: [0.55, 0.58, 0.65], 1: [0.18, 0.75, 0.35], 2: [0.9, 0.25, 0.3] },
+  seam: { 0: [0.55, 0.58, 0.65], 1: [0.3, 0.55, 1.0], 2: [0.95, 0.6, 0.15] },
+};
+let paintMat = null;
+
+function startPaint(target) {
+  const m = selected;
+  if (!m) return;
+  if (paint.on) stopPaint();
+  busy("Preparing the surface for painting…");
+  setTimeout(() => {
+    try {
+      // fine triangles to paint on: split until edges are about 1/80 of the part (never below 0.5 mm, at most 400k triangles)
+      if (!m.paint?.fine) {
+        const s = Math.max(m.scale.x, m.scale.y, m.scale.z);
+        const edge = Math.max(0.5, Math.max(m.size.x, m.size.y, m.size.z) / 80) / s;
+        const old = m.paint;
+        const r = MO.subdivide(m.geo, edge, 400000);
+        const remap = (arr) => (arr ? Uint8Array.from(r.parent, (pi) => arr[pi]) : null);
+        r.geo.computeVertexNormals();
+        r.geo.computeBoundingSphere();
+        m.geo.dispose();
+        m.geo = r.geo;
+        for (const mesh of m.meshes) mesh.geometry = r.geo;
+        m.paint = { supports: remap(old?.supports), seam: remap(old?.seam), fine: true };
+      }
+      const tris = m.geo.getAttribute("position").count / 3;
+      m.paint[target] ||= new Uint8Array(tris);
+      const p = m.geo.getAttribute("position").array;
+      const cen = new Float32Array(tris * 3);
+      for (let t = 0; t < tris; t++) for (let k = 0; k < 3; k++) cen[t * 3 + k] = (p[t * 9 + k] + p[t * 9 + 3 + k] + p[t * 9 + 6 + k]) / 3;
+      Object.assign(paint, { on: true, model: m, target, tool: 1, centroids: cen });
+      if (!m.geo.getAttribute("color")) m.geo.setAttribute("color", new THREE.BufferAttribute(new Float32Array(tris * 9), 3));
+      recolour(m);
+      paintMat ||= new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.02 });
+      for (const mesh of m.meshes) mesh.material = paintMat;
+      $("paint-panel").hidden = false;
+      $("paint-title").textContent = target === "supports" ? "Paint supports" : "Paint seam";
+      $("paint-t1").textContent = target === "supports" ? "Enforce" : "Seam here";
+      $("paint-t2").textContent = target === "supports" ? "Block" : "Avoid";
+      $("paint-overhangs").hidden = target !== "supports";
+      $("paint-note").textContent = target === "supports"
+        ? "Green = always support here, red = never. With supports set to \"manual\" in the print settings, supports go only where you've painted green."
+        : "Blue = put the seam here, orange = keep the seam away.";
+      setPaintTool(1);
+      setPickMode(false);
+      refresh();
+    } catch (e) { flash(`Couldn't start painting: ${e.message}`, "err"); } finally { busy(null); }
+  }, 20);
+}
+
+function stopPaint() {
+  if (!paint.on) return;
+  const m = paint.model;
+  paint.on = false; paint.model = null; paint.centroids = null;
+  $("paint-panel").hidden = true;
+  if (m) {
+    const any = (a) => a && a.some((x) => x);
+    if (!any(m.paint?.supports)) m.paint.supports = null;
+    if (!any(m.paint?.seam)) m.paint.seam = null;
+  }
+  refresh();
+}
+
+function setPaintTool(t) {
+  paint.tool = t;
+  for (const b of document.querySelectorAll("[data-paint-tool]")) b.classList.toggle("on", Number(b.dataset.paintTool) === t);
+}
+
+function recolour(m, only = null) {
+  const col = m.geo.getAttribute("color"), arr = col.array, st = m.paint[paint.target], pal = PAINT_COLOURS[paint.target];
+  const one = (t) => { const c = pal[st[t]] || pal[0]; for (let k = 0; k < 3; k++) arr.set(c, t * 9 + k * 3); };
+  if (only) for (const t of only) one(t); else for (let t = 0; t < st.length; t++) one(t);
+  col.needsUpdate = true;
+}
+
+function paintAt(e) {
+  const m = paint.model;
+  const hit = rayFrom(e).intersectObjects(m.meshes, false)[0];
+  if (!hit) return false;
+  const local = hit.object.worldToLocal(hit.point.clone());
+  const s = (m.scale.x + m.scale.y + m.scale.z) / 3;
+  const r2 = (paint.radius / s) ** 2;
+  const cen = paint.centroids, st = m.paint[paint.target], val = paint.tool;
+  const changed = [];
+  for (let t = 0, n = st.length; t < n; t++) {
+    const dx = cen[t * 3] - local.x, dy = cen[t * 3 + 1] - local.y, dz = cen[t * 3 + 2] - local.z;
+    if (dx * dx + dy * dy + dz * dz <= r2 && st[t] !== val) { st[t] = val; changed.push(t); }
+  }
+  if (hit.faceIndex != null && st[hit.faceIndex] !== val) { st[hit.faceIndex] = val; changed.push(hit.faceIndex); }
+  if (changed.length) recolour(m, changed);
+  return true;
+}
+
+function paintOverhangs() {
+  const m = paint.model;
+  if (!m) return;
+  const ang = parseFloat(S.edits.process?.support_threshold_angle ?? S.detail.process?.values?.support_threshold_angle) || 30;
+  const idx = MO.overhangTriangles(m.geo, new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, m.scale), ang);
+  const st = m.paint.supports;
+  for (const t of idx) st[t] = 1;
+  recolour(m);
+  plateChanged();
+  flash(`Painted ${idx.length.toLocaleString()} overhanging triangles (steeper than ${ang}°)`, "ok");
+}
+
 /* ================================================================ G-code thumbnails */
 
 let thumbRenderer = null;
@@ -827,8 +1530,13 @@ function nudge(dx, dy) {
 function pasteModel() {
   const src = clipboardModel;
   if (!src || !models.includes(src) && !src.geo) return;
-  const m = { id: nextId++, name: src.name, geo: src.geo.clone(), quat: src.quat.clone(), scale: src.scale, meshes: [], box: null,
-    overrides: JSON.parse(JSON.stringify(src.overrides || {})) };
+  const m = newModelRecord(src.name, src.geo.clone());
+  m.quat.copy(src.quat);
+  m.scale.copy(src.scale);
+  m.overrides = JSON.parse(JSON.stringify(src.overrides || {}));
+  m.printable = src.printable !== false;
+  m.volumes = (src.volumes || []).map((v) => ({ ...v, id: nextId++, size: v.size.clone(), pos: v.pos.clone(), overrides: { ...v.overrides }, geo: v.geo.clone() }));
+  if (src.paint) m.paint = { supports: src.paint.supports?.slice() || null, seam: src.paint.seam?.slice() || null };
   models.push(m);
   setCopies(m, 1);
   updateBox(m);
@@ -868,8 +1576,8 @@ function onKey(e) {
     }
   }
   switch (k) {
-    case "Escape": if (pickMode) setPickMode(false); else { selected = null; refresh(); } break;
-    case "Delete": case "Backspace": if (selected) { handled(); $("obj-delete").click(); } return;
+    case "Escape": if (paint.on) stopPaint(); else if (pickMode) setPickMode(false); else { selected = null; multi.clear(); selectedVolume = null; refresh(); } break;
+    case "Delete": case "Backspace": if (selected || multi.size) { handled(); $("obj-delete").click(); } return;
     case "a": case "A": if (models.length) { handled(); arrange(); } return;
     case "f": case "F": if (selected) { handled(); setPickMode(!pickMode); } return;
     case "r": case "R":
@@ -960,6 +1668,9 @@ function updateProjectLabel() {
   el.title = projectDirty() ? "Unsaved changes" : "";
 }
 
+const b64 = (u8) => { let s = ""; for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode(...u8.subarray(i, i + 0x8000)); return btoa(s); };
+const unb64 = (str) => Uint8Array.from(atob(str), (c) => c.charCodeAt(0));
+
 function meshStl(geo) {
   // the part's own mesh (centred, unrotated, unscaled) as binary STL
   const p = geo.getAttribute("position").array;
@@ -1010,7 +1721,9 @@ async function saveProject(asNew) {
     id: asNew ? undefined : project?.id, name,
     presets: { ...S.selected, bed_type: S.bedType }, edits: S.edits,
     models: models.map((m, i) => ({
-      mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale, overrides: m.overrides,
+      mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale.toArray(), overrides: m.overrides, printable: m.printable !== false,
+      volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides })),
+      paint: m.paint ? { supports: m.paint.supports ? b64(m.paint.supports) : null, seam: m.paint.seam ? b64(m.paint.seam) : null } : null,
       instances: m.meshes.map((x) => [+x.position.x.toFixed(3), +x.position.y.toFixed(3)]),
     })),
   };
@@ -1042,8 +1755,21 @@ async function openProject(id) {
     for (const pm of meta.models) {
       const buf = await (await api(`/api/projects/${id}/mesh/${pm.mid}`)).arrayBuffer();
       const geo = mergeToGeometry(new THREE.Mesh(new STLLoader().parse(buf)));
-      const m = { id: nextId++, name: pm.name, geo, quat: new THREE.Quaternion().fromArray(pm.quat || [0, 0, 0, 1]),
-        scale: pm.scale || 1, meshes: [], box: null, overrides: pm.overrides || {} };
+      const m = newModelRecord(pm.name, geo);
+      m.quat.fromArray(pm.quat || [0, 0, 0, 1]);
+      if (Array.isArray(pm.scale)) m.scale.fromArray(pm.scale); else m.scale.setScalar(pm.scale || 1);
+      m.overrides = pm.overrides || {};
+      m.printable = pm.printable !== false;
+      m.volumes = (pm.volumes || []).map((v) => {
+        const vol = { id: nextId++, name: v.name, kind: v.kind, shape: v.shape, size: new THREE.Vector3().fromArray(v.size),
+          pos: new THREE.Vector3().fromArray(v.pos), overrides: v.overrides || {} };
+        vol.geo = volumeGeo(vol);
+        return vol;
+      });
+      // painted triangles line up with the saved mesh only if it wasn't recentred differently: the mesh is stored centred
+      const tris = geo.getAttribute("position").count / 3;
+      const unb = (x) => { const a = x ? unb64(x) : null; return a && a.length === tris ? a : null; };
+      if (pm.paint) m.paint = { supports: unb(pm.paint.supports), seam: unb(pm.paint.seam) };
       models.push(m);
       setCopies(m, (pm.instances || [[bed.w / 2, bed.d / 2]]).length);
       updateBox(m);
@@ -1110,9 +1836,10 @@ $("legend").addEventListener("change", (e) => {
 $("objects").addEventListener("click", (e) => {
   const li = e.target.closest("li[data-id]");
   if (!li) return;
-  selected = models.find((m) => String(m.id) === li.dataset.id) || null;
-  refresh();
-  if (selected) focusModel(selected);
+  const m = models.find((x) => String(x.id) === li.dataset.id) || null;
+  const vol = li.dataset.vol && m ? m.volumes.find((v) => String(v.id) === li.dataset.vol) : null;
+  pickPart(m, null, e.shiftKey || e.ctrlKey || e.metaKey, vol);
+  if (selected && !e.shiftKey && !e.ctrlKey && !e.metaKey) focusModel(selected);
 });
 $("arrange").addEventListener("click", arrange);
 $("view-reset").addEventListener("click", fitView);
@@ -1156,8 +1883,8 @@ for (const b of document.querySelectorAll("[data-rot]")) {
 $("obj-scale").addEventListener("change", () => {
   if (!selected) return;
   const v = parseFloat($("obj-scale").value);
-  if (!(v >= 1 && v <= 2000)) { $("obj-scale").value = Math.round(selected.scale * 1000) / 10; return; }
-  selected.scale = v / 100;
+  if (!(v >= 1 && v <= 2000)) { refresh(); return; }
+  selected.scale.setScalar(v / 100);
   updateBox(selected);
   settle(selected.meshes);
 });
@@ -1181,14 +1908,43 @@ $("copy-plus").addEventListener("click", () => {
 });
 $("copy-minus").addEventListener("click", () => { if (selected) { setCopies(selected, selected.meshes.length - 1); plateChanged(); refresh(); } });
 $("obj-delete").addEventListener("click", () => {
-  if (!selected) return;
-  for (const mesh of selected.meshes) view.scene.remove(mesh);
-  selected.geo.dispose();
-  models.splice(models.indexOf(selected), 1);
-  plateChanged();
+  if (selectedVolume) { selected.volumes.splice(selected.volumes.indexOf(selectedVolume), 1); selectedVolume = null; plateChanged(); refresh(); return; }
+  const list = selection();
+  if (!list.length) return;
+  if (paint.on && list.includes(paint.model)) stopPaint();
+  for (const m of list) removeModel(m);
   selected = null;
+  multi.clear();
+  plateChanged();
   refresh();
 });
+// transforms
+for (const [id, axis] of [["t-x", "x"], ["t-y", "y"]]) $(id).addEventListener("change", (e) => setPosition(axis, parseFloat(e.target.value)));
+for (const id of ["t-rx", "t-ry", "t-rz"]) $(id).addEventListener("change", () => selected && setRotation());
+for (const [id, axis] of [["t-sx", "x"], ["t-sy", "y"], ["t-sz", "z"]]) $(id).addEventListener("change", (e) => selected && setSize(axis, parseFloat(e.target.value)));
+$("t-printable").addEventListener("change", togglePrintable);
+$("t-ears").addEventListener("change", toggleEars);
+// modifier / negative part panel
+for (const id of ["v-sx", "v-sy", "v-sz", "v-px", "v-py", "v-pz"]) $(id).addEventListener("change", volumeChanged);
+$("vol-back").addEventListener("click", () => { selectedVolume = null; refresh(); });
+$("vol-remove").addEventListener("click", () => $("obj-delete").click());
+const volEditor = createPartEditor($("vol-settings"), () => (selectedVolume?.kind === "modifier" ? selectedVolume.overrides : null), () => { plateChanged(); refresh(); });
+$("vol-add").addEventListener("click", async () => {
+  const v = selectedVolume;
+  if (!v) return;
+  const key = await pickPartSetting(Object.keys(v.overrides));
+  if (!key || selectedVolume !== v) return;
+  v.overrides[key] = processValue(key);
+  volEditor.render();
+  plateChanged();
+  refresh();
+});
+// painting panel
+for (const b of document.querySelectorAll("[data-paint-tool]")) b.addEventListener("click", () => setPaintTool(Number(b.dataset.paintTool)));
+$("paint-radius").addEventListener("input", (e) => { paint.radius = parseFloat(e.target.value) || 3; $("paint-radius-val").textContent = `${paint.radius} mm`; });
+$("paint-overhangs").addEventListener("click", paintOverhangs);
+$("paint-clear").addEventListener("click", () => { const m = paint.model; if (!m) return; m.paint[paint.target].fill(0); recolour(m); plateChanged(); });
+$("paint-done").addEventListener("click", stopPaint);
 $("open-projects").addEventListener("click", () => openProjects().catch((e) => toast(e.message, "err")));
 $("save-project").addEventListener("click", () => saveProject(false));
 $("pj-close").addEventListener("click", () => $("projects").close());
