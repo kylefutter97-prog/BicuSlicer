@@ -1,14 +1,14 @@
 :root {
   --bg: #f4f5f7; --card: #ffffff; --text: #16181d; --muted: #6b7280; --line: #e3e5ea;
-  --accent: #e8590c; --accent-text: #ffffff; --ok: #2f9e44; --warn: #e67700; --bad: #e03131;
-  --field: #f8f9fb; --viewer: #eef0f3; --model: #e8590c; --model-dim: #8a94a6; --bed: #c9ced6;
+  --accent: #1c7ed6; --accent-text: #ffffff; --ok: #2f9e44; --warn: #e67700; --bad: #e03131;
+  --field: #f8f9fb; --viewer: #eef0f3; --model: #1c7ed6; --model-dim: #8a94a6; --bed: #c9ced6;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
   :root {
     --bg: #16181d; --card: #1f2229; --text: #eceef2; --muted: #9aa1ad; --line: #2e323b;
-    --accent: #ff7a2f; --accent-text: #16181d; --ok: #51cf66; --warn: #ffa94d; --bad: #ff6b6b;
-    --field: #262a32; --viewer: #1a1d23; --model: #ff8c4a; --model-dim: #7d8696; --bed: #3a3f4a;
+    --accent: #4dabf7; --accent-text: #16181d; --ok: #51cf66; --warn: #ffa94d; --bad: #ff6b6b;
+    --field: #262a32; --viewer: #1a1d23; --model: #4dabf7; --model-dim: #7d8696; --bed: #3a3f4a;
     color-scheme: dark;
   }
 }
@@ -384,3 +384,4 @@ dialog.sheet.projects { width: min(900px, 96vw); height: min(820px, 92vh); }
   .brand-logo { width: 28px; }
   .brand-logo .wm { display: none; }
 }
+.brand-logo .acc rect { fill: var(--accent); }   /* "Slicer" follows the page accent */

@@ -7,13 +7,14 @@ the README banner and app/static/manifest.webmanifest.
 import json, sys
 from pathlib import Path
 from PIL import Image
-sys.path.insert(0, ".")
+sys.path.insert(0, str(Path(__file__).resolve().parent))   # pixels.py sits next to this script
 from pixels import A, PAL, FONT, rects, word
 
 OUT = Path(sys.argv[1]); DOCS = Path(sys.argv[2])
 OUT.mkdir(parents=True, exist_ok=True); DOCS.mkdir(parents=True, exist_ok=True)
 GRID = A.splitlines()
 BG = PAL["K"]
+ACCENT = "#4dabf7"   # matches the page accent in dark mode
 # pixel-art rounded corners on the 16x16 tile (transparent corner pixels)
 CORNER = {(0,0),(1,0),(0,1),(14,0),(15,0),(15,1),(0,14),(0,15),(1,15),(15,14),(14,15),(15,15)}
 
@@ -55,15 +56,15 @@ def tile_svg(s, x0=0, y0=0):
 # header logo: icon + wordmark; "Bicu" uses currentColor so it follows light/dark text, "Slicer" the accent
 icon = tile_svg(1)
 w_bicu, end1 = word("Bicu", 20, 4.5, 1, ["currentColor"]*4)
-w_slicer, end2 = word("Slicer", end1 + 2, 4.5, 1, ["#ff7a2f"]*6)
+w_slicer, end2 = word("Slicer", end1 + 2, 4.5, 1, [ACCENT]*6)
 (OUT/"logo.svg").write_text(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {end2+1} 16" shape-rendering="crispEdges">{icon}{w_bicu}{w_slicer}</svg>')
-(OUT/"logo-inline.txt").write_text(f'<svg class="brand-logo" viewBox="0 0 {end2+1} 16" shape-rendering="crispEdges" aria-hidden="true">{icon}<g class="wm">{w_bicu}{w_slicer}</g></svg>')
+(OUT/"logo-inline.txt").write_text(f'<svg class="brand-logo" viewBox="0 0 {end2+1} 16" shape-rendering="crispEdges" aria-hidden="true">{icon}<g class="wm">{w_bicu}<g class="acc">{w_slicer}</g></g></svg>')
 
 # README banner (fixed dark tile, reads on GitHub light and dark)
 s = 6
 icon_b = tile_svg(s, 24, 24)
 wb, e1 = word("Bicu", 24 + 16*s + 30, 24 + 4.5*s, s, ["#eceef2"]*4)
-ws, e2 = word("Slicer", e1 + 2*s, 24 + 4.5*s, s, ["#ff7a2f"]*6)
+ws, e2 = word("Slicer", e1 + 2*s, 24 + 4.5*s, s, [ACCENT]*6)
 W, H = e2 + 40, 16*s + 48
 (DOCS/"banner.svg").write_text(f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {W} {H}" width="{W}" height="{H}" shape-rendering="crispEdges">'
                                f'<rect width="{W}" height="{H}" rx="24" fill="{BG}"/>{icon_b}{wb}{ws}</svg>')

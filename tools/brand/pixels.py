@@ -2,7 +2,7 @@
 
 Running this file directly writes concepts.svg, a side-by-side preview of the three drawings.
 """
-PAL = {"K":"#16181d","G":"#8a94a6","g":"#4b5260","O":"#ff7a2f","o":"#c2410c","Y":"#ffd54a","W":"#eceef2","R":"#ff4d6a","B":"#5c9dff"}
+PAL = {"K":"#16181d","G":"#8a94a6","g":"#4b5260","O":"#4dabf7","o":"#1c7ed6","Y":"#a5d8ff","W":"#eceef2","R":"#ff4d6a","B":"#5c9dff"}
 A = """................
 ....GGGGGGGG....
 ....GggggggG....
@@ -100,7 +100,7 @@ if __name__=="__main__":
         parts.append(f'<text class="th" x="{x+88}" y="282" text-anchor="middle">{"ABC"[i]}. {lab}</text>')
     parts.append('<rect x="40" y="310" width="600" height="120" rx="20" fill="#16181d"/>')
     parts.append(rects(A, 64, 334, 4.5))
-    w, end = word("BicuSlicer", 158, 350, 7, ["#eceef2"]*4+["#ff7a2f"]*6)
+    w, end = word("BicuSlicer", 158, 350, 7, ["#eceef2"]*4+["#4dabf7"]*6)
     parts.append(w)
     parts.append('</svg>')
     open("concepts.svg","w").write("".join(parts))
