@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=32">
+<link rel="stylesheet" href="/static/style.css?v=33">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -50,6 +50,7 @@
       <span class="tb-sep"></span>
       <label class="tb file-btn" title="Add models (Ctrl+I)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-file-plus"/></svg>Add<input class="file-input" type="file" accept=".stl,.3mf,.obj,.step,.stp,.iges,.igs" multiple></label>
       <button class="tb" type="button" data-tool="shape" title="Add a box, cylinder, sphere or cone"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-shapes"/></svg>Shape ▾</button>
+      <button class="tb" type="button" data-tool="text" title="Add text: a new part, or raised / engraved on a part"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-type"/></svg>Text</button>
       <span class="tb-sep"></span>
       <button class="tb" type="button" data-tool="arrange" data-needs="parts" title="Arrange (A)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-layout-grid"/></svg>Arrange</button>
       <button class="tb" type="button" data-tool="orient-all" data-needs="parts" title="Auto-orient every part"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-rotate-3d"/></svg>Orient all</button>
@@ -199,28 +200,31 @@
       </div>
       <div class="group-label">Settings for this part <span class="muted" id="part-count"></span></div>
       <div id="part-settings" class="part-settings"></div>
-      <div class="toolbar"><button class="btn" id="part-add" type="button">+ Add setting</button><button class="btn danger" id="obj-delete" type="button">Remove part</button></div>
+      <div class="toolbar"><button class="btn" id="obj-edit-text" type="button" hidden>Edit text…</button><button class="btn" id="part-add" type="button">+ Add setting</button><button class="btn danger" id="obj-delete" type="button">Remove part</button></div>
     </div>
     <div id="vol-panel" class="obj-panel" hidden>
       <div class="panel-head"><b id="vol-name"></b><button class="btn" id="vol-back" type="button">‹ Part</button></div>
       <p class="muted small" id="vol-kind"></p>
       <div class="xform">
-        <label>Size X <input id="v-sx" type="number" step="0.5" min="0.1" inputmode="decimal"></label>
-        <label>Size Y <input id="v-sy" type="number" step="0.5" min="0.1" inputmode="decimal"></label>
-        <label>Size Z <input id="v-sz" type="number" step="0.5" min="0.1" inputmode="decimal"></label>
+        <span></span><span class="ax">X</span><span class="ax">Y</span><span class="ax">Z</span><span></span>
+        <span class="row-lab">Size</span>
+        <input id="v-sx" type="number" step="any" min="0.1" inputmode="decimal" aria-label="Size X">
+        <input id="v-sy" type="number" step="any" min="0.1" inputmode="decimal" aria-label="Size Y">
+        <input id="v-sz" type="number" step="any" min="0.1" inputmode="decimal" aria-label="Size Z">
         <span class="unit">mm</span>
-        <label>Offset X <input id="v-px" type="number" step="0.5" inputmode="decimal"></label>
-        <label>Offset Y <input id="v-py" type="number" step="0.5" inputmode="decimal"></label>
-        <label>Height <input id="v-pz" type="number" step="0.5" inputmode="decimal"></label>
+        <span class="row-lab">Position</span>
+        <input id="v-px" type="number" step="any" inputmode="decimal" aria-label="Offset X from the part's centre">
+        <input id="v-py" type="number" step="any" inputmode="decimal" aria-label="Offset Y from the part's centre">
+        <input id="v-pz" type="number" step="any" inputmode="decimal" aria-label="Height of its centre above the bed">
         <span class="unit">mm</span>
       </div>
-      <p class="muted small">Offset is from the part's centre; height is the shape's centre above the bed.</p>
+      <p class="muted small">Position: X and Y from the part's centre, Z the height of its centre above the bed.</p>
       <div id="vol-settings-wrap">
         <div class="group-label">Settings inside it</div>
         <div id="vol-settings" class="part-settings"></div>
         <div class="toolbar"><button class="btn" id="vol-add" type="button">+ Add setting</button></div>
       </div>
-      <div class="toolbar"><button class="btn danger" id="vol-remove" type="button">Remove</button></div>
+      <div class="toolbar"><button class="btn" id="vol-edit-text" type="button" hidden>Edit text…</button><button class="btn danger" id="vol-remove" type="button">Remove</button></div>
     </div>
   </section>
 
@@ -478,6 +482,30 @@
   </div>
 </dialog>
 
+<dialog id="text-dlg">
+  <form method="dialog" class="plate-dlg text-dlg">
+    <p><b id="text-title">Add text</b></p>
+    <label>Text <textarea id="tx-text" rows="2" maxlength="300"></textarea></label>
+    <div class="tx-preview" id="tx-preview" aria-hidden="true"></div>
+    <div class="calib-fields">
+      <label>Font <select id="tx-font"></select></label>
+      <label>Size <span class="muted">(mm)</span> <input id="tx-size" type="number" step="any" min="1" inputmode="decimal"></label>
+      <label>Depth <span class="muted">(mm)</span> <input id="tx-depth" type="number" step="any" min="0.2" inputmode="decimal"></label>
+      <label>Letter spacing <span class="muted">(mm)</span> <input id="tx-spacing" type="number" step="any" inputmode="decimal"></label>
+      <label>Line spacing <span class="muted">(×)</span> <input id="tx-line" type="number" step="any" min="0.5" inputmode="decimal"></label>
+    </div>
+    <input type="file" id="tx-font-file" accept=".ttf,.otf,.woff" hidden>
+    <div class="imp-group" id="tx-kind-wrap">
+      <label class="check-inline"><input type="radio" name="tx-kind" value="object"> A new part on the plate</label>
+      <label class="check-inline"><input type="radio" name="tx-kind" value="part"> Raised on the selected part</label>
+      <label class="check-inline"><input type="radio" name="tx-kind" value="negative"> Engraved into it</label>
+      <label class="check-inline"><input type="radio" name="tx-kind" value="modifier"> A modifier on it (own settings)</label>
+    </div>
+    <p class="small muted" id="tx-note"></p>
+    <div class="actions"><button value="cancel" type="submit" formnovalidate>Cancel</button><button value="ok" class="primary" id="tx-ok" type="submit">Add</button></div>
+  </form>
+</dialog>
+
 <dialog id="calib-dlg">
   <form method="dialog" class="plate-dlg calib-dlg">
     <p><b id="calib-title"></b></p>
@@ -575,6 +603,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=34"></script>
+<script type="module" src="/static/app.js?v=36"></script>
 </body>
 </html>

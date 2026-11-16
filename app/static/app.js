@@ -12,6 +12,7 @@ import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
 import * as CAL from "./calibration.js";
 import { readStep } from "./step.js";
+import { BUNDLED_FONTS, loadFont, textGeometry, previewSvg, placementMatrix } from "./textgeo.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters, openPrinterView } from "./printers.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -511,10 +512,19 @@ function volumeGeo(v) {
   const s = v.size;
   if (v.shape === "mesh") {      // a modifier / negative part brought in with a project: its own mesh, resized
     const b = v.baseSize;
-    return MO.bake(v.base, new THREE.Matrix4().makeScale(s.x / (b.x || 1), s.y / (b.y || 1), s.z / (b.z || 1)));
+    const g = MO.bake(v.base, new THREE.Matrix4().makeScale(s.x / (b.x || 1), s.y / (b.y || 1), s.z / (b.z || 1)));
+    g.computeVertexNormals();       // raised parts are drawn solid and lit
+    return g;
   }
   const g = v.shape === "cylinder" ? MO.cylinder(1, 1) : v.shape === "sphere" ? MO.sphere(1) : v.shape === "cone" ? MO.cone(1, 1) : MO.box(1, 1, 1);
   return MO.bake(g, new THREE.Matrix4().makeScale(s.x, s.y, s.z));
+}
+
+const VOL_KIND = { negative: "negative part", modifier: "modifier", part: "raised part" };
+function volMat(v, sel) {
+  if (v.kind === "part") return sel ? view.mats.selected : view.mats.normal;      // raised text etc.: part of the print
+  if (v.kind === "negative") return sel ? view.mats.negativeSel : view.mats.negative;
+  return sel ? view.mats.modifierSel : view.mats.modifier;
 }
 
 function syncVolumes(m) {
@@ -523,7 +533,7 @@ function syncVolumes(m) {
     for (const vm of m.volMeshes || []) view.scene.remove(vm);
     m.volMeshes = [];
     for (const mesh of m.meshes) for (const v of m.volumes) {
-      const vm = new THREE.Mesh(v.geo, v.kind === "negative" ? view.mats.negative : view.mats.modifier);
+      const vm = new THREE.Mesh(v.geo, volMat(v, false));
       vm.userData = { model: m, volume: v, copy: mesh };
       vm.renderOrder = 2;
       m.volMeshes.push(vm);
@@ -534,8 +544,7 @@ function syncVolumes(m) {
     const v = vm.userData.volume, c = vm.userData.copy;
     vm.position.set(c.position.x + v.pos.x, c.position.y + v.pos.y, v.pos.z);
     vm.visible = viewMode === "model";
-    vm.material = v === selectedVolume ? (v.kind === "negative" ? view.mats.negativeSel : view.mats.modifierSel)
-      : (v.kind === "negative" ? view.mats.negative : view.mats.modifier);
+    vm.material = volMat(v, v === selectedVolume || (selected === m && !selectedVolume && v.kind === "part"));
   }
 }
 
@@ -642,7 +651,9 @@ function takeSnapshot() {
         copies: m.meshes.map((x) => [x.position.x, x.position.y]),
         overrides: JSON.stringify(m.overrides || {}), printable: m.printable !== false,
         volumes: (m.volumes || []).map((v) => ({ id: v.id, name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(),
-          pos: v.pos.toArray(), overrides: JSON.stringify(v.overrides || {}), geo: v.geo, base: v.base, baseSize: v.baseSize?.toArray() })),
+          pos: v.pos.toArray(), overrides: JSON.stringify(v.overrides || {}), geo: v.geo, base: v.base, baseSize: v.baseSize?.toArray(),
+          text: v.text ? JSON.stringify(v.text) : null })),
+        textp: JSON.stringify(m.text || null),
         paintRaw: m.paintRaw || null,
         layers: JSON.stringify([m.vlh, m.ranges]),
         paintRev: m.paintRev || 0,
@@ -716,7 +727,8 @@ function restoreSnapshot(s) {
       m.printable = sm.printable;
       m.volumes = sm.volumes.map((v) => ({ id: v.id, name: v.name, kind: v.kind, shape: v.shape, size: new THREE.Vector3().fromArray(v.size),
         pos: new THREE.Vector3().fromArray(v.pos), overrides: JSON.parse(v.overrides), geo: v.geo,
-        ...(v.base ? { base: v.base, baseSize: new THREE.Vector3().fromArray(v.baseSize) } : {}) }));
+        ...(v.base ? { base: v.base, baseSize: new THREE.Vector3().fromArray(v.baseSize) } : {}), ...(v.text ? { text: JSON.parse(v.text) } : {}) }));
+      m.text = JSON.parse(sm.textp || "null");
       m.paintRaw = sm.paintRaw;
       [m.vlh, m.ranges] = JSON.parse(sm.layers);
       // painting changes the arrays in place, so the part gets its own copies
@@ -1142,6 +1154,11 @@ function wirePointer() {
 
   function onTap(e) {
     const hit = hitPart(e);
+    if (textPlace) {
+      if (hit && hit.object.userData.model === textPlace.model && hit.face) placeText(hit);
+      else flash(`Tap a face of ${textPlace.model.name}.`, "warn");
+      return;
+    }
     if (pickMode) {
       if (hit && hit.object.userData.model === selected && hit.face) {
         const n = hit.face.normal.clone().applyQuaternion(selected.quat);
@@ -1251,7 +1268,7 @@ function refresh() {
       <span class="muted small">${plates.length > 1 ? `<span class="part-badge" title="On plate ${onPlates(m)}">P${onPlates(m)}</span> ` : ""}${m.overrides.brim_type === "brim_ears" ? '<span class="part-badge" title="Brim ears">ears</span> ' : ""}${isPainted(m) ? '<span class="part-badge" title="Painted">🖌</span> ' : ""}${Object.keys(m.overrides).length ? `<span class="part-badge" title="Has its own settings">⚙ ${Object.keys(m.overrides).length}</span> ` : ""}${m.meshes.length > 1 ? `×${m.meshes.length} · ` : ""}${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)}</span>
     </li>${m.volumes.map((v) => `
     <li class="vol${v === selectedVolume ? " sel" : ""}" data-id="${m.id}" data-vol="${v.id}">
-      <span class="name">↳ ${esc(v.name)}</span><span class="muted small">${v.kind === "negative" ? "negative part" : "modifier"}${Object.keys(v.overrides).length ? ` · ⚙ ${Object.keys(v.overrides).length}` : ""}</span>
+      <span class="name">↳ ${esc(v.name)}</span><span class="muted small">${VOL_KIND[v.kind] || v.kind}${Object.keys(v.overrides).length ? ` · ⚙ ${Object.keys(v.overrides).length}` : ""}</span>
     </li>`).join("")}`).join("");
   const panel = $("obj-panel");
   panel.hidden = !selected || !!selectedVolume;
@@ -1266,6 +1283,7 @@ function refresh() {
     $("copy-count").textContent = selected.meshes.length;
     if (partEditor.model !== selected) { partEditor.model = selected; partEditor.render(); }
     renderLayerPanel();
+    $("obj-edit-text").hidden = !selected.text;
     const n = Object.keys(selected.overrides).length;
     $("part-count").textContent = n ? `· ${n}` : "";
     $("part-add").disabled = !partOptionsAvailable();
@@ -1353,7 +1371,7 @@ function build3mf(pi = cur) {
         const mat = new THREE.Matrix4().makeTranslation(mesh.position.x - ox + v.pos.x, mesh.position.y + v.pos.y, v.pos.z);
         objects.push(`<object id="${vid}" type="model" name="${esc(v.name)}">${meshXml(v.geo, mat, null)}</object>`);
         comps.push(`<component objectid="${vid}"/>`);
-        parts.push(`    <part id="${vid}" subtype="${v.kind === "negative" ? "negative_part" : "modifier_part"}">\n      <metadata key="name" value="${esc(v.name)}"/>\n${v.kind === "negative" ? "" : metaXml(v.overrides, "      ")}    </part>\n`);
+        parts.push(`    <part id="${vid}" subtype="${{ negative: "negative_part", modifier: "modifier_part", part: "normal_part" }[v.kind] || "modifier_part"}">\n      <metadata key="name" value="${esc(v.name)}"/>\n${v.kind === "negative" ? "" : metaXml(v.overrides, "      ")}    </part>\n`);
       }
       const objId = id++;
       objects.push(`<object id="${objId}" type="model" name="${esc(m.name)}"><components>${comps.join("")}</components></object>`);
@@ -1703,6 +1721,7 @@ function partMenu() {
     { label: "Rename…", run: renameSelected, disabled: many },
     { label: "Add a copy", key: "+", run: () => $("copy-plus").click() },
     { label: "Auto-orient", run: () => selected && autoOrient(selected) },
+    { label: "Add text on it…", run: addText },
     { label: "Pick face down", key: "F", run: () => setPickMode(true) },
     { label: "Center on the bed", run: centerSelected },
     ...plates.map((p, i) => (i === cur ? null : { label: `Move to plate ${i + 1}${p.name ? ` · ${p.name}` : ""}`, run: () => moveToPlate(i) })),
@@ -1729,6 +1748,7 @@ const plateMenu = () => [
   { label: "Add a model…", key: "Ctrl+I", run: () => document.querySelector(".file-input")?.click() },
   ...shapeItems().slice(1).map((it) => ({ ...it, label: `Add ${it.label.toLowerCase()}` })),
   { sep: true },
+  { label: "Add text…", run: addText },
   { label: "Arrange", key: "A", run: () => arrange(cur), disabled: !models.length },
   { label: "Plate settings…", run: () => plateSettings(cur) },
   { label: "Add a plate", run: addPlate },
@@ -1753,7 +1773,7 @@ $("plate-toolbar").addEventListener("click", (e) => {
   ({
     shape: () => at(shapeItems()), arrange, "orient-all": orientAll, split: splitSelected, merge: mergeSelected, cut: openCut,
     mirror: () => at(mirrorItems()), volume: () => at(volumeItems()), ears: toggleEars,
-    paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()), calib: () => at(calibItems()), face: () => setPickMode(!pickMode),
+    paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()), calib: () => at(calibItems()), face: () => setPickMode(!pickMode), text: addText,
   })[b.dataset.tool]?.();
 });
 
@@ -1905,11 +1925,14 @@ function renderVolumePanel() {
   el.hidden = !v;
   if (!v) return;
   $("vol-name").textContent = v.name;
-  $("vol-kind").textContent = v.kind === "negative" ? "Negative part: cut away from the part" : "Modifier: these settings apply inside it";
+  $("vol-kind").textContent = { negative: "Negative part: cut away from the part", modifier: "Modifier: these settings apply inside it",
+    part: "Raised part: printed as part of it" }[v.kind] || "";
+  $("vol-edit-text").hidden = !v.text;
   const set = (id, val) => { if (!focusedInput(id)) $(id).value = +val.toFixed(2); };
   set("v-sx", v.size.x); set("v-sy", v.size.y); set("v-sz", v.size.z);
   set("v-px", v.pos.x); set("v-py", v.pos.y); set("v-pz", v.pos.z);
   $("vol-settings-wrap").hidden = v.kind === "negative";
+  $("vol-settings-wrap").querySelector(".group-label").textContent = v.kind === "part" ? "Settings for it" : "Settings inside it";
   if (volEditor.vol !== v) { volEditor.vol = v; volEditor.render(); }
 }
 
@@ -2027,6 +2050,158 @@ function setVlh(v) {
 }
 
 const rangeEditor = createPartEditor($("range-settings"), () => selRange?.overrides || null, () => { plateChanged(); refresh(); });
+
+/* ---- text (OrcaSlicer's Text tool): a new part, or raised / engraved / a modifier on a part's face */
+
+let userFonts = [];
+let textPlace = null;          // text waiting for a click on its part: { params, model }
+const allFonts = () => [...BUNDLED_FONTS, ...userFonts];
+const fontUrl = (id) => (allFonts().find((f) => f.id === id) || BUNDLED_FONTS[0]).url;
+const shortText = (t) => { const s = String(t).replace(/\s+/g, " ").trim(); return s.length > 18 ? s.slice(0, 17) + "…" : s; };
+
+function showHint(text) { const h = $("hint"); h.textContent = text; h.hidden = !text; }
+
+function textDialog(init, fixedKind = null) {
+  const dlg = $("text-dlg");
+  const p = { text: "BicuSlicer", font: "roboto-bold", size: 10, depth: 1.5, spacing: 0, lineSpacing: 1.2, kind: selected ? "part" : "object", ...(init || {}) };
+  $("text-title").textContent = fixedKind ? "Edit text" : "Add text";
+  $("tx-ok").textContent = fixedKind ? "Save" : p.kind === "object" ? "Add" : "Place it…";
+  $("tx-text").value = p.text;
+  for (const [id, k] of [["tx-size", "size"], ["tx-depth", "depth"], ["tx-spacing", "spacing"], ["tx-line", "lineSpacing"]]) $(id).value = p[k];
+  const fillFonts = (sel) => {
+    $("tx-font").innerHTML = allFonts().map((f) => `<option value="${esc(f.id)}"${f.id === sel ? " selected" : ""}>${esc(f.label)}</option>`).join("")
+      + `<option value="__upload">Add a font file (TTF, OTF, WOFF)…</option>`;
+  };
+  fillFonts(p.font);
+  apiJson("/api/fonts").then((f) => { userFonts = f; fillFonts($("tx-font").value); }).catch(() => {});
+  $("tx-kind-wrap").hidden = !!fixedKind;
+  for (const r of dlg.querySelectorAll("input[name=tx-kind]")) {
+    r.checked = r.value === p.kind;
+    r.disabled = r.value !== "object" && !selected;
+  }
+  $("tx-note").textContent = selected ? "" : "Select a part first to put text on it.";
+  const read = () => ({ text: $("tx-text").value, font: $("tx-font").value, size: +$("tx-size").value, depth: +$("tx-depth").value,
+    spacing: +$("tx-spacing").value || 0, lineSpacing: +$("tx-line").value || 1.2,
+    kind: fixedKind || dlg.querySelector("input[name=tx-kind]:checked")?.value || "object" });
+  let seq = 0;
+  const preview = async () => {
+    const q = read(), n = ++seq;
+    $("tx-ok").textContent = fixedKind ? "Save" : q.kind === "object" ? "Add" : "Place it…";
+    try {
+      const font = await loadFont(fontUrl(q.font));
+      if (n === seq) { $("tx-preview").innerHTML = previewSvg(font, q); $("tx-ok").disabled = !q.text.trim(); }
+    } catch (e) { if (n === seq) $("tx-preview").textContent = e.message; }
+  };
+  dlg.oninput = preview;
+  $("tx-font").onchange = async (e) => {
+    if (e.target.value !== "__upload") { preview(); return; }
+    const f = await new Promise((res) => { const i = $("tx-font-file"); i.value = ""; i.onchange = () => res(i.files[0] || null); i.click(); });
+    if (!f) { fillFonts(p.font); preview(); return; }
+    try {
+      const fd = new FormData();
+      fd.append("font", f, f.name);
+      const added = await apiJson("/api/fonts", { method: "POST", body: fd });
+      userFonts.push(added);
+      fillFonts(added.id);
+      toast(`Added the font "${added.label}" (kept on the server for every device)`);
+    } catch (err) { toast(err.message, "err"); fillFonts(p.font); }
+    preview();
+  };
+  preview();
+  dlg.returnValue = "";
+  dlg.showModal();
+  return new Promise((resolve) => dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" ? read() : null), { once: true }));
+}
+
+async function addText() {
+  const p = await textDialog(null);
+  if (!p) return;
+  if (p.kind === "object") { await makeTextPart(p); return; }
+  if (!selected) { flash("Select a part to put the text on.", "warn"); return; }
+  if (paint.on) stopPaint();
+  setPickMode(false);
+  textPlace = { params: p, model: selected };
+  showHint(`Tap where the text goes on ${selected.name}. Esc to cancel.`);
+}
+
+function cancelTextPlace() { if (textPlace) { textPlace = null; showHint(""); } }
+
+async function makeTextPart(p) {
+  busy("Making the text…");
+  try {
+    const font = await loadFont(fontUrl(p.font));
+    const geo = textGeometry(font, p);
+    centered(geo);
+    if (!view.renderer) initViewer();
+    const m = newModelRecord(`Text "${shortText(p.text)}"`, geo);
+    m.text = p;
+    models.push(m);
+    setCopies(m, 1);
+    updateBox(m);
+    selected = m; multi.clear(); selectedVolume = null;
+    settle(m.meshes);
+  } catch (e) { flash(`Couldn't make the text: ${e.message}`, "err"); } finally { busy(null); }
+}
+
+/** (Re)build a text volume's mesh from its parameters: anchor (x, y from the copy's centre, z above the bed) and face normal. */
+async function buildTextVolume(v) {
+  const t = v.text;
+  const font = await loadFont(fontUrl(t.font));
+  const g = textGeometry(font, { ...t, depth: t.depth + 0.3 });       // 0.3 mm into the part (raised) or above it (engraved)
+  g.applyMatrix4(placementMatrix(t.anchor, t.normal, v.kind, t.depth));
+  const vc = centered(g);
+  g.computeBoundingBox();
+  const size = g.boundingBox.getSize(new THREE.Vector3());
+  Object.assign(v, { base: g, baseSize: size.clone(), size: size.clone(), pos: vc });
+  v.geo = volumeGeo(v);
+}
+
+async function placeText(hit) {
+  const { params: p, model: m } = textPlace;
+  cancelTextPlace();
+  const copy = hit.object;
+  const n = hit.face.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(copy.matrixWorld)).normalize();
+  const anchor = [hit.point.x - copy.position.x, hit.point.y - copy.position.y, hit.point.z];
+  const v = { id: nextId++, kind: p.kind, shape: "mesh", name: `Text "${shortText(p.text)}"`, overrides: {},
+    text: { ...p, anchor, normal: n.toArray() } };
+  busy("Making the text…");
+  try {
+    await buildTextVolume(v);
+    m.volumes.push(v);
+    selected = m; selectedVolume = v;
+    plateChanged();
+    refresh();
+    flash(p.kind === "part" ? "Raised text added: it prints as part of the part." : p.kind === "negative" ? "Engraved text added: it's cut into the part."
+      : "Text modifier added: give it its own settings below.", "ok");
+  } catch (e) { flash(`Couldn't make the text: ${e.message}`, "err"); } finally { busy(null); }
+}
+
+async function editText() {
+  const v = selectedVolume, m = selected;
+  if (v?.text) {
+    const p = await textDialog(v.text, v.kind);
+    if (!p || !m.volumes.includes(v)) return;
+    v.text = { ...v.text, ...p, kind: undefined };
+    v.name = `Text "${shortText(p.text)}"`;
+    busy("Making the text…");
+    try { await buildTextVolume(v); plateChanged(); refresh(); } catch (e) { flash(e.message, "err"); } finally { busy(null); }
+    return;
+  }
+  if (!m?.text) return;
+  const p = await textDialog(m.text, "object");
+  if (!p || !models.includes(m)) return;
+  busy("Making the text…");
+  try {
+    const font = await loadFont(fontUrl(p.font));
+    // keep the part's rotation and scale: bake them in, as replaceGeo expects plate axes
+    const g = MO.bake(textGeometry(font, p), new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, m.scale));
+    replaceGeo(m, g);
+    m.text = p;
+    m.name = `Text "${shortText(p.text)}"`;
+    plateChanged();
+    refresh();
+  } catch (e) { flash(e.message, "err"); } finally { busy(null); }
+}
 
 /* ---- cut at a height */
 
@@ -2293,6 +2468,7 @@ function pasteModel() {
   m.volumes = (src.volumes || []).map((v) => ({ ...v, id: nextId++, size: v.size.clone(), pos: v.pos.clone(), overrides: { ...v.overrides }, geo: v.geo.clone() }));
   if (src.paint) m.paint = { fine: src.paint.fine, ...Object.fromEntries(PAINT_KINDS.map((k) => [k, src.paint[k]?.slice() || null])) };
   m.paintRaw = src.paintRaw || null;
+  m.text = src.text || null;
   m.vlh = src.vlh ? JSON.parse(JSON.stringify(src.vlh)) : null;
   if (m.vlh?.mode === "imported") m.vlh.pose = poseKey(m);
   m.ranges = (src.ranges || []).map((r) => ({ ...r, id: nextId++, overrides: { ...r.overrides } }));
@@ -2337,7 +2513,7 @@ function onKey(e) {
     }
   }
   switch (k) {
-    case "Escape": if (paint.on) stopPaint(); else if (pickMode) setPickMode(false); else { selected = null; multi.clear(); selectedVolume = null; refresh(); } break;
+    case "Escape": if (textPlace) cancelTextPlace(); else if (paint.on) stopPaint(); else if (pickMode) setPickMode(false); else { selected = null; multi.clear(); selectedVolume = null; refresh(); } break;
     case "Delete": case "Backspace": if (selected || multi.size) { handled(); $("obj-delete").click(); } return;
     case "a": case "A": if (models.length) { handled(); arrange(); } return;
     case "f": case "F": if (selected) { handled(); setPickMode(!pickMode); } return;
@@ -2485,7 +2661,8 @@ async function saveProject(asNew) {
     plates: plates.map((p) => ({ name: p.name, bed_type: p.bedType, print_sequence: p.seq, spiral_mode: p.spiral, gcodes: p.gcodes, calib: p.calib })),
     models: models.map((m, i) => ({
       mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale.toArray(), overrides: m.overrides, printable: m.printable !== false,
-      volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides,
+      text: m.text || null,
+      volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides, text: v.text || null,
         ...(v.shape === "mesh" ? { vmid: extraMeshes.push(v.base) - 1 + models.length, base_size: v.baseSize.toArray() } : {}) })),
       paint: m.paint ? Object.fromEntries(PAINT_KINDS.map((k) => [k, m.paint[k] ? b64(m.paint[k]) : null])) : null,
       paint_raw: m.paintRaw ? Object.fromEntries(PAINT_KINDS.map((k) => [k, sparse(m.paintRaw[k])])) : null,
@@ -2535,11 +2712,12 @@ async function openProject(id) {
       m.quat.fromArray(pm.quat || [0, 0, 0, 1]);
       if (Array.isArray(pm.scale)) m.scale.fromArray(pm.scale); else m.scale.setScalar(pm.scale || 1);
       m.overrides = pm.overrides || {};
+      m.text = pm.text || null;
       m.printable = pm.printable !== false;
       m.volumes = [];
       for (const v of pm.volumes || []) {
         const vol = { id: nextId++, name: v.name, kind: v.kind, shape: v.shape, size: new THREE.Vector3().fromArray(v.size),
-          pos: new THREE.Vector3().fromArray(v.pos), overrides: v.overrides || {} };
+          pos: new THREE.Vector3().fromArray(v.pos), overrides: v.overrides || {}, ...(v.text ? { text: v.text } : {}) };
         if (v.shape === "mesh") {
           const vb = await (await api(`/api/projects/${id}/mesh/${v.vmid}`)).arrayBuffer();
           vol.base = mergeToGeometry(new THREE.Mesh(new STLLoader().parse(vb)));
@@ -3153,6 +3331,8 @@ $("range-remove").addEventListener("click", () => {
   refresh();
 });
 $("empty-calib").addEventListener("click", (e) => { e.stopPropagation(); const r = e.currentTarget.getBoundingClientRect(); openMenu(r.left, r.bottom + 4, calibItems()); });
+$("obj-edit-text").addEventListener("click", editText);
+$("vol-edit-text").addEventListener("click", editText);
 $("lg-pause").addEventListener("click", () => addLayerGcode("pause"));
 $("lg-custom").addEventListener("click", () => addLayerGcode("custom"));
 $("lg-list").addEventListener("click", (e) => {

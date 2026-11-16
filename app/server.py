@@ -15,6 +15,7 @@ import sys
 import time
 import uuid
 import zipfile
+from urllib.parse import quote
 from pathlib import Path
 
 import aiohttp
@@ -753,6 +754,64 @@ async def api_printer_active(request):
     printers.data["active"] = body["id"]
     printers.save()
     return web.json_response({"active": body["id"]})
+
+
+# ---------------------------------------------------------------- fonts you add (for the Text tool)
+
+FONTS_DIR = DATA_DIR / "fonts"
+FONT_MAGIC = {b"\x00\x01\x00\x00": ".ttf", b"true": ".ttf", b"OTTO": ".otf", b"wOFF": ".woff"}
+
+
+def font_list() -> list[dict]:
+    if not FONTS_DIR.is_dir():
+        return []
+    return [{"id": f"user:{f.name}", "label": f.stem, "url": f"/fonts/{quote(f.name)}"}
+            for f in sorted(FONTS_DIR.iterdir(), key=lambda x: x.name.lower()) if f.suffix.lower() in (".ttf", ".otf", ".woff")]
+
+
+@routes.get("/api/fonts")
+async def api_fonts(_):
+    return web.json_response(font_list())
+
+
+@routes.post("/api/fonts")
+async def api_font_add(request):
+    """Upload a TTF / OTF / WOFF font for the Text tool; it's kept on the server for every device."""
+    reader = await request.multipart()
+    part = await reader.next()
+    if not part or part.name != "font" or not part.filename:
+        raise web.HTTPBadRequest(text="No font file")
+    data = bytes(await part.read(decode=False))
+    if len(data) > 15_000_000:
+        raise web.HTTPBadRequest(text="That font is too big (15 MB at most)")
+    ext = FONT_MAGIC.get(data[:4])
+    if not ext:
+        raise web.HTTPBadRequest(text="Use a TTF, OTF or WOFF font (WOFF2 isn't supported)")
+    stem = re.sub(r"[^A-Za-z0-9 ._()-]+", "", Path(part.filename).stem).strip(" .")[:80] or "Font"
+    FONTS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = FONTS_DIR / f"{stem}{ext}"
+    n = 2
+    while dest.exists():
+        dest = FONTS_DIR / f"{stem} ({n}){ext}"
+        n += 1
+    dest.write_bytes(data)
+    return web.json_response({"id": f"user:{dest.name}", "label": dest.stem, "url": f"/fonts/{quote(dest.name)}"})
+
+
+@routes.delete("/api/fonts/{name}")
+async def api_font_delete(request):
+    f = FONTS_DIR / Path(request.match_info["name"]).name
+    if f.is_file() and f.parent == FONTS_DIR:
+        f.unlink()
+    return web.json_response({"ok": True})
+
+
+@routes.get("/fonts/{name}")
+async def font_file(request):
+    f = FONTS_DIR / Path(request.match_info["name"]).name
+    if not f.is_file() or f.suffix.lower() not in (".ttf", ".otf", ".woff"):
+        raise web.HTTPNotFound()
+    return web.FileResponse(f, headers={"Content-Type": "font/" + f.suffix[1:].lower(), "Cache-Control": "max-age=86400"})
 
 
 # ---------------------------------------------------------------- STEP import: OpenCascade in the browser
