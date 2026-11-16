@@ -610,6 +610,7 @@ export async function initSettings(changeCb) {
   processEditor = new Editor($("process-editor"), "process", () => ({ detail: S.detail.process, edits: S.edits.process }), (k, v) => {
     if (v === undefined) delete S.edits.process[k]; else S.edits.process[k] = v;
     renderPickers();
+    onChange("edits");
   });
   for (const t of TYPES) {
     $(`pick-${t}`).addEventListener("change", (e) => choose(t, e.target.value));
@@ -617,7 +618,7 @@ export async function initSettings(changeCb) {
   }
   $("process-save").addEventListener("click", () => saveEdits("process", false));
   $("process-saveas").addEventListener("click", () => saveEdits("process", true));
-  $("process-discard").addEventListener("click", () => { S.edits.process = {}; renderPickers(); processEditor.render(); });
+  $("process-discard").addEventListener("click", () => { S.edits.process = {}; renderPickers(); processEditor.render(); onChange("edits"); });
   for (const b of document.querySelectorAll("[data-mode]")) b.addEventListener("click", () => setMode(b.dataset.mode));
   $("open-profiles").addEventListener("click", () => pmOpen(S.selected.machine ? "machine" : "machine").catch((e) => toast(e.message, "err")));
   wirePM();

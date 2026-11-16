@@ -351,3 +351,6 @@ dialog.sheet.part-pick { width: min(560px, 96vw); height: min(720px, 88vh); }
 .pp-head { position: sticky; top: 0; background: var(--card); font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); padding: 10px 4px 4px; }
 .pp-item { display: block; width: 100%; text-align: left; padding: 9px 10px; border: 0; border-radius: 8px; background: none; color: var(--text); font: inherit; font-size: 15px; }
 .pp-item:hover, .pp-item:focus-visible { background: var(--field); }
+
+/* out-of-date slice */
+.stale-stats { opacity: .5; }

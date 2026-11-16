@@ -15,6 +15,11 @@ const GAP = 6;          // mm between parts when arranging
 const MAX_COPIES = 50;
 
 let currentJob = null;
+// Every change to the plate or the slicing settings bumps this; a slice remembers the version it was made
+// from, and a result whose version no longer matches can't be sent or printed until the plate is sliced again.
+let plateVersion = 0;
+let currentJobVersion = -1;
+const jobIsCurrent = () => currentJobVersion === plateVersion;
 
 /* ================================================================ scene */
 
@@ -259,7 +264,9 @@ function setViewMode(mode) {
 }
 
 function plateChanged() {
-  // the plate no longer matches the last slice
+  // the plate or settings no longer match the last slice
+  plateVersion++;
+  if (currentJob?.status === "done") renderJob(currentJob);
   if (!view.preview?.loaded) return;
   $("preview-stale").hidden = false;
   if (viewMode === "preview") setViewMode("model");
@@ -302,6 +309,7 @@ async function showPreview(job, plate) {
 }
 
 function settle(newMeshes = []) {
+  plateChanged();
   if (!layoutOk().fits || newMeshes.some(overlapsOthers)) arrange();
   else refresh();
 }
@@ -623,6 +631,14 @@ function renderJob(job) {
     return;
   }
   if (job.status === "error") { out.innerHTML = `<p class="msg err">${esc(job.error)}</p>`; return; }
+  if (!jobIsCurrent()) {
+    const anySent = job.plates.some((p) => p.uploaded && !p.started);
+    out.innerHTML = `<p class="msg warn">The plate or settings changed after this slice, so it can't be sent or printed.${anySent
+      ? " The copy already on the printer is out of date too: don't start it." : ""}</p>
+      <div class="stats stale-stats">${job.plates.map((p) => `<div class="stat"><b>${fmtTime(p.time_s)}</b><span>${job.plates.length > 1 ? `plate ${p.plate}` : "previous slice"}</span></div>`).join("")}</div>
+      <div class="actions"><button class="primary" data-act="reslice" type="button">Slice again</button></div>`;
+    return;
+  }
   const warn = (job.warnings || []).filter(Boolean).map((w) => `<p class="msg warn">${esc(w)}</p>`).join("");
   out.innerHTML = warn + job.plates.map((p) => {
     const title = job.plates.length > 1 ? `<h3>Plate ${p.plate}</h3>` : "";
@@ -676,6 +692,7 @@ async function slice() {
   $("result-card").hidden = false;
   $("result").innerHTML = `<p><span class="spinner"></span>Preparing the plate…</p>`;
   $("result-card").scrollIntoView({ behavior: "smooth", block: "start" });
+  const version = plateVersion;     // what this slice is made from
   try {
     await new Promise((r) => setTimeout(r, 30));   // let the spinner paint before the heavy export
     const fd = new FormData();
@@ -687,8 +704,9 @@ async function slice() {
     fd.append("model", build3mf(), "plate.3mf");
     $("result").innerHTML = `<p><span class="spinner"></span>Uploading…</p>`;
     const job = await apiJson("/api/slice", { method: "POST", body: fd });
+    currentJobVersion = version;
     const done = await poll(job.id);
-    if (done.status === "done" && done.plates?.length) showPreview(done, done.plates[0].plate);
+    if (done.status === "done" && done.plates?.length && jobIsCurrent()) showPreview(done, done.plates[0].plate);
   } catch (e) {
     $("result").innerHTML = `<p class="msg err">${esc(e.message)}</p>`;
   } finally {
@@ -699,11 +717,14 @@ async function slice() {
 
 async function plateAction(act, plate, btn) {
   const job = currentJob;
+  if (act === "reslice") { slice(); return; }
+  if (!jobIsCurrent() && act !== "printers") { renderJob(job); return; }   // never send or start an out-of-date slice
   if (act === "preview") { showPreview(job, plate); return; }
   if (act === "printers") { openPrinters(true); return; }
   if (act === "start") {
     const p = job.plates.find((x) => String(x.plate) === plate);
     if (!(await confirmBox(`Start printing ${p.uploaded} (${fmtTime(p.time_s)})? Make sure the bed is clear.`, "Start print"))) return;
+    if (!jobIsCurrent()) { renderJob(job); return; }   // the plate changed while the question was open
   }
   btn.disabled = true;
   const label = btn.textContent;
@@ -727,8 +748,6 @@ for (const input of document.querySelectorAll(".file-input")) {
   input.addEventListener("change", async (e) => {
     const files = [...e.target.files];
     e.target.value = "";
-    $("result-card").hidden = true;
-    currentJob = null;
     await addFiles(files);
   });
 }
@@ -755,6 +774,7 @@ $("view-reset").addEventListener("click", fitView);
 $("clear").addEventListener("click", () => {
   for (const m of models) for (const mesh of m.meshes) view.scene.remove(mesh);
   for (const m of models) m.geo.dispose();
+  plateChanged();
   models.length = 0;
   view.preview.clear();
   previewKey = null;
@@ -832,7 +852,10 @@ initPrinters({
   machineNames: () => S.lists.machine.map((m) => m.name),
   onStatus: () => { if (currentJob?.status === "done") renderJob(currentJob); },
 });
-initSettings((what) => { if (what === "presets") { setBed(); refreshPrinter(); } }).then(fitView).catch((e) => {
+initSettings((what) => {
+  if (what === "presets") { setBed(); refreshPrinter(); }
+  if (what === "presets" || what === "edits") plateChanged();
+}).then(fitView).catch((e) => {
   $("result-card").hidden = false;
   $("result").innerHTML = `<p class="msg err">Couldn't load presets: ${esc(e.message)}</p>`;
 });
