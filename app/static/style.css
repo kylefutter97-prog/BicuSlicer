@@ -394,6 +394,6 @@ dialog.sheet.projects { width: min(900px, 96vw); height: min(820px, 92vh); }
 .sub.unsaved .sub-label { color: var(--warn); }
 
 /* plate type */
-#pick-bed { width: 100%; }
 .bed-info { margin: 5px 2px 0; color: var(--muted); }
 .bed-info.warn { color: var(--warn); }
+.bed-info .link { border: 0; background: none; color: var(--accent); font: inherit; padding: 0 2px; cursor: pointer; text-decoration: underline; }

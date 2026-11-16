@@ -368,38 +368,62 @@ function bedOptions() {
 }
 
 function chooseBed() {
-  // remembered per printer; otherwise the printer preset's default plate type; otherwise OrcaSlicer's default
+  // saved for this printer on the server; otherwise the printer preset's "Default bed type"; otherwise OrcaSlicer's default
   const vals = bedOptions().map((x) => x.v);
-  const saved = (store.get("bed") || {})[S.selected.machine];
+  const m = S.selected.machine;
+  const saved = S.state?.bed_types?.[m];
+  const legacy = (store.get("bed") || {})[m];          // chosen in this browser before it was saved per printer
   const preset = scalar(S.detail.machine?.values?.default_bed_type);
-  S.bedType = [saved, preset, S.defaults.curr_bed_type].find((v) => v && vals.includes(v)) || vals[0];
+  S.bedType = [saved, legacy, preset, S.defaults.curr_bed_type].find((v) => v && vals.includes(v)) || vals[0];
+  if (!saved && legacy === S.bedType && m && S.state) setBedType(S.bedType).catch(() => {});   // move it to the server once
 }
 
+const bedLabel = (v) => bedOptions().find((b) => b.v === v)?.label || v;
+
 function renderBed() {
-  const sel = $("pick-bed");
-  if (!sel) return;
-  sel.innerHTML = bedOptions().map((b) => `<option value="${esc(b.v)}"${b.v === S.bedType ? " selected" : ""}>${esc(b.label)}</option>`).join("");
+  // one line under Filament: the bed temperatures this filament gets on the printer's plate, and a Change link
   const info = $("bed-info");
+  if (!info) return;
   const key = BED_TEMP_KEY[S.bedType];
   const f = S.detail.filament;
-  if (!key || !f) { info.textContent = ""; return; }
+  if (!key || !f || !S.bedType) { info.innerHTML = ""; return; }
   const first = Number(scalar(valueOf(f, S.edits.filament, `${key}_initial_layer`)));
   const other = Number(scalar(valueOf(f, S.edits.filament, key)));
   const zero = !first && !other;
+  const plate = `<b>${esc(bedLabel(S.bedType))}</b>`;
   info.classList.toggle("warn", zero);
-  info.textContent = zero
-    ? `${f.name} has no bed temperature for this plate (0 °C): the bed won't be heated.`
-    : `Bed ${first || 0} °C first layer · ${other || 0} °C after (from ${f.name})`;
+  info.innerHTML = (zero
+    ? `No bed temperature for ${plate} in this filament (0 °C): the bed won't be heated.`
+    : `Bed ${first || 0} °C first layer · ${other || 0} °C after, on ${plate}`) +
+    ` <button type="button" class="link" id="bed-change">Change</button>`;
 }
 
-export function setBedType(v) {
-  if (!bedOptions().some((b) => b.v === v)) return false;
+export async function setBedType(v) {
+  if (!bedOptions().some((b) => b.v === v) || !S.selected.machine) return false;
   S.bedType = v;
-  const all = store.get("bed") || {};
-  all[S.selected.machine] = v;
-  store.set("bed", all);
   renderBed();
+  await postJson("/api/bed-type", { machine: S.selected.machine, bed_type: v });
+  if (S.state) (S.state.bed_types ||= {})[S.selected.machine] = v;
+  const all = store.get("bed") || {};
+  delete all[S.selected.machine];
+  store.set("bed", all);
   return true;
+}
+
+async function changeBed() {
+  const dlg = $("bed-dlg");
+  $("bed-dlg-title").textContent = `Plate type for ${S.selected.machine}`;
+  $("bed-select").innerHTML = bedOptions().map((b) => `<option value="${esc(b.v)}"${b.v === S.bedType ? " selected" : ""}>${esc(b.label)}</option>`).join("");
+  dlg.returnValue = "";
+  dlg.showModal();
+  await new Promise((r) => dlg.addEventListener("close", r, { once: true }));
+  const v = $("bed-select").value;
+  if (dlg.returnValue !== "ok" || v === S.bedType) return;
+  try {
+    await setBedType(v);
+    toast(`${S.selected.machine}: ${bedLabel(v)}`);
+    onChange("edits");          // the bed temperature changed, so any slice is out of date
+  } catch (e) { toast(e.message, "err"); }
 }
 
 /* ================================================================ profile manager */
@@ -702,7 +726,7 @@ async function loadCatalog() {
   }
   if (S.state.orca.status === "ready") {
     [S.catalog, S.defaults] = await Promise.all([apiJson("/api/catalog"), apiJson("/api/defaults")]);
-    if (!(store.get("bed") || {})[S.selected.machine]) chooseBed();
+    chooseBed();
     renderBed();
   }
   processEditor?.render();
@@ -720,7 +744,7 @@ export async function initSettings(changeCb) {
     $(`pick-${t}`).addEventListener("change", (e) => choose(t, e.target.value));
     $(`edit-${t}`).addEventListener("click", () => pmOpen(t).catch((e) => toast(e.message, "err")));
   }
-  $("pick-bed").addEventListener("change", (e) => { setBedType(e.target.value); onChange("edits"); });
+  $("bed-info").addEventListener("click", (e) => { if (e.target.closest("#bed-change")) changeBed(); });
   $("process-save").addEventListener("click", () => saveEdits("process", false));
   $("process-saveas").addEventListener("click", () => saveEdits("process", true));
   $("process-discard").addEventListener("click", () => { S.edits.process = {}; renderPickers(); processEditor.render(); onChange("edits"); });
@@ -831,6 +855,5 @@ export async function applyProjectPresets(presets = {}, edits = {}) {
   for (const t of TYPES) if (presets[t]) S.selected[t] = presets[t];
   for (const t of TYPES) S.edits[t] = { ...(edits?.[t] || {}) };
   await refreshLists(true);
-  if (presets.bed_type) setBedType(presets.bed_type);
   return TYPES.filter((t) => presets[t] && S.selected[t] !== presets[t]).map((t) => `${TYPE_LABEL[t].toLowerCase()} "${presets[t]}"`);
 }

@@ -381,7 +381,32 @@ async def api_state(_):
         "has_orca_presets": bool(lib and any(lib.orca[t] for t in KINDS)),
         "has_user_presets": bool(lib and any(lib.user[t] for t in KINDS)),
         "machines_enabled": st.get("machines", []),
+        "bed_types": st.get("bed_types", {}),
     })
+
+
+BED_TYPES = ("Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Textured Cool Plate", "Supertack Plate")
+
+
+@routes.post("/api/bed-type")
+async def api_bed_type(request):
+    """The plate type fitted to a printer (OrcaSlicer's curr_bed_type), saved per printer preset for every device."""
+    body = await request.json()
+    machine, bed = str(body.get("machine") or ""), str(body.get("bed_type") or "")
+    try:
+        need_lib().find("machine", machine)
+    except P.PresetError:
+        raise web.HTTPBadRequest(text="Unknown printer")
+    allowed = BED_TYPES
+    f = orca["dir"] / "catalog.json" if orca["dir"] else None
+    if f and f.is_file():
+        allowed = tuple(json.loads(f.read_text())["options"].get("curr_bed_type", {}).get("enum_values") or BED_TYPES)
+    if bed not in allowed:
+        raise web.HTTPBadRequest(text="Unknown plate type")
+    st = load_settings()
+    st.setdefault("bed_types", {})[machine] = bed
+    save_settings(st)
+    return web.json_response({"machine": machine, "bed_type": bed})
 
 
 _catalog_cache: dict = {}

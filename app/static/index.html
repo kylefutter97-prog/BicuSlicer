@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=17">
+<link rel="stylesheet" href="/static/style.css?v=18">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -124,13 +124,9 @@
         <div class="picker-row"><select id="pick-machine"></select><button class="btn icon" id="edit-machine" type="button" title="Edit printer presets" aria-label="Edit printer presets">✎</button></div>
       </div>
       <div class="picker">
-        <label for="pick-bed">Plate type</label>
-        <select id="pick-bed"></select>
-        <p class="bed-info small" id="bed-info"></p>
-      </div>
-      <div class="picker">
         <label for="pick-filament">Filament <span class="badge" id="mod-filament" hidden></span></label>
         <div class="picker-row"><select id="pick-filament"></select><button class="btn icon" id="edit-filament" type="button" title="Edit filament presets" aria-label="Edit filament presets">✎</button></div>
+        <p class="bed-info small" id="bed-info"></p>
       </div>
       <div class="picker">
         <label for="pick-process">Print settings <span class="badge" id="mod-process" hidden></span></label>
@@ -307,6 +303,14 @@
 </dialog>
 
 <!-- ======================= small dialogs -->
+<dialog id="bed-dlg">
+  <form method="dialog">
+    <p><b id="bed-dlg-title">Plate type</b></p>
+    <p class="muted small">Which build plate is fitted to this printer. It picks which of the filament's bed temperatures is used, and is saved for this printer on every device.</p>
+    <label class="field"><span>Plate</span><select id="bed-select"></select></label>
+    <div class="actions"><button value="cancel" class="btn" type="submit">Cancel</button><button value="ok" class="primary" type="submit">Save</button></div>
+  </form>
+</dialog>
 <dialog id="newp">
   <form method="dialog">
     <p><b id="newp-title">New preset</b></p>
@@ -330,6 +334,6 @@
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 
-<script type="module" src="/static/app.js?v=19"></script>
+<script type="module" src="/static/app.js?v=20"></script>
 </body>
 </html>
