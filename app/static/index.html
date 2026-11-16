@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=24">
+<link rel="stylesheet" href="/static/style.css?v=25">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -166,6 +166,28 @@
         <label class="field"><span>Copies</span>
           <div class="stepper"><button class="btn" id="copy-minus" type="button" aria-label="Remove a copy">−</button><b id="copy-count">1</b><button class="btn" id="copy-plus" type="button" aria-label="Add a copy">+</button></div>
         </label>
+      </div>
+      <div class="group-label">Layer height</div>
+      <div class="lh-box">
+        <div class="seg lh-seg" role="group" aria-label="Layer height">
+          <button type="button" data-lh="off">Uniform</button><button type="button" data-lh="adaptive">Adaptive</button><button type="button" data-lh="imported" id="lh-imported-btn" hidden>From project</button>
+        </div>
+        <div id="lh-adaptive" hidden>
+          <label class="lh-q"><span>Quality</span><input type="range" id="lh-quality" min="0" max="1" step="0.05" value="0.5" aria-label="Quality to speed"><span>Speed</span></label>
+          <div class="toolbar"><button class="btn" id="lh-smooth" type="button">Smooth</button><button class="btn" id="lh-reset" type="button">Reset</button></div>
+        </div>
+        <div class="lh-chart-wrap" id="lh-chart-wrap" hidden><svg id="lh-chart" class="lh-chart" preserveAspectRatio="none" role="img" aria-label="Layer heights up the part"></svg></div>
+        <p class="muted small" id="lh-info"></p>
+        <div class="msg warn small" id="lh-warn" hidden>OrcaSlicer can't combine variable layer heights with <b>organic</b> tree supports, which this part uses.
+          <button class="link" id="lh-fix" type="button">Use slim tree supports for this part</button></div>
+        <div class="group-label sub">Height ranges <span class="muted" id="range-count"></span></div>
+        <ul id="range-list" class="range-list"></ul>
+        <div class="toolbar"><button class="btn" id="range-add" type="button">+ Height range</button></div>
+        <div id="range-edit" hidden>
+          <div class="group-label sub">Settings from <b id="range-label"></b></div>
+          <div id="range-settings" class="part-settings"></div>
+          <div class="toolbar"><button class="btn" id="range-add-setting" type="button">+ Add setting</button><button class="btn danger" id="range-remove" type="button">Remove range</button></div>
+        </div>
       </div>
       <div class="group-label">Settings for this part <span class="muted" id="part-count"></span></div>
       <div id="part-settings" class="part-settings"></div>
@@ -492,6 +514,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=26"></script>
+<script type="module" src="/static/app.js?v=27"></script>
 </body>
 </html>

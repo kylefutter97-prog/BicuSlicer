@@ -9,6 +9,7 @@ import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from
 import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview } from "./preview.js";
 import * as MO from "./meshops.js";
+import * as LH from "./layerheight.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters } from "./printers.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -257,7 +258,7 @@ function geoFrom(pos, flip) {
 const partSettings = (o, allowed) => Object.fromEntries(Object.entries(o || {}).filter(([k]) => allowed.has(k) && k !== "extruder"));
 
 /** One object of a 3MF -> BicuSlicer parts: copies that share a rotation and scale become one part with copies. */
-function partsFromObject(ob, allowed, notes) {
+function partsFromObject(ob, allowed, notes, layers = {}) {
   const out = [];
   const groups = new Map();
   ob.items.forEach((it, i) => { const k = it.transform.slice(0, 9).map((x) => x.toFixed(6)).join(","); if (!groups.has(k)) groups.set(k, []); groups.get(k).push(i); });
@@ -285,6 +286,10 @@ function partsFromObject(ob, allowed, notes) {
     const c = centered(geo);
     const m = newModelRecord(ob.name, geo);
     m.overrides = { ...partSettings(ob.settings, allowed), ...(normals.length === 1 ? partSettings(normals[0].settings, allowed) : {}) };
+    // OrcaSlicer's layer height profile belongs to the first copy's orientation; height ranges are just heights
+    if (layers.profile && idx.includes(0)) m.vlh = { mode: "imported", profile: layers.profile, pose: null };
+    m.ranges = (layers.ranges || []).map((r) => ({ id: nextId++, from: r.from, to: r.to,
+      overrides: Object.fromEntries(Object.entries(r.settings).filter(([k]) => k === "layer_height" || (allowed.has(k) && k !== "extruder"))) }));
     m.printable = ob.items[idx[0]].printable;
     if (raw.supports || raw.seam) {
       const states = (a) => (a ? Uint8Array.from({ length: total / 9 }, (_, i) => (a[i] ? paintState(a[i]) : 0)) : null);
@@ -305,6 +310,7 @@ function partsFromObject(ob, allowed, notes) {
       m.volumes.push(v);
     }
     // each copy's centre where the project had it: the transform moves the (rotated) centre c by its translation
+    if (m.vlh) m.vlh.pose = poseKey(m);
     out.push({ m, copies: idx.map((i) => ({ item: i, x: c.x + ob.items[i].transform[9], y: c.y + ob.items[i].transform[10] })) });
   }
   return out;
@@ -372,8 +378,9 @@ async function openProject3mf(name, proj) {
     proj.plates.forEach((pp, i) => { for (const [oid, k] of pp.instances) onPlate.set(`${oid}#${k}`, i); });
     const allowed = new Set(S.catalog?.part_options || []);
     const placed = new Map();          // our plate index -> copies placed there
-    for (const ob of proj.objects) {
-      for (const { m, copies } of partsFromObject(ob, allowed, notes)) {
+    const profiles = LH.parseProfiles(proj.extra["layer_heights_profile.txt"]), rangesOf = LH.parseRanges(proj.extra["layer_config_ranges.xml"]);
+    for (const [n, ob] of proj.objects.entries()) {
+      for (const { m, copies } of partsFromObject(ob, allowed, notes, { profile: profiles[n + 1], ranges: rangesOf[n + 1] })) {
         models.push(m);
         setCopies(m, copies.length);
         updateBox(m);
@@ -403,7 +410,6 @@ async function openProject3mf(name, proj) {
       arrange(pi);
     }
     if (choice.settings) applyProcessEdits({ ...diff.quality, ...(choice.speeds ? diff.speed : {}) });
-    if (proj.extra["layer_heights_profile.txt"] || proj.extra["layer_config_ranges.xml"]) notes.add("Variable layer heights and height ranges in this project aren't used yet.");
     selected = null; multi.clear(); selectedVolume = null;
     if (choice.replace) cur = 0;
     drawBed();
@@ -424,7 +430,9 @@ async function openProject3mf(name, proj) {
 
 function newModelRecord(name, geo) {
   return { id: nextId++, name, geo, quat: new THREE.Quaternion(), scale: new THREE.Vector3(1, 1, 1), meshes: [], box: null,
-    overrides: {}, printable: true, volumes: [], volMeshes: [], paint: null };
+    overrides: {}, printable: true, volumes: [], volMeshes: [], paint: null,
+    vlh: null,        // variable layer height: { mode: "adaptive", quality, smooth } or { mode: "imported", profile, pose }
+    ranges: [] };     // height-range modifiers: [{ id, from, to, overrides }]
 }
 
 function centered(geo) {
@@ -616,6 +624,7 @@ function takeSnapshot() {
         volumes: (m.volumes || []).map((v) => ({ id: v.id, name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(),
           pos: v.pos.toArray(), overrides: JSON.stringify(v.overrides || {}), geo: v.geo, base: v.base, baseSize: v.baseSize?.toArray() })),
         paintRaw: m.paintRaw || null,
+        layers: JSON.stringify([m.vlh, m.ranges]),
         paintRev: m.paintRev || 0,
         paint: m.paint ? { fine: !!m.paint.fine, supports: keepOrCopy(m.paint.supports, op?.supports), seam: keepOrCopy(m.paint.seam, op?.seam) } : null,
       };
@@ -623,7 +632,7 @@ function takeSnapshot() {
   };
   snap.key = JSON.stringify(snap.plates) + JSON.stringify(snap.models.map((sm) => [sm.id, sm.name, sm.geo.uuid, sm.quat, sm.scale, sm.copies, sm.overrides, sm.printable,
     sm.volumes.map((v) => [v.id, v.name, v.kind, v.shape, v.size, v.pos, v.overrides, v.geo.uuid]),
-    sm.paint && [sm.paint.fine, arrId(sm.paint.supports), arrId(sm.paint.seam)], arrId(sm.paintRaw)]));
+    sm.paint && [sm.paint.fine, arrId(sm.paint.supports), arrId(sm.paint.seam)], arrId(sm.paintRaw), sm.layers]));
   return snap;
 }
 
@@ -686,6 +695,7 @@ function restoreSnapshot(s) {
         pos: new THREE.Vector3().fromArray(v.pos), overrides: JSON.parse(v.overrides), geo: v.geo,
         ...(v.base ? { base: v.base, baseSize: new THREE.Vector3().fromArray(v.baseSize) } : {}) }));
       m.paintRaw = sm.paintRaw;
+      [m.vlh, m.ranges] = JSON.parse(sm.layers);
       // painting changes the arrays in place, so the part gets its own copies
       m.paint = sm.paint ? { fine: sm.paint.fine, supports: sm.paint.supports?.slice() ?? null, seam: sm.paint.seam?.slice() ?? null } : null;
       models.push(m);
@@ -1182,6 +1192,7 @@ function refresh() {
     $("obj-scale").placeholder = uni ? "" : "mixed";
     $("copy-count").textContent = selected.meshes.length;
     if (partEditor.model !== selected) { partEditor.model = selected; partEditor.render(); }
+    renderLayerPanel();
     const n = Object.keys(selected.overrides).length;
     $("part-count").textContent = n ? `· ${n}` : "";
     $("part-add").disabled = !partOptionsAvailable();
@@ -1238,6 +1249,7 @@ function build3mf(pi = cur) {
   // A part with modifier / negative parts becomes an object made of components, with each component's type and
   // settings in Metadata/model_settings.config (the layout OrcaSlicer itself writes; checked with test slices).
   const objects = [], items = [], configs = [];
+  const profiles = [], rangesBy = {};
   let id = 1;
   const ox = plateX(pi);            // the plate's own coordinates
   const toPlate = new THREE.Matrix4().makeTranslation(-ox, 0, 0);
@@ -1246,6 +1258,10 @@ function build3mf(pi = cur) {
     for (const mesh of m.meshes) {
       if (plateOf(mesh) !== pi) continue;
       mesh.updateMatrixWorld(true);
+      const itemNo = items.length + 1;
+      const prof = partProfile(m);
+      if (prof) profiles.push(LH.profileLine(itemNo, prof));
+      if (m.ranges.length) rangesBy[itemNo] = m.ranges.map((r) => ({ from: r.from, to: r.to, settings: { layer_height: lhParams(m).layer, ...r.overrides } }));
       const bodyId = id++;
       objects.push(`<object id="${bodyId}" type="model" name="${esc(m.name)}">${meshXml(m.geo, toPlate.clone().multiply(mesh.matrixWorld), m.paint, m.paintRaw)}</object>`);
       if (!m.volumes.length) {
@@ -1275,6 +1291,8 @@ function build3mf(pi = cur) {
     "_rels/.rels": strToU8('<?xml version="1.0" encoding="UTF-8"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Target="/3D/3dmodel.model" Id="rel0" Type="http://schemas.microsoft.com/3dmanufacturing/2013/01/3dmodel"/></Relationships>'),
     "3D/3dmodel.model": strToU8(model),
     "Metadata/model_settings.config": strToU8(`<?xml version="1.0" encoding="UTF-8"?>\n<config>\n${configs.join("\n")}\n</config>\n`),
+    ...(profiles.length ? { "Metadata/layer_heights_profile.txt": strToU8(profiles.join("\n") + "\n") } : {}),
+    ...(Object.keys(rangesBy).length ? { "Metadata/layer_config_ranges.xml": strToU8(LH.rangesXml(rangesBy)) } : {}),
   }, { level: 6 });
   return new Blob([zip], { type: "model/3mf" });
 }
@@ -1295,7 +1313,7 @@ function plateKey(pi) {
   return JSON.stringify([settingsVersion, S.bedType, p.bedType, p.seq, p.spiral, models.map((m) => {
     if (m.printable === false) return null;
     const c = m.meshes.filter((x) => plateOf(x) === pi).map((x) => [+(x.position.x - ox).toFixed(3), +x.position.y.toFixed(3)]);
-    return c.length ? [m.id, m.geo.uuid, m.quat.toArray(), m.scale.toArray(), c, m.overrides, m.paintRev || 0, arrId(m.paintRaw),
+    return c.length ? [m.id, m.geo.uuid, m.quat.toArray(), m.scale.toArray(), c, m.overrides, m.paintRev || 0, arrId(m.paintRaw), m.vlh, m.ranges,
       m.volumes.map((v) => [v.kind, v.size.toArray(), v.pos.toArray(), v.overrides, v.geo.uuid])] : null;
   }).filter(Boolean)]);
 }
@@ -1827,6 +1845,108 @@ function volumeChanged() {
   refresh();
 }
 
+/* ---- layer height: variable (adaptive, like OrcaSlicer's) and height ranges */
+
+const num0 = (v) => parseFloat(Array.isArray(v) ? v[0] : v);
+function lhParams(m) {
+  const mv = machineValues();
+  return LH.slicingParams({ layerHeight: num0(m?.overrides?.layer_height ?? processValue("layer_height")),
+    firstLayerHeight: num0(processValue("initial_layer_print_height")),
+    minLayerHeight: num0(mv.min_layer_height), maxLayerHeight: num0(mv.max_layer_height), nozzle: num0(mv.nozzle_diameter) });
+}
+const poseKey = (m) => `${m.geo.uuid}|${m.quat.toArray().map((x) => x.toFixed(6))}|${m.scale.toArray().map((x) => x.toFixed(6))}`;
+const rangeLayers = (m) => m.ranges.map((r) => ({ from: r.from, to: r.to, layerHeight: num0(r.overrides.layer_height ?? lhParams(m).layer) }));
+
+/** The part's layer height profile for the slicer, or null (uniform layers, or ranges only). */
+function partProfile(m) {
+  if (m.vlh?.mode === "imported") return m.vlh.pose === poseKey(m) ? m.vlh.profile : null;
+  if (m.vlh?.mode !== "adaptive") return null;
+  const P = lhParams(m), rl = rangeLayers(m);
+  const key = JSON.stringify([poseKey(m), m.vlh, P, rl]);
+  if (m._lh?.key !== key) {
+    // the part as it stands on the bed: rotated and scaled, bottom at z = 0
+    const pos = MO.bake(m.geo, new THREE.Matrix4().compose(new THREE.Vector3(0, 0, -m.local.z0), m.quat, m.scale)).getAttribute("position").array;
+    let prof = LH.adaptiveProfile(pos, P, m.vlh.quality ?? 0.5, rl);
+    for (let i = 0; i < (m.vlh.smooth || 0); i++) prof = LH.smoothProfile(prof, P);
+    m._lh = { key, prof };
+  }
+  return m._lh.prof;
+}
+
+/** OrcaSlicer refuses variable layer height and height ranges with organic tree supports. */
+function organicSupports(m) {
+  const v = (k) => { const raw = k in m.overrides ? m.overrides[k] : processValue(k); return String((Array.isArray(raw) ? raw[0] : raw) ?? ""); };
+  const on = /^(1|true)$/.test(v("enable_support"));
+  return on && /tree/.test(v("support_type")) && /^(|default|organic)$/.test(v("support_style"));
+}
+
+let selRange = null;
+function renderLayerPanel() {
+  const m = selected;
+  if (!m) return;
+  const P = lhParams(m);
+  const height = m.size.z;
+  const imported = m.vlh?.mode === "imported";
+  const importedOk = imported && m.vlh.pose === poseKey(m);
+  const mode = m.vlh?.mode || "off";
+  for (const b of document.querySelectorAll("[data-lh]")) b.classList.toggle("on", b.dataset.lh === mode);
+  $("lh-imported-btn").hidden = !imported;
+  $("lh-adaptive").hidden = mode !== "adaptive";
+  if (mode === "adaptive" && !focusedInput("lh-quality")) $("lh-quality").value = m.vlh.quality ?? 0.5;
+  const prof = partProfile(m) || (m.ranges.length ? LH.rangesProfile(height, P, rangeLayers(m)) : null);
+  $("lh-chart-wrap").hidden = !prof;
+  let info = "";
+  if (prof) {
+    const tops = LH.layersOf(prof, height, P);
+    drawLayerChart(tops, P, height);
+    let lo = Infinity, hi = 0;
+    tops.forEach((z, i) => { const h = z - (i ? tops[i - 1] : 0); if (i) { lo = Math.min(lo, h); hi = Math.max(hi, h); } });   // the first layer is fixed
+    info = `${tops.length} layers (${LH.uniformCount(height, P)} at ${P.layer} mm) · ${lo === Infinity ? P.first : lo.toFixed(2)}–${hi.toFixed(2)} mm`;
+  } else if (imported && !importedOk) info = "The project's layer heights no longer match this part (it was rotated, scaled or changed): uniform layers are used.";
+  else info = `Every layer ${P.layer} mm (${LH.uniformCount(height, P)} layers).`;
+  $("lh-info").textContent = info;
+  const clash = (prof || m.ranges.length) && organicSupports(m);
+  $("lh-warn").hidden = !clash;
+  // height ranges
+  $("range-count").textContent = m.ranges.length ? `· ${m.ranges.length}` : "";
+  if (selRange && !m.ranges.includes(selRange)) selRange = null;
+  $("range-list").innerHTML = m.ranges.map((r) => {
+    const n = Object.keys(r.overrides).filter((k) => k !== "layer_height").length;
+    return `<li class="${r === selRange ? "sel" : ""}" data-r="${r.id}">
+      <input type="number" class="r-from" value="${+r.from.toFixed(2)}" step="0.1" min="0" inputmode="decimal" aria-label="From (mm)"> –
+      <input type="number" class="r-to" value="${+r.to.toFixed(2)}" step="0.1" min="0" inputmode="decimal" aria-label="To (mm)"> mm
+      <button type="button" class="link r-edit">${esc(String(r.overrides.layer_height ?? P.layer))} mm${n ? ` · ⚙ ${n}` : ""}</button></li>`;
+  }).join("");
+  $("range-edit").hidden = !selRange;
+  if (selRange) {
+    $("range-label").textContent = `${+selRange.from.toFixed(2)} to ${+selRange.to.toFixed(2)} mm`;
+    if (rangeEditor.range !== selRange) { rangeEditor.range = selRange; rangeEditor.render(); }
+  }
+}
+
+function drawLayerChart(tops, P, height) {
+  // layer height (up) against height in the part (across); dashed: uniform layers
+  const W = 300, H = 90, pad = 4;
+  const y = (h) => H - pad - ((h - P.min) / Math.max(1e-6, P.max - P.min)) * (H - 2 * pad);
+  const x = (z) => pad + (z / Math.max(1e-6, height)) * (W - 2 * pad);
+  let d = "";
+  tops.forEach((z, i) => { const z0 = i ? tops[i - 1] : 0, h = z - z0; d += `${i ? "L" : "M"}${x(z0).toFixed(1)},${y(h).toFixed(1)}L${x(z).toFixed(1)},${y(h).toFixed(1)}`; });
+  $("lh-chart").setAttribute("viewBox", `0 0 ${W} ${H}`);
+  $("lh-chart").innerHTML = `<line x1="${pad}" x2="${W - pad}" y1="${y(P.layer)}" y2="${y(P.layer)}" class="lh-uniform"/>
+    <path d="${d}" class="lh-line"/>
+    <text x="${pad + 2}" y="12" class="lh-t">${P.max} mm</text><text x="${pad + 2}" y="${H - 6}" class="lh-t">${P.min} mm</text>
+    <text x="${W - pad - 2}" y="${H - 6}" class="lh-t" text-anchor="end">${+height.toFixed(1)} mm high</text>`;
+}
+
+function setVlh(v) {
+  if (!selected) return;
+  selected.vlh = v;
+  plateChanged();
+  refresh();
+}
+
+const rangeEditor = createPartEditor($("range-settings"), () => selRange?.overrides || null, () => { plateChanged(); refresh(); });
+
 /* ---- cut at a height */
 
 let cutPlane = null;
@@ -2077,6 +2197,9 @@ function pasteModel() {
   m.volumes = (src.volumes || []).map((v) => ({ ...v, id: nextId++, size: v.size.clone(), pos: v.pos.clone(), overrides: { ...v.overrides }, geo: v.geo.clone() }));
   if (src.paint) m.paint = { supports: src.paint.supports?.slice() || null, seam: src.paint.seam?.slice() || null };
   m.paintRaw = src.paintRaw || null;
+  m.vlh = src.vlh ? JSON.parse(JSON.stringify(src.vlh)) : null;
+  if (m.vlh?.mode === "imported") m.vlh.pose = poseKey(m);
+  m.ranges = (src.ranges || []).map((r) => ({ ...r, id: nextId++, overrides: { ...r.overrides } }));
   models.push(m);
   setCopies(m, 1);
   updateBox(m);
@@ -2270,6 +2393,8 @@ async function saveProject(asNew) {
         ...(v.shape === "mesh" ? { vmid: extraMeshes.push(v.base) - 1 + models.length, base_size: v.baseSize.toArray() } : {}) })),
       paint: m.paint ? { supports: m.paint.supports ? b64(m.paint.supports) : null, seam: m.paint.seam ? b64(m.paint.seam) : null } : null,
       paint_raw: m.paintRaw ? { supports: sparse(m.paintRaw.supports), seam: sparse(m.paintRaw.seam) } : null,
+      layer_height: m.vlh ? { ...m.vlh, pose: undefined, pose_ok: m.vlh.mode !== "imported" || m.vlh.pose === poseKey(m) } : null,
+      height_ranges: m.ranges.map((r) => ({ from: r.from, to: r.to, overrides: r.overrides })),
       // [x, y, plate]: x and y on that plate
       instances: m.meshes.map((x) => { const pi = plateOf(x); return [+(x.position.x - plateX(pi)).toFixed(3), +x.position.y.toFixed(3), pi]; }),
     })),
@@ -2334,9 +2459,15 @@ async function openProject(id) {
         const arr = (o) => { if (!o) return null; const a = new Array(tris); for (const [i, v] of Object.entries(o)) if (+i < tris) a[+i] = v; return a; };
         m.paintRaw = { supports: arr(pm.paint_raw.supports), seam: arr(pm.paint_raw.seam) };
       }
+      if (pm.layer_height && (pm.layer_height.mode !== "imported" || pm.layer_height.pose_ok)) {
+        m.vlh = { ...pm.layer_height };
+        delete m.vlh.pose_ok;
+      }
+      m.ranges = (pm.height_ranges || []).map((r) => ({ id: nextId++, from: r.from, to: r.to, overrides: r.overrides || {} }));
       models.push(m);
       setCopies(m, (pm.instances || [[bed.w / 2, bed.d / 2, 0]]).length);
       updateBox(m);
+      if (m.vlh?.mode === "imported") m.vlh.pose = poseKey(m);
       (pm.instances || []).forEach((xy, k) => { if (m.meshes[k]) { m.meshes[k].position.x = xy[0] + (xy.length > 2 ? plateX(Math.min(xy[2], plates.length - 1)) : 0); m.meshes[k].position.y = xy[1]; } });
     }
     selected = null;
@@ -2741,6 +2872,83 @@ initSettings((what) => {
   $("result").innerHTML = `<p class="msg err">Couldn't load presets: ${esc(e.message)}</p>`;
 });
 
+/* layer height panel */
+for (const b of document.querySelectorAll("[data-lh]")) b.addEventListener("click", () => {
+  if (!selected) return;
+  const v = b.dataset.lh;
+  if (v === "off") setVlh(null);
+  else if (v === "adaptive") setVlh(selected.vlh?.mode === "adaptive" ? selected.vlh : { mode: "adaptive", quality: 0.5, smooth: 0 });
+});
+$("lh-quality").addEventListener("change", (e) => { if (selected?.vlh?.mode === "adaptive") setVlh({ ...selected.vlh, quality: +e.target.value, smooth: 0 }); });
+$("lh-quality").addEventListener("input", (e) => {      // live chart while dragging; recorded on release
+  if (selected?.vlh?.mode !== "adaptive") return;
+  selected.vlh = { ...selected.vlh, quality: +e.target.value, smooth: 0 };
+  renderLayerPanel();
+});
+$("lh-smooth").addEventListener("click", () => { if (selected?.vlh?.mode === "adaptive") setVlh({ ...selected.vlh, smooth: Math.min(10, (selected.vlh.smooth || 0) + 1) }); });
+$("lh-reset").addEventListener("click", () => { if (selected?.vlh?.mode === "adaptive") setVlh({ mode: "adaptive", quality: 0.5, smooth: 0 }); });
+$("lh-fix").addEventListener("click", () => {
+  if (!selected) return;
+  const vals = S.catalog?.options?.support_style?.enum_values || [];
+  selected.overrides.support_style = ["tree_slim", "tree_hybrid", "tree_strong"].find((v) => vals.includes(v)) || "tree_slim";
+  partEditor.render();
+  plateChanged();
+  refresh();
+  flash("This part now uses slim tree supports.", "ok");
+});
+$("range-add").addEventListener("click", () => {
+  const m = selected;
+  if (!m) return;
+  const h = m.size.z, last = m.ranges[m.ranges.length - 1];
+  const from = last ? Math.min(h, last.to) : +(h / 2).toFixed(1);
+  const to = h;
+  if (to - from < 0.1) { flash("The ranges already reach the top of the part: change one first.", "warn"); return; }
+  const P = lhParams(m);
+  const r = { id: nextId++, from, to: +to.toFixed(2), overrides: { layer_height: String(+Math.max(P.min, P.layer / 2).toFixed(2)) } };
+  m.ranges.push(r);
+  selRange = r;
+  plateChanged();
+  refresh();
+});
+$("range-list").addEventListener("change", (e) => {
+  const li = e.target.closest("li[data-r]"), m = selected;
+  const r = m?.ranges.find((x) => String(x.id) === li?.dataset.r);
+  if (!r) return;
+  const v = parseFloat(e.target.value);
+  if (Number.isFinite(v) && v >= 0) {
+    if (e.target.classList.contains("r-from")) r.from = Math.min(v, r.to - 0.05);
+    if (e.target.classList.contains("r-to")) r.to = Math.max(v, r.from + 0.05);
+    m.ranges.sort((a, b) => a.from - b.from);
+  }
+  plateChanged();
+  refresh();
+});
+$("range-list").addEventListener("click", (e) => {
+  if (e.target.closest("input")) return;
+  const li = e.target.closest("li[data-r]");
+  const r = selected?.ranges.find((x) => String(x.id) === li?.dataset.r);
+  if (!r) return;
+  selRange = selRange === r ? null : r;
+  refresh();
+});
+$("range-add-setting").addEventListener("click", async () => {
+  const r = selRange;
+  if (!r) return;
+  const key = await pickPartSetting(Object.keys(r.overrides));
+  if (!key || selRange !== r) return;
+  r.overrides[key] = processValue(key);
+  rangeEditor.render();
+  plateChanged();
+  refresh();
+});
+$("range-remove").addEventListener("click", () => {
+  const m = selected;
+  if (!m || !selRange) return;
+  m.ranges.splice(m.ranges.indexOf(selRange), 1);
+  selRange = null;
+  plateChanged();
+  refresh();
+});
 $("tb-undo").addEventListener("click", undo);
 $("tb-redo").addEventListener("click", redo);
 resetHistory();

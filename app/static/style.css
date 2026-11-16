@@ -483,3 +483,20 @@ dialog.cut-dlg { position: fixed; inset: auto 16px 16px auto; margin: 0; width: 
 .imp-group { display: grid; gap: 6px; padding-top: 10px; border-top: 1px solid var(--line); }
 .imp-group .check-inline { align-items: flex-start; }
 .imp-list { margin: -2px 0 2px 26px; }
+
+/* layer height */
+.lh-box { display: grid; gap: 8px; }
+.lh-q { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.lh-q input { width: 100%; accent-color: var(--accent); }
+.lh-chart { width: 100%; height: 90px; display: block; background: var(--field); border: 1px solid var(--line); border-radius: 8px; }
+.lh-chart .lh-line { fill: none; stroke: var(--accent); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
+.lh-chart .lh-uniform { stroke: var(--muted); stroke-dasharray: 4 3; stroke-width: 1; vector-effect: non-scaling-stroke; opacity: .7; }
+.lh-chart .lh-t { font-size: 10px; fill: var(--muted); }
+.group-label.sub { margin-top: 4px; }
+.range-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.range-list li { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; font-size: 13px; color: var(--muted); cursor: pointer; }
+.range-list li.sel { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.range-list input { width: 64px; min-height: 30px; font: inherit; color: var(--text); background: var(--field); border: 1px solid var(--line); border-radius: 6px; padding: 2px 6px; text-align: right; }
+.range-list .r-edit { margin-left: auto; }
+.lh-box .link { border: 0; background: none; color: var(--accent); font: inherit; padding: 0 2px; cursor: pointer; text-decoration: underline; }
+#lh-warn .link { display: inline; margin-left: 4px; }
