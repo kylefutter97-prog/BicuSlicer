@@ -45,6 +45,9 @@
       <span id="plate-summary" class="muted"></span>
     </div>
     <div class="plate-toolbar" id="plate-toolbar" role="toolbar" aria-label="Plate tools" hidden>
+      <button class="tb" type="button" id="tb-undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled>↶</button>
+      <button class="tb" type="button" id="tb-redo" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" aria-label="Redo" disabled>↷</button>
+      <span class="tb-sep"></span>
       <label class="tb file-btn" title="Add models (Ctrl+I)">＋ Add<input class="file-input" type="file" accept=".stl,.3mf,.obj" multiple></label>
       <button class="tb" type="button" data-tool="shape" title="Add a box, cylinder, sphere or cone">Shape ▾</button>
       <span class="tb-sep"></span>
@@ -403,6 +406,8 @@
       <tr><td><kbd>+</kbd> / <kbd>−</kbd></td><td>Add / remove a copy</td></tr>
       <tr><td>Arrow keys</td><td>Move 1 mm (<kbd>Shift</kbd>: 10 mm)</td></tr>
       <tr><td><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>Ctrl</kbd>+<kbd>V</kbd></td><td>Copy / paste a part</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Z</kbd></td><td>Undo</td></tr>
+      <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Redo</td></tr>
       <tr><th colspan="2">View</th></tr>
       <tr><td><kbd>Tab</kbd></td><td>Model ↔ Layers</td></tr>
       <tr><td><kbd>↑</kbd> / <kbd>↓</kbd> in Layers</td><td>Next / previous layer (<kbd>Shift</kbd>: 10)</td></tr>
@@ -450,6 +455,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=23"></script>
+<script type="module" src="/static/app.js?v=24"></script>
 </body>
 </html>

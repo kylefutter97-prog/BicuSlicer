@@ -221,7 +221,6 @@ function removeModel(m) {
   for (const mesh of m.meshes) view.scene.remove(mesh);
   for (const vm of m.volMeshes || []) view.scene.remove(vm);
   m.volMeshes = [];
-  m.geo.dispose();
   const i = models.indexOf(m);
   if (i >= 0) models.splice(i, 1);
   multi.delete(m);
@@ -237,7 +236,6 @@ function bakedGeo(m) {
 function replaceGeo(m, geo) {
   const keepXY = m.meshes.map((x) => [x.position.x, x.position.y]);
   const c = centered(geo);
-  m.geo.dispose();
   m.geo = geo;
   m.quat.identity();
   m.scale.set(1, 1, 1);
@@ -345,6 +343,141 @@ function overlapsOthers(mesh) {
 }
 
 // Keep the user's placement; only re-arrange when the given parts don't fit or land on top of something.
+/* ---------------------------------------------------------------- undo / redo */
+// Every plate change goes through plateChanged(), which schedules one snapshot of the plate. Changes made in the same
+// moment (a drag, a paint stroke, Arrange after adding) become one step; a snapshot equal to the last one (a settings
+// change, a click that changed nothing) isn't recorded. Meshes are shared between snapshots, not copied; painted
+// triangles are copied only when they changed. Meshes no snapshot or part uses any more are freed.
+
+const HISTORY_MAX = 60;
+const history = { steps: [], at: -1, timer: null, restoring: false };
+const knownGeos = new Set();
+const arrayIds = new WeakMap();
+let nextArrayId = 1;
+const arrId = (a) => { if (!a) return 0; if (!arrayIds.has(a)) arrayIds.set(a, nextArrayId++); return arrayIds.get(a); };
+const sameBytes = (a, b) => a && b && a.length === b.length && a.every((x, i) => x === b[i]);
+
+function scheduleHistory() {
+  if (history.restoring || history.timer) return;
+  history.timer = setTimeout(recordHistory, 0);
+}
+
+function takeSnapshot() {
+  const prev = history.steps[history.at];
+  const prevPaint = new Map((prev?.models || []).map((pm) => [pm.id, pm.paint]));
+  const keepOrCopy = (cur, old) => (!cur ? null : sameBytes(cur, old) ? old : cur.slice());
+  const snap = {
+    sel: selected?.id ?? null, selVol: selectedVolume?.id ?? null, multi: [...multi].map((m) => m.id),
+    models: models.map((m) => {
+      const op = prevPaint.get(m.id);
+      return {
+        id: m.id, name: m.name, geo: m.geo, quat: m.quat.toArray(), scale: m.scale.toArray(),
+        copies: m.meshes.map((x) => [x.position.x, x.position.y]),
+        overrides: JSON.stringify(m.overrides || {}), printable: m.printable !== false,
+        volumes: (m.volumes || []).map((v) => ({ id: v.id, name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(),
+          pos: v.pos.toArray(), overrides: JSON.stringify(v.overrides || {}), geo: v.geo })),
+        paint: m.paint ? { fine: !!m.paint.fine, supports: keepOrCopy(m.paint.supports, op?.supports), seam: keepOrCopy(m.paint.seam, op?.seam) } : null,
+      };
+    }),
+  };
+  snap.key = JSON.stringify(snap.models.map((sm) => [sm.id, sm.name, sm.geo.uuid, sm.quat, sm.scale, sm.copies, sm.overrides, sm.printable,
+    sm.volumes.map((v) => [v.id, v.name, v.kind, v.shape, v.size, v.pos, v.overrides, v.geo.uuid]),
+    sm.paint && [sm.paint.fine, arrId(sm.paint.supports), arrId(sm.paint.seam)]]));
+  return snap;
+}
+
+function recordHistory() {
+  clearTimeout(history.timer);
+  history.timer = null;
+  if (history.restoring) return;
+  const snap = takeSnapshot();
+  if (history.steps[history.at]?.key === snap.key) { history.steps[history.at].sel = snap.sel; return; }
+  history.steps.length = history.at + 1;          // a new change drops the redo steps
+  history.steps.push(snap);
+  if (history.steps.length > HISTORY_MAX) history.steps.splice(0, history.steps.length - HISTORY_MAX);
+  history.at = history.steps.length - 1;
+  freeUnusedGeos();
+  updateUndoButtons();
+}
+
+function resetHistory() {
+  clearTimeout(history.timer);
+  history.timer = null;
+  history.steps = [];
+  history.at = -1;
+  recordHistory();
+}
+
+function freeUnusedGeos() {
+  const live = new Set();
+  const add = (g) => { if (g) { live.add(g); knownGeos.add(g); } };
+  for (const m of models) { add(m.geo); for (const v of m.volumes || []) add(v.geo); }
+  for (const s of history.steps) for (const sm of s.models) { add(sm.geo); for (const v of sm.volumes) add(v.geo); }
+  if (clipboardModel) { add(clipboardModel.geo); for (const v of clipboardModel.volumes || []) add(v.geo); }
+  for (const g of knownGeos) if (!live.has(g)) { g.dispose(); knownGeos.delete(g); }
+}
+
+function restoreSnapshot(s) {
+  history.restoring = true;
+  try {
+    if (paint.on) stopPaint();
+    if (pickMode) setPickMode(false);
+    if ($("cut-dlg").open) $("cut-dlg").close();
+    for (const m of models) {
+      for (const mesh of m.meshes) view.scene.remove(mesh);
+      for (const vm of m.volMeshes || []) view.scene.remove(vm);
+    }
+    models.length = 0;
+    multi.clear();
+    for (const sm of s.models) {
+      const m = newModelRecord(sm.name, sm.geo);
+      m.id = sm.id;
+      m.quat.fromArray(sm.quat);
+      m.scale.fromArray(sm.scale);
+      m.overrides = JSON.parse(sm.overrides);
+      m.printable = sm.printable;
+      m.volumes = sm.volumes.map((v) => ({ id: v.id, name: v.name, kind: v.kind, shape: v.shape, size: new THREE.Vector3().fromArray(v.size),
+        pos: new THREE.Vector3().fromArray(v.pos), overrides: JSON.parse(v.overrides), geo: v.geo }));
+      // painting changes the arrays in place, so the part gets its own copies
+      m.paint = sm.paint ? { fine: sm.paint.fine, supports: sm.paint.supports?.slice() ?? null, seam: sm.paint.seam?.slice() ?? null } : null;
+      models.push(m);
+      setCopies(m, sm.copies.length);
+      updateBox(m);
+      sm.copies.forEach(([x, y], k) => { m.meshes[k].position.x = x; m.meshes[k].position.y = y; });
+    }
+    const byId = (id) => models.find((m) => m.id === id) || null;
+    selected = byId(s.sel);
+    selectedMesh = null;
+    for (const id of s.multi) { const m = byId(id); if (m) multi.add(m); }
+    selectedVolume = selected?.volumes.find((v) => v.id === s.selVol) || null;
+    plateChanged();       // invalidates the slice; not recorded while restoring
+  } finally {
+    history.restoring = false;
+  }
+  refresh();
+  updateUndoButtons();
+}
+
+function undo() {
+  if (history.timer) recordHistory();       // a change still waiting to be recorded is undone first
+  if (history.at <= 0) { flash("Nothing to undo", "warn"); return; }
+  history.at--;
+  restoreSnapshot(history.steps[history.at]);
+}
+
+function redo() {
+  if (history.timer) recordHistory();
+  if (history.at >= history.steps.length - 1) { flash("Nothing to redo", "warn"); return; }
+  history.at++;
+  restoreSnapshot(history.steps[history.at]);
+}
+
+function updateUndoButtons() {
+  const u = $("tb-undo"), r = $("tb-redo");
+  if (u) u.disabled = history.at <= 0;
+  if (r) r.disabled = history.at >= history.steps.length - 1;
+}
+
 /* ---------------------------------------------------------------- layer preview */
 
 let viewMode = "model";
@@ -367,6 +500,7 @@ function setViewMode(mode) {
 function plateChanged() {
   // the plate or settings no longer match the last slice
   plateVersion++;
+  scheduleHistory();
   updateProjectLabel();
   updateMainButton();
   if (currentJob?.status === "done") renderJob(currentJob);
@@ -680,7 +814,7 @@ function refresh() {
     }
     syncVolumes(m);
   }
-  $("plate-toolbar").hidden = !has;
+  $("plate-toolbar").hidden = !has && history.at <= 0;     // stays up after Clear so it can be undone
   updateToolbar();
   const parts = models.reduce((n, m) => n + m.meshes.length, 0);
   $("plate-summary").textContent = has ? `${parts} part${parts === 1 ? "" : "s"}` : "";
@@ -1289,7 +1423,6 @@ function volumeChanged() {
   if ([size.x, size.y, size.z].every((x) => x > 0)) v.size.copy(size);
   const pos = new THREE.Vector3(n("v-px"), n("v-py"), n("v-pz"));
   if ([pos.x, pos.y, pos.z].every(Number.isFinite)) v.pos.copy(pos);
-  v.geo.dispose();
   v.geo = volumeGeo(v);
   plateChanged();
   refresh();
@@ -1376,7 +1509,6 @@ function startPaint(target) {
         const remap = (arr) => (arr ? Uint8Array.from(r.parent, (pi) => arr[pi]) : null);
         r.geo.computeVertexNormals();
         r.geo.computeBoundingSphere();
-        m.geo.dispose();
         m.geo = r.geo;
         for (const mesh of m.meshes) mesh.geometry = r.geo;
         m.paint = { supports: remap(old?.supports), seam: remap(old?.seam), fine: true };
@@ -1556,6 +1688,8 @@ function onKey(e) {
   if (ctrl) {
     const lower = k.toLowerCase();
     if (k === "Enter") { handled(); $("slice").click(); }
+    else if (lower === "z" && !e.shiftKey) { handled(); undo(); }
+    else if ((lower === "z" && e.shiftKey) || lower === "y") { handled(); redo(); }
     else if (lower === "s") { handled(); saveProject(e.shiftKey); }
     else if (lower === "o") { handled(); openProjects().catch((err) => flash(err.message, "err")); }
     else if (lower === "i") { handled(); document.querySelector(".file-input")?.click(); }
@@ -1779,6 +1913,7 @@ async function openProject(id) {
     plateChanged();
     project = { id: meta.id, name: meta.name };
     savedVersion = plateVersion;
+    resetHistory();         // undo starts from the opened project
     refresh();
     fitView();
     updateProjectLabel();
@@ -1845,9 +1980,10 @@ $("arrange").addEventListener("click", arrange);
 $("view-reset").addEventListener("click", fitView);
 function clearPlate() {
   for (const m of models) for (const mesh of m.meshes) view.scene.remove(mesh);
-  for (const m of models) m.geo.dispose();
+  for (const m of models) for (const vm of m.volMeshes || []) view.scene.remove(vm);
   plateChanged();
   models.length = 0;
+  multi.clear(); selectedVolume = null;
   view.preview.clear();
   previewKey = null;
   $("preview-controls").hidden = true;
@@ -2023,3 +2159,7 @@ initSettings((what) => {
   $("result-card").hidden = false;
   $("result").innerHTML = `<p class="msg err">Couldn't load presets: ${esc(e.message)}</p>`;
 });
+
+$("tb-undo").addEventListener("click", undo);
+$("tb-redo").addEventListener("click", redo);
+resetHistory();
