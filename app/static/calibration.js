@@ -4,7 +4,9 @@
 //
 // plan = { name, plate: { name, spiral }, parts: [{ name, pos (triangle soup, plate mm, z from 0), overrides,
 //          volumes: [{ kind, shape, size: [x,y,z], center: [x,y,z] }], ranges: [{ from, to, overrides }] }],
-//          gcodes: [{ z, type: "custom", gcode, note }], legend: [text], result: { ... } }
+//          gcodes: [{ z, type: "custom", gcode, note }], legend: [text], result: { ... },
+//          edits: { process, filament, machine } (this plate's slices only, as OrcaSlicer's calibrations change them),
+//          post: { type: "retraction", ... } (done to the G-code by the server after slicing) }
 
 /* ---------------------------------------------------------------- shapes (triangle soups, outward facing) */
 
@@ -53,6 +55,53 @@ export function cylinder(cx, cy, r, z0, z1, seg = 96) {
   return orient(out, cx, cy, (z0 + z1) / 2);
 }
 
+/** A prism from a simple polygon [[x, y], ...] (any winding, may be concave) between z0 and z1 (ear-clipped caps). */
+export function polyPrism(poly, z0, z1) {
+  let pts = poly.map((p) => [p[0], p[1]]);
+  let area = 0;
+  for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; area += a[0] * b[1] - b[0] * a[1]; }
+  if (area < 0) pts = pts.reverse();              // counter-clockwise from above
+  const tris = [], idx = pts.map((_, i) => i);
+  const cross = (o, a, b) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const inside = (p, a, b, c) => cross(a, b, p) >= 0 && cross(b, c, p) >= 0 && cross(c, a, p) >= 0;
+  let guard = 0;
+  while (idx.length > 3 && guard++ < 10000) {
+    for (let i = 0; i < idx.length; i++) {
+      const ia = idx[(i + idx.length - 1) % idx.length], ib = idx[i], ic = idx[(i + 1) % idx.length];
+      const a = pts[ia], b = pts[ib], c = pts[ic];
+      if (cross(a, b, c) <= 1e-12) continue;
+      if (idx.some((j) => j !== ia && j !== ib && j !== ic && inside(pts[j], a, b, c))) continue;
+      tris.push([ia, ib, ic]);
+      idx.splice(i, 1);
+      break;
+    }
+  }
+  tris.push([idx[0], idx[1], idx[2]]);
+  const out = [];
+  for (const [a, b, c] of tris) {
+    out.push(pts[a][0], pts[a][1], z1, pts[b][0], pts[b][1], z1, pts[c][0], pts[c][1], z1);      // top, facing up
+    out.push(pts[a][0], pts[a][1], z0, pts[c][0], pts[c][1], z0, pts[b][0], pts[b][1], z0);      // bottom, facing down
+  }
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    out.push(a[0], a[1], z0, b[0], b[1], z0, b[0], b[1], z1, a[0], a[1], z0, b[0], b[1], z1, a[0], a[1], z1);
+  }
+  return out;
+}
+
+/** A square tower with a small V notch on each side: the head speeds away from each notch, so ringing (ghosting)
+ *  shows as ripples after it. Printed as a vase. */
+export function ringingTower(S, H) {
+  const h = S / 2, d = 1.5, w = 1.5, at = -h / 3;          // notch: 1.5 mm deep, 3 mm wide, a third of the way along
+  const side = (p0, p1, inward) => {
+    // from corner p0 to corner p1 with a notch at `at` along the side
+    const ux = (p1[0] - p0[0]) / S, uy = (p1[1] - p0[1]) / S, m = S / 2 + at;
+    return [p0, [p0[0] + ux * (m - w), p0[1] + uy * (m - w)], [p0[0] + ux * m + inward[0] * d, p0[1] + uy * m + inward[1] * d], [p0[0] + ux * (m + w), p0[1] + uy * (m + w)]];
+  };
+  const poly = [...side([-h, -h], [h, -h], [0, 1]), ...side([h, -h], [h, h], [-1, 0]), ...side([h, h], [-h, h], [0, -1]), ...side([-h, h], [-h, -h], [1, 0])];
+  return polyPrism(poly, 0, H);
+}
+
 const join = (...pieces) => { const n = pieces.reduce((s, p) => s + p.length, 0), out = new Float32Array(n); let o = 0; for (const p of pieces) { out.set(p, o); o += p.length; } return out; };
 
 /* ---------------------------------------------------------------- helpers */
@@ -78,6 +127,40 @@ const PA_GCODE = {
   reprapfirmware: (v) => `M572 D0 S${v}`,
 };
 export const paCommand = (flavor, v) => (PA_GCODE[flavor] || ((x) => `M900 K${x}`))(v);
+
+/** Input shaping commands, as OrcaSlicer's G-code writer makes them. */
+function shaperCommand(flavor, { type, freqX, freqY, damp }) {
+  const f2 = (v) => (+v).toFixed(2), f3 = (v) => (+v).toFixed(3);
+  if (flavor === "klipper") {
+    const p = [];
+    if (type && type !== "default") p.push(`SHAPER_TYPE=${type}`);
+    if (freqX) p.push(`SHAPER_FREQ_X=${f2(freqX)}`, `SHAPER_FREQ_Y=${f2(freqY ?? freqX)}`);
+    if (damp) p.push(`DAMPING_RATIO_X=${f3(damp)}`, `DAMPING_RATIO_Y=${f3(damp)}`);
+    return `SET_INPUT_SHAPER ${p.join(" ")}`;
+  }
+  if (flavor === "reprapfirmware") return `M593${type && type !== "default" ? ` P"${type}"` : ""}${freqX ? ` F${f2(freqX)}` : ""}${damp ? ` S${f3(damp)}` : ""}`;
+  if (flavor === "marlin2") return `M593${freqX ? ` F${f2(freqX)}` : ""}${damp ? ` D${f3(damp)}` : ""}`;
+  throw new Error("Input shaping needs Klipper, Marlin 2 or RepRapFirmware (the printer's G-code flavour).");
+}
+
+/** Cornering commands: Klipper's square corner velocity, Marlin's junction deviation (when the printer has one) or jerk. */
+function corneringCommand(flavor, v, jd) {
+  if (flavor === "klipper") return `SET_VELOCITY_LIMIT SQUARE_CORNER_VELOCITY=${+(+v).toFixed(3)}`;
+  if (jd) return `M205 J${(+v).toFixed(3)}`;
+  if (flavor === "repetier") return `M207 X${+(+v).toFixed(3)}`;
+  return `M205 X${+(+v).toFixed(3)} Y${+(+v).toFixed(3)}`;
+}
+
+/** What OrcaSlicer changes for its input shaping and cornering tests: fast, hard-accelerating outer walls, no slow-down. */
+function motionTestEdits(ctx, corner) {
+  const process = { outer_wall_speed: [String(ctx.maxSpeed || 300)], default_acceleration: [String(ctx.maxAccel || 5000)],
+    outer_wall_acceleration: [String(ctx.maxAccel || 5000)], enable_overhang_speed: ["0"], default_jerk: ["0"], default_junction_deviation: ["0"] };
+  const filament = { slow_down_layer_time: ["0"], slow_down_min_speed: ["0"], slow_down_for_layer_cooling: ["0"],
+    ...(corner ? { filament_max_volumetric_speed: [String(Math.max(ctx.maxVol || 0, 200))] } : {}) };
+  return { process, filament, machine: {} };
+}
+
+const SHAPERS = [["default", "Keep the printer's"], ["mzv", "MZV"], ["zv", "ZV"], ["ei", "EI"], ["2hump_ei", "2-hump EI"], ["3hump_ei", "3-hump EI"]];
 
 /* ---------------------------------------------------------------- the tests */
 
@@ -115,6 +198,34 @@ export const TESTS = {
     params: [{ key: "start", label: "Start", unit: "mm/s", def: 40, step: 10 }, { key: "end", label: "End", unit: "mm/s", def: 200, step: 10 },
       { key: "step", label: "Change per band", unit: "mm/s", def: 20, step: 5, min: 1 }],
     defaults: () => ({ start: 40, end: 200, step: 20 }),
+  },
+  retraction: {
+    title: "Retraction",
+    about: "Two thin towers with travel between them; the retraction length rises every millimetre. Find the lowest height with no strings.",
+    params: [{ key: "start", label: "Start", unit: "mm", def: 0, step: 0.1 }, { key: "end", label: "End", unit: "mm", def: 2, step: 0.1 },
+      { key: "step", label: "Change per mm", unit: "mm", def: 0.1, step: 0.05, min: 0.01 }],
+    defaults: (ctx) => (ctx.bowden ? { start: 1, end: 6, step: 0.2 } : { start: 0, end: 2, step: 0.1 }),
+  },
+  shaperFreq: {
+    title: "Input shaping frequency",
+    about: "A square vase printed fast with hard acceleration; the shaper frequency rises with height. Find the height where the ripples after the notches are smallest, for X (faces along X) and Y.",
+    params: [{ key: "start", label: "Start", unit: "Hz", def: 15, step: 1 }, { key: "end", label: "End", unit: "Hz", def: 110, step: 1 },
+      { key: "type", label: "Shaper", choices: SHAPERS, def: "mzv" }],
+    defaults: () => ({ start: 15, end: 110, type: "mzv" }),
+  },
+  shaperDamp: {
+    title: "Input shaping damping",
+    about: "The same vase at your shaper frequencies; the damping ratio rises with height. Find the height with the least ripple.",
+    params: [{ key: "freqX", label: "Frequency X", unit: "Hz", def: 50, step: 1 }, { key: "freqY", label: "Frequency Y", unit: "Hz", def: 50, step: 1 },
+      { key: "start", label: "Damping start", def: 0, step: 0.01 }, { key: "end", label: "Damping end", def: 0.2, step: 0.01 },
+      { key: "type", label: "Shaper", choices: SHAPERS, def: "mzv" }],
+    defaults: () => ({ freqX: 50, freqY: 50, start: 0, end: 0.2, type: "mzv" }),
+  },
+  cornering: {
+    title: "Cornering (jerk / square corner velocity)",
+    about: "The same fast vase; the cornering speed (Klipper's square corner velocity, Marlin's jerk or junction deviation) rises with height. Find the highest height before the corners bulge or ring.",
+    params: [{ key: "start", label: "Start", def: 1, step: 0.5 }, { key: "end", label: "End", def: 15, step: 0.5 }],
+    defaults: (ctx) => (ctx.flavor !== "klipper" && ctx.jd > 0 ? { start: 0.01, end: 0.25 } : { start: 1, end: 15 }),
   },
   tolerance: {
     title: "Tolerance",
@@ -240,6 +351,63 @@ export function buildTest(id, p, ctx) {
       result: null,
     };
   }
+  if (id === "retraction") {
+    const start = +p.start, step = +p.step, n = Math.floor((+p.end - start) / step + 1e-6) + 1;
+    if (!(n > 0) || n > 60) throw new Error("Choose a start below the end, and at most 60 steps.");
+    const base = 1, H = base + n;
+    return {
+      name: `Retraction ${start}–${+(start + (n - 1) * step).toFixed(3)} mm`,
+      plate: { name: "Retraction test", spiral: "" },
+      parts: [{ name: "Retraction towers", pos: join(box(-22, -5, 0, 22, 5, base), cylinder(-15, 0, 4, base - 0.01, H, 48), cylinder(15, 0, 4, base - 0.01, H, 48)),
+        xy: [cx, cy], overrides: { wall_loops: "2", top_shell_layers: "0", bottom_shell_layers: "3", sparse_infill_density: "0%", seam_position: "aligned",
+          enable_support: "0" } }],
+      gcodes: [],
+      edits: { process: {}, filament: {}, machine: { use_relative_e_distances: "1", use_firmware_retraction: "0", wipe: ["0"] } },
+      post: { type: "retraction", start, step, base, max: +(start + (n - 1) * step).toFixed(4) },
+      legend: [`Retraction ${start} mm up to ${base} mm, then +${step} mm every mm, ${+(start + (n - 1) * step).toFixed(3)} mm at the top (${H} mm).`,
+        "For this test: relative extrusion, slicer retraction (not firmware), no wipe."],
+      result: { kind: "retraction", start, step, base, max: +(start + (n - 1) * step).toFixed(3), ask: "Lowest height with no strings" },
+    };
+  }
+  if (id === "shaperFreq" || id === "shaperDamp" || id === "cornering") {
+    const S = 50, H = id === "cornering" ? 40 : 60, start = +p.start, end = +p.end;
+    if (!(end > start)) throw new Error("The end has to be above the start.");
+    const at = (z) => start + (end - start) * Math.min(1, Math.max(0, (z - first) / (H - first)));
+    const zs = [];
+    for (let z = first; z <= H + 1e-6; z = +(z + lh).toFixed(4)) zs.push(+z.toFixed(3));
+    let gcodes, unit, what;
+    if (id === "shaperFreq") {
+      gcodes = zs.map((z, i) => ({ z, type: "custom", gcode: shaperCommand(ctx.flavor, { type: i === 0 ? p.type : "", freqX: at(z) }), note: `${z} mm: ${at(z).toFixed(1)} Hz` }));
+      unit = "Hz"; what = "shaper frequency";
+    } else if (id === "shaperDamp") {
+      gcodes = [{ z: zs[0], type: "custom", gcode: shaperCommand(ctx.flavor, { type: p.type, freqX: +p.freqX, freqY: +p.freqY }), note: `${p.freqX} / ${p.freqY} Hz` },
+        ...zs.slice(1).map((z) => ({ z, type: "custom", gcode: shaperCommand(ctx.flavor, { damp: Math.max(0.0001, at(z)) }), note: `${z} mm: damping ${at(z).toFixed(3)}` }))];
+      unit = ""; what = "damping ratio";
+    } else {
+      gcodes = zs.map((z) => ({ z, type: "custom", gcode: corneringCommand(ctx.flavor, at(z), ctx.jd > 0), note: `${z} mm: ${at(z).toFixed(2)}` }));
+      unit = ctx.flavor !== "klipper" && ctx.jd > 0 ? "mm" : "mm/s";
+      what = ctx.flavor === "klipper" ? "square corner velocity" : ctx.jd > 0 ? "junction deviation" : "jerk";
+    }
+    const edits = motionTestEdits(ctx, id === "cornering");
+    if (id === "cornering") Object.assign(edits.machine, ctx.jd > 0 && ctx.flavor !== "klipper"
+      ? { machine_max_junction_deviation: [String(end)] } : { machine_max_jerk_x: [String(end)], machine_max_jerk_y: [String(end)] });
+    else Object.assign(edits.machine, ctx.jd > 0 && ctx.flavor !== "klipper" ? {} : { machine_max_jerk_x: [String(Math.max(ctx.maxJerk || 0, ctx.flavor === "klipper" ? 5 : 10))],
+      machine_max_jerk_y: [String(Math.max(ctx.maxJerk || 0, ctx.flavor === "klipper" ? 5 : 10))] });
+    const title = { shaperFreq: "Input shaping frequency", shaperDamp: "Input shaping damping", cornering: "Cornering" }[id];
+    return {
+      name: `${title} ${start}–${end}${unit ? " " + unit : ""}`,
+      plate: { name: `${title} test`, spiral: "1" },
+      parts: [{ name: `${title} tower`, pos: ringingTower(S, H), xy: [cx, cy],
+        overrides: { brim_type: "outer_only", brim_width: "3", brim_object_gap: "0", enable_support: "0" } }],
+      gcodes,
+      edits,
+      legend: [`${what[0].toUpperCase() + what.slice(1)} ${start}${unit ? " " + unit : ""} at the bottom, rising evenly to ${end}${unit ? " " + unit : ""} at the top (${H} mm), changed every layer.`,
+        `Command: ${gcodes[gcodes.length - 1].gcode.split(" ")[0]} (${ctx.flavor || "marlin"} firmware)`,
+        `For this test: outer walls at ${ctx.maxSpeed || 300} mm/s and ${ctx.maxAccel || 5000} mm/s² (your printer's limits), no slow-down for cooling.`],
+      result: { kind: id, start, end, H, first, unit, what, flavor: ctx.flavor, jd: ctx.jd > 0, freqX: +p.freqX, freqY: +p.freqY, type: p.type,
+        ask: id === "cornering" ? "Highest height with clean corners" : "Height with the least ripple" },
+    };
+  }
   throw new Error(`unknown test ${id}`);
 }
 
@@ -254,6 +422,26 @@ export function resultEdits(result, answer, ctx) {
   if (result.kind === "pa") {
     const v = +Math.min(result.max, result.start + Math.floor(+answer + 1e-9) * result.step).toFixed(4);
     return { edits: { enable_pressure_advance: ["1"], pressure_advance: [String(v)] }, text: `Pressure advance ${v}` };
+  }
+  if (result.kind === "retraction") {
+    const v = +Math.min(result.max, Math.max(result.start, result.start + Math.floor(Math.max(0, +answer - result.base) + 1e-9) * result.step)).toFixed(3);
+    return { edits: { filament_retraction_length: [String(v)] }, text: `Retraction length ${v} mm` };
+  }
+  if (["shaperFreq", "shaperDamp", "cornering"].includes(result.kind)) {
+    // these live in the printer's firmware settings, not the slicer's: say what to put there
+    const v = result.start + (result.end - result.start) * Math.min(1, Math.max(0, (+answer - result.first) / (result.H - result.first)));
+    if (result.kind === "shaperFreq") {
+      const f = v.toFixed(1), t = result.type && result.type !== "default" ? result.type : null;
+      return { edits: null, text: result.flavor === "klipper" ? `[input_shaper] shaper_freq_x / shaper_freq_y: ${f}${t ? `, shaper_type: ${t}` : ""} (printer.cfg; measure X and Y separately on their faces)`
+        : `M593 F${f} in your start G-code or firmware config` };
+    }
+    if (result.kind === "shaperDamp") {
+      const dmp = v.toFixed(3);
+      return { edits: null, text: result.flavor === "klipper" ? `[input_shaper] damping_ratio_x / damping_ratio_y: ${dmp} (printer.cfg)` : `M593 D${dmp} (or S${dmp} on RepRapFirmware) in your start G-code` };
+    }
+    const c = +v.toFixed(result.jd && result.flavor !== "klipper" ? 3 : 1);
+    return { edits: null, text: result.flavor === "klipper" ? `[printer] square_corner_velocity: ${c} (printer.cfg)`
+      : result.jd ? `Junction deviation ${c} mm (M205 J${c}, and the printer's "max junction deviation")` : `Jerk ${c} mm/s (M205 X${c} Y${c}, and the printer's jerk limits)` };
   }
   if (result.kind === "volumetric") {
     const v = +Math.min(result.max, Math.max(result.start, result.start + Math.floor(+answer - result.from + 1e-9) * result.step)).toFixed(2);

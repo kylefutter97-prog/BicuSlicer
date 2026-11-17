@@ -8,6 +8,7 @@ It has no login of its own: run it behind an authenticating reverse proxy or on 
 import asyncio
 import base64
 import json
+import math
 import os
 import re
 import shutil
@@ -376,6 +377,45 @@ def gcode_filament_mm(gcode: Path) -> float | None:
     return None
 
 
+_E_ONLY = re.compile(r"^G1\s+E(-?\d*\.?\d+)(\s+F\d*\.?\d+)?\s*(;.*)?$")
+
+
+def calib_retraction(gcode: Path, spec: dict) -> int:
+    """The retraction test (OrcaSlicer changes the length per layer in its own G-code writer, which its command line
+    doesn't offer): every retraction (an E-only move backwards, with relative E and no wipe, which the test sets) and
+    the unretraction after it get the length for their height: start below `base`, then +step every mm, up to max. Returns how
+    many retractions were changed."""
+    start, step, base = spec["start"], spec["step"], spec["base"]
+    tmp = gcode.with_suffix(".calib")
+    z, pending, done, last_len = 0.0, None, 0, None
+    with gcode.open("r", encoding="utf-8", errors="replace") as fin, tmp.open("w", encoding="utf-8") as fout:
+        for line in fin:
+            if line.startswith(";Z:"):
+                try:
+                    z = float(line[3:])
+                except ValueError:
+                    pass
+            m = _E_ONLY.match(line.rstrip("\n"))
+            if m:
+                e, feed = float(m.group(1)), m.group(2) or ""
+                if e < 0 and pending is None:
+                    length = round(min(spec.get("max", 20.0), max(0.0, start + math.floor(max(0.0, z - base) + 1e-9) * step)), 4)
+                    if length != last_len:
+                        fout.write(f"; BicuSlicer retraction test: {length} mm from Z {z}\n")
+                        last_len = length
+                    pending = (-e, length)
+                    line = f"G1 E{-length:.5f}{feed}\n" if length > 0 else "; (retraction 0 mm)\n"
+                    done += 1
+                elif e > 0 and pending is not None:
+                    orig, length = pending
+                    extra = max(0.0, e - orig)          # OrcaSlicer's "extra length on restart"
+                    line = f"G1 E{length + extra:.5f}{feed}\n" if length + extra > 0 else "; (unretraction 0 mm)\n"
+                    pending = None
+            fout.write(line)
+    tmp.replace(gcode)
+    return done
+
+
 async def run_slice(job: dict, form: dict) -> None:
     job_dir = JOBS / job["id"]
     out = job_dir / "out"
@@ -421,6 +461,10 @@ async def run_slice(job: dict, form: dict) -> None:
                 raise RuntimeError(f"Slicing took longer than {SLICE_TIMEOUT // 60} minutes and was stopped")
             (job_dir / "slice.log").write_bytes(log)
             shutil.rmtree(dd, ignore_errors=True)
+
+        if job.get("calib_post"):
+            for g in out.glob("plate_*.gcode"):
+                await asyncio.to_thread(calib_retraction, g, job["calib_post"])
 
         tj = job_dir / "thumbs.json"
         if tj.is_file():
@@ -1091,6 +1135,8 @@ async def api_slice(request: web.Request):
                 form["edits"] = await part.text()
             elif part.name == "filaments":
                 form["filaments"] = await part.text()
+            elif part.name == "calib_post":
+                form["calib_post"] = (await part.text())[:1000]
             elif part.name == "thumbs":
                 raw = await part.read(decode=False)
                 if len(raw) < 4_000_000:
@@ -1114,6 +1160,16 @@ async def api_slice(request: web.Request):
         except (ValueError, AssertionError):
             raise web.HTTPBadRequest(text="Bad settings data")
         edits = {t: edits.get(t) or {} for t in KINDS}
+        calib_post = None
+        if form.get("calib_post"):
+            try:
+                cp = json.loads(form["calib_post"])
+                assert cp.get("type") == "retraction"
+                calib_post = {"type": "retraction", "start": float(cp["start"]), "step": float(cp["step"]), "base": float(cp.get("base", 1)),
+                              "max": float(cp.get("max", 20))}
+                assert 0 <= calib_post["start"] <= 20 and 0 < calib_post["step"] <= 5 and 0 <= calib_post["base"] <= 50
+            except (ValueError, AssertionError, KeyError, TypeError, AttributeError):
+                raise web.HTTPBadRequest(text="Bad calibration step")
         filaments = []
         if form.get("filaments"):
             try:
@@ -1135,7 +1191,8 @@ async def api_slice(request: web.Request):
            "name": safe_stem(form["original"]), "original": form["original"],
            "machine": form["machine"], "process": form["process"], "filament": form["filament"],
            "options": {k: form.get(k) for k in ("scale", "orient", "arrange")},
-           "edits": edits, "filaments": filaments if len(filaments) > 1 else []}
+           "edits": edits, "filaments": filaments if len(filaments) > 1 else [],
+           **({"calib_post": calib_post} if calib_post else {})}
     jobs[job_id] = job
     save_meta(job)
     prune_jobs()

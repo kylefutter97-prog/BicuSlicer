@@ -1876,7 +1876,11 @@ async function slice(pi = cur, quiet = false) {
     if (tower?.none) { resultMsg(bp, `<p class="msg err">There's no room on this plate for the prime tower (${tower.w} × ${tower.d} mm): move parts, or turn the prime tower off in the print settings.</p>`); return; }
     if (tower) Object.assign(plateEdits, { wipe_tower_x: [String(tower.x)], wipe_tower_y: [String(tower.y)] });
     if (bp.spiral === "1") Object.assign(plateEdits, { wall_loops: "1", sparse_infill_density: "0%", top_shell_layers: "0", enable_support: "0", enforce_support_layers: "0" });
-    fd.append("edits", JSON.stringify({ ...S.edits, process: { ...S.edits.process, ...plateEdits } }));
+    // a calibration plate's own settings (as OrcaSlicer's calibrations set them), and its G-code step done by the server
+    const ce = bp.calib?.edits || {};
+    fd.append("edits", JSON.stringify({ ...S.edits, process: { ...S.edits.process, ...plateEdits, ...(ce.process || {}) },
+      filament: { ...S.edits.filament, ...(ce.filament || {}) }, machine: { ...S.edits.machine, ...(ce.machine || {}) } }));
+    if (bp.calib?.post) fd.append("calib_post", JSON.stringify(bp.calib.post));
     if (multiColour()) fd.append("filaments", JSON.stringify(filamentSlots()));
     fd.append("arrange", "0");
     fd.append("orient", "0");
@@ -3892,7 +3896,11 @@ function calibContext() {
     nozzle: num0(mv.nozzle_diameter) || 0.4, flavor, bed: { w: bed.w, d: bed.d },
     flowRatio: num0(filamentValue("filament_flow_ratio")) || 1, nozzleTemp: num0(filamentValue("nozzle_temperature")) || 220,
     maxVol: num0(filamentValue("filament_max_volumetric_speed")) || 0,
-    bowden: /bowden/i.test(String(mv.extruder_type || "")) };
+    bowden: /bowden/i.test(String(mv.extruder_type || "")),
+    // the printer's motion limits (the input shaping and cornering tests print at them, as OrcaSlicer's do)
+    maxSpeed: Math.round(Math.min(num0(mv.machine_max_speed_x) || 300, num0(mv.machine_max_speed_y) || 300)),
+    maxAccel: Math.round(num0(mv.machine_max_acceleration_extruding) || 5000),
+    maxJerk: num0(mv.machine_max_jerk_x) || 0, jd: num0(mv.machine_max_junction_deviation) || 0 };
 }
 
 const calibItems = () => [{ head: "Calibration tests" }, ...Object.entries(CAL.TESTS).map(([id, t]) => ({ label: `${t.title}…`, run: () => calibDialog(id) })),
@@ -3926,7 +3934,7 @@ function createCalibration(id, params, ctx) {
   let pi = cur;
   if (meshesOn(cur).length) { plates.push(newPlate()); pi = plates.length - 1; }
   Object.assign(plates[pi], { name: plan.plate.name, spiral: plan.plate.spiral || "", gcodes: plan.gcodes,
-    calib: { id, params, name: plan.name, legend: plan.legend, result: plan.result } });
+    calib: { id, params, name: plan.name, legend: plan.legend, result: plan.result, edits: plan.edits || null, post: plan.post || null } });
   const made = [];
   for (const part of plan.parts) {
     const geo = geoFrom(Float32Array.from(part.pos), false);
@@ -3964,8 +3972,11 @@ async function calibResult() {
   $("calres-legend").innerHTML = c.legend.map((l) => `<li>${esc(l)}</li>`).join("");
   $("calres-field").innerHTML = r.choices
     ? `<label>Best looking <select id="calres-in">${r.choices.map(([v, l]) => `<option value="${esc(v)}">${esc(l)}</option>`).join("")}</select></label>`
-    : `<label>${r.kind === "pa" ? "Height of the sharpest corners" : "Height where it starts to fail"} <span class="muted">(mm)</span> <input id="calres-in" type="number" step="0.1" min="0" inputmode="decimal"></label>`;
-  const show = () => { const v = $("calres-in").value; const e = v !== "" ? CAL.resultEdits(r, v, ctx) : null; $("calres-out").textContent = e ? `Sets ${e.text}` : ""; $("calres-ok").disabled = !e; };
+    : `<label>${esc(r.ask || (r.kind === "pa" ? "Height of the sharpest corners" : "Height where it starts to fail"))} <span class="muted">(mm)</span> <input id="calres-in" type="number" step="0.1" min="0" inputmode="decimal"></label>`;
+  // some results (input shaping, cornering) belong in the printer's firmware config: shown, not applied
+  const info = ["shaperFreq", "shaperDamp", "cornering"].includes(r.kind);
+  $("calres-ok").textContent = info ? "Done" : "Apply to filament";
+  const show = () => { const v = $("calres-in").value; const e = v !== "" ? CAL.resultEdits(r, v, ctx) : null; $("calres-out").textContent = e ? (e.edits ? `Sets ${e.text}` : `Put this in your printer's config: ${e.text}`) : ""; $("calres-ok").disabled = !e; };
   $("calres-in").oninput = show;
   show();
   dlg.returnValue = "";
@@ -3973,7 +3984,7 @@ async function calibResult() {
   await new Promise((res) => dlg.addEventListener("close", res, { once: true }));
   if (dlg.returnValue !== "ok") return;
   const e = CAL.resultEdits(r, $("calres-in").value, ctx);
-  if (!e) return;
+  if (!e?.edits) return;
   applyFilamentEdits(e.edits);
   toast(`${e.text}: an unsaved change to ${S.selected.filament}. Save it with the ✎ next to the filament.`);
 }
