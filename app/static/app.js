@@ -2690,7 +2690,7 @@ const rangeLayers = (m) => m.ranges.map((r) => ({ from: r.from, to: r.to, layerH
 
 /** The part's layer height profile for the slicer, or null (uniform layers, or ranges only). */
 function partProfile(m) {
-  if (m.vlh?.mode === "imported") return m.vlh.pose === poseKey(m) ? m.vlh.profile : null;
+  if (m.vlh?.mode === "imported" || m.vlh?.mode === "manual") return m.vlh.pose === poseKey(m) ? m.vlh.profile : null;
   if (m.vlh?.mode !== "adaptive") return null;
   const P = lhParams(m), rl = rangeLayers(m);
   const key = JSON.stringify([poseKey(m), m.vlh, P, rl]);
@@ -2712,17 +2712,21 @@ function organicSupports(m) {
 }
 
 let selRange = null;
+const lhBrush = { action: "increase", band: 3, z: null, timer: null };      // the layer height brush (below)
 function renderLayerPanel() {
   const m = selected;
   if (!m) return;
   const P = lhParams(m);
   const height = m.size.z;
-  const imported = m.vlh?.mode === "imported";
+  const imported = m.vlh?.mode === "imported" || m.vlh?.mode === "manual";
   const importedOk = imported && m.vlh.pose === poseKey(m);
   const mode = m.vlh?.mode || "off";
   for (const b of document.querySelectorAll("[data-lh]")) b.classList.toggle("on", b.dataset.lh === mode);
-  $("lh-imported-btn").hidden = !imported;
+  $("lh-imported-btn").hidden = m.vlh?.mode !== "imported";
   $("lh-adaptive").hidden = mode !== "adaptive";
+  $("lh-manual").hidden = mode !== "manual";
+  for (const b of document.querySelectorAll("[data-brush]")) b.classList.toggle("on", b.dataset.brush === lhBrush.action);
+  $("lh-chart").classList.toggle("brush", mode === "manual");
   if (mode === "adaptive" && !focusedInput("lh-quality")) $("lh-quality").value = m.vlh.quality ?? 0.5;
   const prof = partProfile(m) || (m.ranges.length ? LH.rangesProfile(height, P, rangeLayers(m)) : null);
   $("lh-chart-wrap").hidden = !prof;
@@ -2733,7 +2737,8 @@ function renderLayerPanel() {
     let lo = Infinity, hi = 0;
     tops.forEach((z, i) => { const h = z - (i ? tops[i - 1] : 0); if (i) { lo = Math.min(lo, h); hi = Math.max(hi, h); } });   // the first layer is fixed
     info = `${tops.length} layers (${LH.uniformCount(height, P)} at ${P.layer} mm) · ${lo === Infinity ? P.first : lo.toFixed(2)}–${hi.toFixed(2)} mm`;
-  } else if (imported && !importedOk) info = "The project's layer heights no longer match this part (it was rotated, scaled or changed): uniform layers are used.";
+  } else if (imported && !importedOk) info = m.vlh.mode === "manual" ? "The part was turned, scaled or changed since its layer heights were set by hand: uniform layers are used. Choose By hand again to start over."
+    : "The project's layer heights no longer match this part (it was rotated, scaled or changed): uniform layers are used.";
   else info = `Every layer ${P.layer} mm (${LH.uniformCount(height, P)} layers).`;
   $("lh-info").textContent = info;
   const clash = (prof || m.ranges.length) && organicSupports(m);
@@ -2766,8 +2771,47 @@ function drawLayerChart(tops, P, height) {
   $("lh-chart").innerHTML = `<line x1="${pad}" x2="${W - pad}" y1="${y(P.layer)}" y2="${y(P.layer)}" class="lh-uniform"/>
     <path d="${d}" class="lh-line"/>
     <text x="${pad + 2}" y="12" class="lh-t">${P.max} mm</text><text x="${pad + 2}" y="${H - 6}" class="lh-t">${P.min} mm</text>
-    <text x="${W - pad - 2}" y="${H - 6}" class="lh-t" text-anchor="end">${+height.toFixed(1)} mm high</text>`;
+    <text x="${W - pad - 2}" y="${H - 6}" class="lh-t" text-anchor="end">${+height.toFixed(1)} mm high</text>
+    ${lhBrush.z != null && selected?.vlh?.mode === "manual" ? `<rect class="lh-band" x="${x(Math.max(0, lhBrush.z - lhBrush.band / 2)).toFixed(1)}" y="0" width="${(x(Math.min(height, lhBrush.z + lhBrush.band / 2)) - x(Math.max(0, lhBrush.z - lhBrush.band / 2))).toFixed(1)}" height="${H}"/>` : ""}`;
 }
+
+/* ---- the layer height brush (OrcaSlicer's layer height editing): hold on the chart to change layers around a height */
+
+function brushTick() {
+  const m = selected;
+  if (!m || m.vlh?.mode !== "manual" || lhBrush.z == null) return;
+  const P = lhParams(m);
+  m.vlh.profile = LH.adjustProfile(m.vlh.profile, P, m.size.z, lhBrush.z, 0.005, lhBrush.band, lhBrush.action, rangeLayers(m));
+  m.vlh.pose = poseKey(m);
+  renderLayerPanel();
+}
+function brushAt(e) {
+  const r = $("lh-chart").getBoundingClientRect(), W = 300, pad = 4;
+  const fx = ((e.clientX - r.left) / r.width) * W;
+  lhBrush.z = Math.max(0, Math.min(selected.size.z, ((fx - pad) / (W - 2 * pad)) * selected.size.z));
+}
+$("lh-chart").addEventListener("pointerdown", (e) => {
+  if (selected?.vlh?.mode !== "manual") return;
+  e.preventDefault();
+  $("lh-chart").setPointerCapture(e.pointerId);
+  brushAt(e);
+  brushTick();
+  clearInterval(lhBrush.timer);
+  lhBrush.timer = setInterval(brushTick, 40);       // held: keeps changing, as in OrcaSlicer
+});
+$("lh-chart").addEventListener("pointermove", (e) => { if (lhBrush.timer) brushAt(e); });
+const brushEnd = () => {
+  if (!lhBrush.timer) return;
+  clearInterval(lhBrush.timer);
+  lhBrush.timer = null;
+  lhBrush.z = null;
+  plateChanged();
+  refresh();
+};
+$("lh-chart").addEventListener("pointerup", brushEnd);
+$("lh-chart").addEventListener("pointercancel", brushEnd);
+for (const b of document.querySelectorAll("[data-brush]")) b.addEventListener("click", () => { lhBrush.action = b.dataset.brush; renderLayerPanel(); });
+$("lh-band").addEventListener("input", (e) => { lhBrush.band = +e.target.value; $("lh-band-val").textContent = `${lhBrush.band} mm`; });
 
 function setVlh(v) {
   if (!selected) return;
@@ -3511,7 +3555,7 @@ function pasteModel() {
   m.text = src.text || null;
   m.ears = src.ears ? JSON.parse(JSON.stringify(src.ears)) : null;
   m.vlh = src.vlh ? JSON.parse(JSON.stringify(src.vlh)) : null;
-  if (m.vlh?.mode === "imported") m.vlh.pose = poseKey(m);
+  if (m.vlh?.mode === "imported" || m.vlh?.mode === "manual") m.vlh.pose = poseKey(m);
   m.ranges = (src.ranges || []).map((r) => ({ ...r, id: nextId++, overrides: { ...r.overrides } }));
   models.push(m);
   setCopies(m, 1);
@@ -3714,7 +3758,7 @@ async function saveProject(asNew) {
         ...(v.shape === "mesh" ? { vmid: extraMeshes.push(v.base) - 1 + models.length, base_size: v.baseSize.toArray() } : {}) })),
       paint: m.paint ? Object.fromEntries(PAINT_KINDS.map((k) => [k, m.paint[k] ? b64(m.paint[k]) : null])) : null,
       paint_raw: m.paintRaw ? Object.fromEntries(PAINT_KINDS.map((k) => [k, sparse(m.paintRaw[k])])) : null,
-      layer_height: m.vlh ? { ...m.vlh, pose: undefined, pose_ok: m.vlh.mode !== "imported" || m.vlh.pose === poseKey(m) } : null,
+      layer_height: m.vlh ? { ...m.vlh, pose: undefined, pose_ok: !["imported", "manual"].includes(m.vlh.mode) || m.vlh.pose === poseKey(m) } : null,
       height_ranges: m.ranges.map((r) => ({ from: r.from, to: r.to, overrides: r.overrides })),
       // [x, y, plate]: x and y on that plate
       instances: m.meshes.map((x) => { const pi = plateOf(x); return [+(x.position.x - plateX(pi)).toFixed(3), +x.position.y.toFixed(3), pi]; }),
@@ -3784,7 +3828,7 @@ async function openProject(id) {
         const arr = (o) => { if (!o) return null; const a = new Array(tris); for (const [i, v] of Object.entries(o)) if (+i < tris) a[+i] = v; return a; };
         m.paintRaw = Object.fromEntries(PAINT_KINDS.map((k) => [k, arr(pm.paint_raw[k])]));
       }
-      if (pm.layer_height && (pm.layer_height.mode !== "imported" || pm.layer_height.pose_ok)) {
+      if (pm.layer_height && (!["imported", "manual"].includes(pm.layer_height.mode) || pm.layer_height.pose_ok)) {
         m.vlh = { ...pm.layer_height };
         delete m.vlh.pose_ok;
       }
@@ -3792,7 +3836,7 @@ async function openProject(id) {
       models.push(m);
       setCopies(m, (pm.instances || [[bed.w / 2, bed.d / 2, 0]]).length);
       updateBox(m);
-      if (m.vlh?.mode === "imported") m.vlh.pose = poseKey(m);
+      if (m.vlh?.mode === "imported" || m.vlh?.mode === "manual") m.vlh.pose = poseKey(m);
       (pm.instances || []).forEach((xy, k) => { if (m.meshes[k]) { m.meshes[k].position.x = xy[0] + (xy.length > 2 ? plateX(Math.min(xy[2], plates.length - 1)) : 0); m.meshes[k].position.y = xy[1]; } });
     }
     selected = null;
@@ -4330,6 +4374,12 @@ for (const b of document.querySelectorAll("[data-lh]")) b.addEventListener("clic
   const v = b.dataset.lh;
   if (v === "off") setVlh(null);
   else if (v === "adaptive") setVlh(selected.vlh?.mode === "adaptive" ? selected.vlh : { mode: "adaptive", quality: 0.5, smooth: 0 });
+  else if (v === "manual" && !(selected.vlh?.mode === "manual" && selected.vlh.pose === poseKey(selected))) {
+    // start from what's there now: the adaptive profile, or uniform layers (and height ranges)
+    const m = selected, P = lhParams(m);
+    const from = partProfile(m) || LH.rangesProfile(m.size.z, P, rangeLayers(m));
+    setVlh({ mode: "manual", profile: from.slice(), pose: poseKey(m) });
+  }
 });
 $("lh-quality").addEventListener("change", (e) => { if (selected?.vlh?.mode === "adaptive") setVlh({ ...selected.vlh, quality: +e.target.value, smooth: 0 }); });
 $("lh-quality").addEventListener("input", (e) => {      // live chart while dragging; recorded on release

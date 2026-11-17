@@ -178,6 +178,74 @@ export function rangesProfile(height, params, ranges) {
   return prof;
 }
 
+/**
+ * OrcaSlicer's layer height brush (Slicing.cpp adjust_layer_height_profile): change the profile around z within a band
+ * (cosine falloff), by `delta` mm per call. action: "increase" | "decrease" | "reduce" (back towards the normal layer
+ * height) | "smooth". The first layer stays fixed; the profile is made to end at the part's height. Returns a new profile.
+ */
+export function adjustProfile(profile, params, height, z, delta, band, action, ranges = []) {
+  const P = params;
+  let prof = profile.slice();
+  if (prof[prof.length - 2] < height - EPSILON) prof.push(height, prof[prof.length - 1]);
+  else prof[prof.length - 2] = height;
+  const span0 = P.first, span1 = height;
+  if (z < span0 || z > span1) return prof;
+  const cur = heightAt(prof, z);
+  for (const r of ranges) if (z >= r.from - cur && z <= r.to + cur) return prof;     // height ranges win, as in OrcaSlicer
+  let d = delta;
+  if (action === "decrease" || action === "increase") {
+    if (action === "decrease") d = -d;
+    if (d > 0) { if (cur >= P.max - EPSILON) return prof; d = Math.min(d, P.max - cur); }
+    else { if (cur <= P.min + EPSILON) return prof; d = Math.max(d, P.min - cur); }
+  } else {
+    d = Math.min(Math.abs(d), Math.abs(P.layer - cur));
+    if (d < EPSILON && action === "reduce") return prof;
+  }
+  // densify the band at 0.1 mm and change it there
+  const lo = Math.max(span0, z - band / 2), hi = z + band / 2, step = 0.1;
+  let idx = 0;
+  while (idx < prof.length && prof[idx] < lo) idx += 2;
+  idx = Math.max(0, idx - 2);
+  const out = prof.slice(0, idx + 2);
+  const iStart = out.length;
+  let zz = lo;
+  while (zz < hi) {
+    const next = idx + 2;
+    let h = prof[idx + 1];
+    if (next < prof.length) h = lerp(prof[idx + 1], prof[next + 1], (zz - prof[idx]) / Math.max(1e-9, prof[next] - prof[idx]));
+    const w = Math.abs(zz - z) < band / 2 ? 0.5 + 0.5 * Math.cos((2 * Math.PI * (zz - z)) / band) : 0;
+    if (action === "increase" || action === "decrease") h += w * d;
+    else if (action === "reduce") { const dd = h - P.layer, st = w * d; h += Math.abs(dd) > st ? (dd > 0 ? -st : st) : -dd; }
+    h = Math.min(P.max, Math.max(P.min, h));
+    if (zz >= span1 - 1e-9) {
+      if (out[out.length - 2] + EPSILON > zz) out.length -= 2;
+      out.push(span1, h);
+      idx = prof.length;
+      break;
+    }
+    if (out[out.length - 2] + EPSILON < zz) out.push(zz, h);
+    zz = Math.min(zz + step, span1);
+    idx = next;
+    while (idx < prof.length && prof[idx] < zz) idx += 2;
+    idx -= 2;
+  }
+  idx += 2;
+  const iEnd = out.length;
+  if (idx < prof.length) out.push(...prof.slice(idx));
+  else if (out[out.length - 2] + EPSILON / 2 < span1) out.push(...prof.slice(-2));
+  if (action === "smooth") {
+    const a = Math.max(iStart, 4), b = Math.min(iEnd, out.length - 2);     // the first layer stays
+    for (let round = 0; round < 6; round++) {
+      const pn = out.slice();
+      for (let i = a; i < b; i += 2) {
+        const t = Math.abs(pn[i] - z) < band / 2 ? 0.25 + 0.25 * Math.cos((2 * Math.PI * (pn[i] - z)) / band) : 0;
+        out[i + 1] = (1 - t) * pn[i + 1] + 0.5 * t * (pn[i - 1] + pn[i + 3]);
+      }
+    }
+  }
+  return out;
+}
+
 /** layer_heights_profile.txt line for 3MF object number n (1-based, the build item order). */
 export const profileLine = (n, profile) => `object_id=${n}|${profile.map((v) => v.toFixed(6)).join(";")}`;
 

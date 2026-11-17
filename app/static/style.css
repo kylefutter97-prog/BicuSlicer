@@ -643,3 +643,9 @@ dialog.cut-dlg { position: fixed; inset: auto 16px 16px auto; margin: 0; width: 
 .fl-grid input:disabled { opacity: .35; }
 .fl-grid .sw { display: inline-block; width: 14px; height: 14px; border-radius: 4px; border: 1px solid rgba(127,127,127,.5); vertical-align: -2px; margin-right: 3px; }
 .flush-opts { display: grid; gap: 4px; margin: 6px 0; }
+
+/* ================================================================ layer height brush */
+.lh-brush button { font-size: 13px; min-height: 32px; }
+#lh-manual { display: grid; gap: 6px; }
+.lh-chart.brush { cursor: crosshair; touch-action: none; }
+.lh-chart .lh-band { fill: var(--accent); opacity: .14; }
