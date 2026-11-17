@@ -308,6 +308,20 @@ dialog.sheet[open] { display: flex; flex-direction: column; }
 .pv-info { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .stale { color: var(--warn); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px; }
+.pv-moves { display: grid; grid-template-columns: 42px minmax(0, 1fr) 42px; gap: 8px; align-items: center; }
+.pv-moves input[type=range] { width: 100%; accent-color: var(--accent); height: 26px; }
+.pv-moves .btn.icon { min-height: 32px; }
+/* the G-code being run, floating over the view's top-left corner (like OrcaSlicer's G-code window) */
+.gcode-lines { position: absolute; top: 8px; left: 8px; z-index: 2; margin: 0; padding: 5px 8px; max-width: min(62%, 340px); overflow: hidden;
+  border: 1px solid var(--line); border-radius: 8px; font: 11.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  white-space: pre; text-overflow: ellipsis; color: var(--muted); background: color-mix(in srgb, var(--card) 88%, transparent); pointer-events: none; }
+.gcode-lines .cur { color: inherit; font-weight: 700; background: color-mix(in srgb, var(--accent) 22%, transparent); display: inline-block; min-width: 100%; }
+.feat-stats summary { cursor: pointer; font-size: 13px; color: var(--muted); }
+.feat-stats table { width: 100%; border-collapse: collapse; font-size: 12.5px; font-variant-numeric: tabular-nums; margin-top: 6px; }
+.feat-stats th, .feat-stats td { padding: 3px 6px; text-align: right; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.feat-stats th:first-child, .feat-stats td:first-child { text-align: left; white-space: normal; }
+.feat-stats .sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 6px; vertical-align: -1px; }
+.feat-stats tr.off td { opacity: .5; }
 .pv-opts { display: flex; align-items: center; gap: 12px; min-width: 0; }
 .pv-mode select { min-height: 34px; max-width: 46vw; font-size: 14px; }
 .mode-legend { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }

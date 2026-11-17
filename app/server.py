@@ -1262,8 +1262,8 @@ async def api_preview(request):
     job = get_job(request.match_info["id"])
     pl = plate_of(job, request.match_info["n"])
     out = JOBS / job["id"] / "out"
-    bin_path = out / f"plate_{pl['plate']}.preview2"            # version 2 (with the colour-mode attributes)
-    gz_path = out / f"plate_{pl['plate']}.preview2.gz"
+    bin_path = out / f"plate_{pl['plate']}.preview3"            # version 3 (colour-mode attributes, G-code offsets)
+    gz_path = out / f"plate_{pl['plate']}.preview3.gz"
     if not gz_path.is_file():
         async with preview_lock:
             if not gz_path.is_file():
@@ -1280,6 +1280,39 @@ async def api_preview(request):
                             headers={"Content-Encoding": "gzip", "Cache-Control": "private, max-age=86400"})
     import gzip
     return web.Response(body=gzip.decompress(gz_path.read_bytes()), content_type="application/octet-stream")
+
+
+@routes.get("/api/jobs/{id}/plates/{n}/gcode-lines")
+async def api_gcode_lines(request):
+    """A few G-code lines around a byte offset (the Layers view's move slider shows the line being run)."""
+    job = get_job(request.match_info["id"])
+    pl = plate_of(job, request.match_info["n"])
+    path = JOBS / job["id"] / "out" / pl["file"]
+    try:
+        at = max(0, int(request.query.get("at", "0")))
+        before = max(0, min(20, int(request.query.get("before", "3"))))
+        after = max(0, min(40, int(request.query.get("after", "6"))))
+    except ValueError:
+        raise web.HTTPBadRequest(text="at, before and after must be numbers")
+
+    def read():
+        size = path.stat().st_size
+        if at >= size:
+            return {"lines": [], "current": 0}
+        start = max(0, at - 160 * (before + 1))
+        with path.open("rb") as fh:
+            fh.seek(start)
+            chunk = fh.read(at - start + 200 * (after + 2))
+        head, tail = chunk[:at - start], chunk[at - start:]
+        prev = head.split(b"\n")[:-1] if head.endswith(b"\n") else head.split(b"\n")
+        if start > 0:
+            prev = prev[1:]               # the first piece is part of a line
+        prev = [x for x in prev if x is not None][-before:] if before else []
+        nxt = tail.split(b"\n")[:after + 1]
+        lines = [x.decode("utf-8", "replace").rstrip("\r") for x in prev + nxt]
+        return {"lines": lines, "current": len(prev)}
+
+    return web.json_response(await asyncio.to_thread(read))
 
 
 @routes.post("/api/jobs/{id}/plates/{n}/upload")

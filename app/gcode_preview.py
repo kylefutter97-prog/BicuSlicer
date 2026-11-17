@@ -1,6 +1,6 @@
 """Turn OrcaSlicer G-code into a compact layer-by-layer toolpath file for the page's preview.
 
-Binary layout (little endian), version 2:
+Binary layout (little endian), version 3:
   header   magic b"BSGP", u32 version, u32 layers, u32 extrusions, u32 travels, u32 json length
   floats   f32 z[layers]
   ends     u32 extrusion_end[layers], u32 travel_end[layers]   (cumulative segment counts per layer)
@@ -11,9 +11,12 @@ Binary layout (little endian), version 2:
   attrs    per extrusion segment, for the colour modes (OrcaSlicer's G-code viewer "Line type", "Speed"...):
            u16 speed (0.1 mm/s), u16 width (µm), u16 height (µm), u16 flow (0.01 mm³/s), u16 temperature (0.1 °C),
            u8 fan (%), u8 filament (0-based), padded to 4 bytes
-  json     {"features": [names], "colours": [filament colours], "time": total seconds or null}
+  offsets  u32 per extrusion segment, then u32 per travel segment: the byte offset of its G-code line (for the move
+           slider and showing the G-code being run)
+  json     {"features": [names], "colours": [filament colours], "time": total seconds or null,
+            "feature_stats": {name: {"time", "volume", "weight"}} from OrcaSlicer's statistics}
 Segments are stored per layer, in print order, with Z taken from the layer table.
-Version 1 was the same without the times and attrs, and the json just the feature list.
+Version 2 had no offsets; version 1 also no times or attrs, and its json was just the feature list.
 """
 
 from __future__ import annotations
@@ -70,6 +73,15 @@ def _list(v: str | None, sep=",") -> list[str]:
     return [x.strip() for x in (v or "").replace(";", sep).split(sep) if x.strip()]
 
 
+def _feature_stats(stats: Path | None) -> dict:
+    """Time, volume and weight per line type, from OrcaSlicer's statistics."""
+    try:
+        f = json.loads(stats.read_text()).get("summary", {}).get("features", {}) if stats and stats.is_file() else {}
+        return {k: {kk: float(v.get(kk) or 0) for kk in ("time", "volume", "weight")} for k, v in f.items() if isinstance(v, dict)}
+    except (ValueError, OSError, AttributeError, TypeError):
+        return {}
+
+
 def _layer_times(stats: Path | None, z_list: list[float]) -> tuple[list[float] | None, float | None]:
     """Per-layer times from OrcaSlicer's statistics (matched by order, or by height when the counts differ)."""
     if not stats or not stats.is_file():
@@ -112,7 +124,9 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
     a_speed, a_width, a_height, a_flow, a_temp = (array("H") for _ in range(5))
     a_fan, a_tool = array("B"), array("B")
     epm = array("f")            # filament mm per mm of line, turned into mm³/s once the diameter is known
-    seg_layer_temp_unknown = array("B")   # 1: no M104 seen yet; filled from the settings afterwards
+    seg_layer_temp_unknown = array("B")
+    e_off, t_off = array("I"), array("I")      # byte offset of each segment's G-code line
+    cur_off = 0   # 1: no M104 seen yet; filled from the settings afterwards
 
     x = y = z = 0.0
     feed = 0.0                  # mm/min
@@ -140,6 +154,7 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
         if extruding:
             extr.extend((_q(x1), _q(y1), _q(x2), _q(y2)))
             feat.append(cur_feat)
+            e_off.append(cur_off)
             a_speed.append(min(65535, int(feed / 6 + 0.5)))          # mm/min -> 0.1 mm/s
             a_width.append(min(65535, int(width * 1000 + 0.5)))
             a_height.append(min(65535, int(height * 1000 + 0.5)))
@@ -150,9 +165,14 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
             a_tool.append(min(255, tool))
         else:
             trav.extend((_q(x1), _q(y1), _q(x2), _q(y2)))
+            t_off.append(cur_off)
 
-    with gcode.open("r", encoding="utf-8", errors="replace") as fh:
-        for line in fh:
+    with gcode.open("rb") as fh:
+        pos = 0
+        for raw in fh:
+            cur_off = min(pos, 0xFFFFFFFF)
+            pos += len(raw)
+            line = raw.decode("utf-8", "replace")
             if not line:
                 continue
             c = line[0]
@@ -292,10 +312,11 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
 
     times, total = _layer_times(stats, z_list)
     meta = json.dumps({"features": features, "colours": _list(cfg.get("filament_colour"), ";"),
-                       "time": total, "times_from": "orca" if times else None}).encode()
+                       "time": total, "times_from": "orca" if times else None,
+                       "feature_stats": _feature_stats(stats)}).encode()
     n_layers = len(z_list)
     with out.open("wb") as fh:
-        fh.write(b"BSGP" + struct.pack("<5I", 2, n_layers, len(feat), len(trav) // 4, len(meta)))
+        fh.write(b"BSGP" + struct.pack("<5I", 3, n_layers, len(feat), len(trav) // 4, len(meta)))
         fh.write(array("f", z_list).tobytes())
         fh.write(array("I", extr_end).tobytes())
         fh.write(array("I", trav_end).tobytes())
@@ -311,6 +332,8 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
         fh.write(a_tool.tobytes())
         if (2 * len(feat)) % 4:
             fh.write(b"\0\0")
+        fh.write(e_off.tobytes())
+        fh.write(t_off.tobytes())
         fh.write(meta)
     return {"layers": n_layers, "extrusions": len(feat), "travels": len(trav) // 4, "features": features,
             "bytes": out.stat().st_size}

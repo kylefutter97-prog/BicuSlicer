@@ -7,7 +7,7 @@ import { zipSync, unzipSync, strToU8 } from "three/addons/libs/fflate.module.js"
 import { readProject3mf, paintState, projectPlateOrigin, transformPositions } from "./project3mf.js";
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
 import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, filamentValue, filamentSlots, setFilamentSlots, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
-import { Preview, RANGE_CSS } from "./preview.js";
+import { Preview, RANGE_CSS, fmtTime as fmtSecs } from "./preview.js";
 import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
 import * as CAL from "./calibration.js";
@@ -962,6 +962,9 @@ function setViewMode(mode) {
   view.preview?.setVisible(mode === "preview");
   for (const b of document.querySelectorAll("[data-view]")) b.classList.toggle("on", b.dataset.view === mode);
   $("pv-layers").hidden = $("legend").hidden = mode !== "preview";
+  if (mode !== "preview") $("feat-stats").hidden = $("mode-legend").hidden = true;
+  else if (view.preview?.loaded) renderLegend();
+  renderMoves();
   $("layer-text").hidden = mode !== "preview";
   $("lg-row").hidden = mode !== "preview";
   $("lg-filament").hidden = !multiColour();
@@ -994,7 +997,44 @@ function renderLayerInfo() {
   $("layer").value = p.layer + 1;
   const lt = p.layerTime();
   $("layer-text").textContent = `Layer ${p.layer + 1} of ${p.layers} · Z ${p.data.z[p.layer].toFixed(2)} mm${lt ? ` · ${lt}` : ""}`;
+  renderMoves();
   renderLayerGcodes();
+}
+
+/* ---- the moves within a layer (OrcaSlicer's horizontal slider), with the G-code being run */
+
+let gcodeTimer = null, gcodeSeq = 0;
+function renderMoves() {
+  const p = view.preview;
+  const on = !!p?.loaded && p.hasMoves && viewMode === "preview";
+  $("pv-moves").hidden = !on;
+  if (!on) { $("gcode-lines").hidden = true; return; }
+  const list = p.moves();
+  const n = list.length, cur = p.move === null ? n : p.move + 1;
+  $("move").max = Math.max(1, n);
+  $("move").value = cur;
+  $("move").disabled = n < 2;
+  $("move").setAttribute("aria-valuetext", `Move ${cur} of ${n}`);
+  // the G-code around the move, only while stepping (the whole layer needs no line)
+  if (p.move === null || !previewKey) { $("gcode-lines").hidden = true; return; }
+  const at = p.moveOffset(), seq = ++gcodeSeq, [job, plate] = previewKey.split("/");
+  clearTimeout(gcodeTimer);
+  gcodeTimer = setTimeout(async () => {
+    try {
+      const r = await apiJson(`/api/jobs/${job}/plates/${plate}/gcode-lines?at=${at}&before=2&after=3`);
+      if (seq !== gcodeSeq) return;
+      $("gcode-lines").innerHTML = r.lines.map((l, i) => i === r.current ? `<span class="cur">${esc(l) || " "}</span>` : esc(l)).join("\n");
+      $("gcode-lines").hidden = false;
+    } catch { $("gcode-lines").hidden = true; }
+  }, 80);
+}
+
+function stepMove(d) {
+  const p = view.preview;
+  if (!p.loaded || !p.hasMoves) return;
+  const n = p.moves().length, cur = p.move === null ? n - 1 : p.move;
+  p.setMove(Math.max(0, Math.min(n - 1, cur + d)));
+  renderMoves();
 }
 
 /* ---- pause / G-code at a layer (OrcaSlicer's layer slider menu) */
@@ -1039,6 +1079,7 @@ async function addLayerGcode(type, extruder = 0) {
 
 function renderLegend() {
   const p = view.preview;
+  renderFeatureStats();
   $("legend").innerHTML = p.legend().map((f) =>
     `<label class="lg${f.visible ? "" : " off"}"><input type="checkbox" data-feat="${f.i}" ${f.visible ? "checked" : ""}><span class="sw" style="background:${esc(f.color)}"></span>${esc(f.name)}</label>`).join("");
   // line types keep their colours only in "Line type"; in other modes they're just show/hide switches
@@ -1060,6 +1101,18 @@ function renderLegend() {
     $("mode-legend").innerHTML = `<div class="scale-bar" style="background:linear-gradient(to right, ${RANGE_CSS.join(", ")})"></div>
       <div class="scale-ticks">${ml.ticks.map((t) => `<span>${esc(t)}</span>`).join("")}</div>`;
   }
+}
+
+/** OrcaSlicer's legend columns: time, share of the print and filament per line type. */
+function renderFeatureStats() {
+  const rows = view.preview.legend().filter((f) => f.stats);
+  $("feat-stats").hidden = !rows.length;
+  if (!rows.length) return;
+  const total = rows.reduce((a, f) => a + f.stats.time, 0) || 1;
+  const sum = (k) => rows.reduce((a, f) => a + f.stats[k], 0);
+  $("feat-stats-body").innerHTML = `<table><thead><tr><th>Line type</th><th>Time</th><th>%</th><th>Filament</th></tr></thead><tbody>${rows.map((f) =>
+    `<tr class="${f.visible ? "" : "off"}"><td><span class="sw" style="background:${esc(f.color)}"></span>${esc(f.name)}</td><td>${fmtSecs(f.stats.time)}</td><td>${(f.stats.time / total * 100).toFixed(1)}</td><td>${f.stats.weight.toFixed(2)} g</td></tr>`).join("")}
+    <tr><td><b>Total</b></td><td><b>${fmtSecs(sum("time"))}</b></td><td></td><td><b>${sum("weight").toFixed(2)} g</b></td></tr></tbody></table>`;
 }
 
 async function showPreview(job, plate) {
@@ -2948,6 +3001,11 @@ function onKey(e) {
       renderLayerInfo();
       return;
     }
+    if ((k === "ArrowLeft" || k === "ArrowRight") && view.preview.hasMoves) {
+      handled();
+      stepMove((k === "ArrowRight" ? 1 : -1) * (e.shiftKey ? 10 : 1));
+      return;
+    }
   }
   switch (k) {
     case "Escape": if (textPlace) cancelTextPlace(); else if (paint.on) stopPaint(); else if (pickMode) setPickMode(false); else { selected = null; multi.clear(); selectedVolume = null; refresh(); } break;
@@ -3235,7 +3293,10 @@ for (const b of document.querySelectorAll("[data-view]")) b.addEventListener("cl
 $("layer").addEventListener("input", (e) => { view.preview.setLayer(Number(e.target.value) - 1); renderLayerInfo(); });
 $("layer-down").addEventListener("click", () => { view.preview.setLayer(view.preview.layer - 1); renderLayerInfo(); });
 $("layer-up").addEventListener("click", () => { view.preview.setLayer(view.preview.layer + 1); renderLayerInfo(); });
-$("show-travel").addEventListener("change", (e) => { view.preview.showTravel = e.target.checked; view.preview.setLayer(view.preview.layer); });
+$("show-travel").addEventListener("change", (e) => { view.preview.showTravel = e.target.checked; view.preview.move = null; view.preview.setLayer(view.preview.layer); renderMoves(); });
+$("move").addEventListener("input", (e) => { view.preview.setMove(Number(e.target.value) - 1); renderMoves(); });
+$("move-down").addEventListener("click", () => stepMove(-1));
+$("move-up").addEventListener("click", () => stepMove(1));
 $("color-mode").addEventListener("change", (e) => {
   view.preview.setMode(e.target.value);
   try { localStorage.setItem("bs-colour-mode", view.preview.wanted); } catch {}
@@ -3246,6 +3307,7 @@ $("legend").addEventListener("change", (e) => {
   if (i === undefined) return;
   view.preview.setFeature(Number(i), e.target.checked);
   renderLegend();
+  renderMoves();
 });
 $("objects").addEventListener("click", (e) => {
   const li = e.target.closest("li[data-id]");

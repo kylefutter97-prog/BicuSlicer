@@ -76,7 +76,7 @@ export class Preview {
     const magic = String.fromCharCode(...new Uint8Array(buf, 0, 4));
     if (magic !== "BSGP") throw new Error("Not a preview file");
     const [ver, L, nE, nT, nJ] = [4, 8, 12, 16, 20].map((o) => dv.getUint32(o, true));
-    if (ver !== 1 && ver !== 2) throw new Error("Unknown preview version");
+    if (ver < 1 || ver > 3) throw new Error("Unknown preview version");
     let o = 24;
     const z = new Float32Array(buf.slice(o, o + 4 * L)); o += 4 * L;
     const eEnd = new Uint32Array(buf.slice(o, o + 4 * L)); o += 4 * L;
@@ -93,6 +93,11 @@ export class Preview {
       for (const k of ["fan", "tool"]) { attrs[k] = new Uint8Array(buf.slice(o, o + nE)); o += nE; }
       o += (2 * nE) % 4;
     }
+    let eOff = null, tOff = null;
+    if (ver >= 3) {
+      eOff = new Uint32Array(buf.slice(o, o + 4 * nE)); o += 4 * nE;
+      tOff = new Uint32Array(buf.slice(o, o + 4 * nT)); o += 4 * nT;
+    }
     let meta = JSON.parse(new TextDecoder().decode(new Uint8Array(buf, o, nJ)));
     if (Array.isArray(meta)) meta = { features: meta };
     const features = meta.features;
@@ -102,7 +107,8 @@ export class Preview {
     const segLayer = new Uint32Array(nE);
     for (let i = 0, l = 0; i < nE; i++) { while (l < L - 1 && i >= eEnd[l]) l++; segLayer[i] = l; }
     this.data = { z, eEnd, tEnd, times, ext, feat, trv, features, counts, attrs, segLayer,
-      colours: meta.colours || [], totalTime: meta.time || null };
+      colours: meta.colours || [], totalTime: meta.time || null, eOff, tOff, featureStats: meta.feature_stats || {} };
+    this.move = null;
     this.mode = this.modes().some((m) => m.id === this.wanted) ? this.wanted : "feature";
     this.layer = L - 1;
   }
@@ -123,7 +129,7 @@ export class Preview {
   }
 
   build() {
-    for (const o of [...this.group.children]) { o.geometry?.dispose(); this.group.remove(o); }
+    for (const o of [...this.group.children]) { if (o !== this.nozzle) o.geometry?.dispose(); this.group.remove(o); }
     const d = this.data;
     const pos = this.positions(d.ext, d.eEnd);
     const col = new Float32Array(pos.length);
@@ -141,7 +147,17 @@ export class Preview {
     const tgeo = new THREE.BufferGeometry();
     tgeo.setAttribute("position", new THREE.BufferAttribute(this.positions(d.trv, d.tEnd), 3));
     this.travel = new THREE.LineSegments(tgeo, new THREE.LineBasicMaterial({ color: 0x5aa0ff, transparent: true, opacity: 0.35 }));
+    // the nozzle, shown while stepping through a layer's moves
+    if (!this.nozzle) {
+      const cone = new THREE.ConeGeometry(0.9, 3, 16);
+      cone.rotateX(-Math.PI / 2);         // point down (-z)
+      cone.translate(0, 0, 1.5);
+      this.nozzle = new THREE.Mesh(cone, new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9, depthTest: false }));
+      this.nozzle.renderOrder = 3;
+    }
+    this.nozzle.visible = false;
     for (const o of [this.below, this.current, this.travel]) { o.frustumCulled = false; this.group.add(o); }
+    this.group.add(this.nozzle);
     this.reindex();
   }
 
@@ -226,6 +242,7 @@ export class Preview {
       while (layer < d.eEnd.length - 1 && i >= d.eEnd[layer]) { ends[layer++] = k; }
       if (!this.hidden.has(d.feat[i])) { idx[k++] = 2 * i; idx[k++] = 2 * i + 1; }
     }
+    this.movesCache = null;
     while (layer < ends.length) ends[layer++] = k;
     this.geo.setIndex(new THREE.BufferAttribute(idx.subarray(0, k), 1));
     this.idxEnds = ends;
@@ -236,6 +253,7 @@ export class Preview {
   setLayer(n) {
     if (!this.data) return;
     n = Math.max(0, Math.min(this.layers - 1, n));
+    if (n !== this.layer) this.move = null;      // a new layer starts with all of it shown
     this.layer = n;
     const start = n > 0 ? this.idxEnds[n - 1] : 0, end = this.idxEnds[n];
     this.geo.setDrawRange(0, start);
@@ -244,10 +262,71 @@ export class Preview {
     const t = this.data.tEnd;
     this.travel.visible = this.showTravel;
     this.travel.geometry.setDrawRange(0, t[n] * 2);
+    this.nozzle.visible = false;
+    if (this.move !== null) this.applyMove();
+  }
+
+  /* ---- stepping through one layer's moves (OrcaSlicer's horizontal slider) */
+
+  get hasMoves() { return !!this.data?.eOff; }
+
+  /** The G-code offsets of the current layer's moves, in print order (visible line types, plus travel when shown). */
+  moves() {
+    const d = this.data, n = this.layer;
+    const key = `${n}|${this.showTravel}`;
+    if (this.movesCache?.key === key) return this.movesCache.list;
+    const out = [];
+    if (d.eOff) {
+      const e0 = n > 0 ? d.eEnd[n - 1] : 0, e1 = d.eEnd[n];
+      for (let i = e0; i < e1; i++) if (!this.hidden.has(d.feat[i])) out.push(d.eOff[i]);
+      if (this.showTravel) { const t0 = n > 0 ? d.tEnd[n - 1] : 0; for (let i = t0; i < d.tEnd[n]; i++) out.push(d.tOff[i]); }
+    }
+    out.sort((a, b) => a - b);
+    const list = [];
+    for (const v of out) if (!list.length || list[list.length - 1] !== v) list.push(v);   // an arc is one move
+    this.movesCache = { key, list: Uint32Array.from(list) };
+    return this.movesCache.list;
+  }
+
+  /** Show the layer up to move i (0-based); null shows all of it. */
+  setMove(i) {
+    if (!this.data) return;
+    const list = this.moves();
+    this.move = i === null || i >= list.length - 1 ? null : Math.max(0, i);
+    this.setLayer(this.layer);
+  }
+
+  /** The G-code offset of the current move (or the layer's last). */
+  moveOffset() {
+    const list = this.moves();
+    return list.length ? list[this.move === null ? list.length - 1 : Math.min(this.move, list.length - 1)] : null;
+  }
+
+  applyMove() {
+    const d = this.data, n = this.layer, list = this.moves();
+    if (!list.length) return;
+    const cur = list[Math.min(this.move, list.length - 1)];
+    // extrusions: the visible ones of this layer up to the current move
+    const start = n > 0 ? this.idxEnds[n - 1] : 0, end = this.idxEnds[n];
+    const idx = this.geo.getIndex().array;
+    let k = start, lastE = -1;
+    while (k < end && d.eOff[idx[k] / 2] <= cur) { lastE = idx[k] / 2; k += 2; }
+    this.curGeo.setDrawRange(start, k - start);
+    // travel up to the current move
+    const t0 = n > 0 ? d.tEnd[n - 1] : 0;
+    let t = t0, lastT = -1;
+    while (t < d.tEnd[n] && d.tOff[t] <= cur) { lastT = t; t++; }
+    this.travel.geometry.setDrawRange(0, t * 2);
+    // the nozzle at the end of the last move drawn
+    let p = null;
+    if (lastE >= 0 && (lastT < 0 || d.eOff[lastE] >= d.tOff[lastT])) p = this.geo.getAttribute("position").array.subarray(lastE * 6 + 3, lastE * 6 + 6);
+    else if (lastT >= 0) p = this.travel.geometry.getAttribute("position").array.subarray(lastT * 6 + 3, lastT * 6 + 6);
+    if (p) { this.nozzle.position.set(p[0], p[1], p[2]); this.nozzle.visible = true; }
   }
 
   setFeature(i, visible) {
     if (visible) this.hidden.delete(i); else this.hidden.add(i);
+    this.move = null;
     this.reindex();
   }
 
@@ -255,7 +334,7 @@ export class Preview {
 
   legend() {
     const d = this.data;
-    return d.features.map((f, i) => ({ i, name: f, color: colorFor(f), count: d.counts[i], visible: !this.hidden.has(i) }))
+    return d.features.map((f, i) => ({ i, name: f, color: colorFor(f), count: d.counts[i], visible: !this.hidden.has(i), stats: d.featureStats[f] || null }))
       .filter((x) => x.count > 0);
   }
 

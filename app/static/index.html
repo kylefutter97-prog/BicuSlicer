@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=36">
+<link rel="stylesheet" href="/static/style.css?v=38">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -70,6 +70,7 @@
     <div class="plate-tabs" id="plate-tabs" role="tablist" aria-label="Plates" hidden></div>
     <div class="viewer-wrap">
       <div id="viewer" class="viewer"></div>
+      <pre class="gcode-lines" id="gcode-lines" hidden></pre>
       <div id="empty" class="empty">
         <label class="primary file-btn">
           <input class="file-input" type="file" accept=".stl,.3mf,.obj,.step,.stp,.iges,.igs" multiple>
@@ -107,6 +108,11 @@
         <input type="range" id="layer" min="1" max="1" value="1" aria-label="Layer">
         <button class="btn icon" id="layer-up" type="button" aria-label="Next layer">+</button>
       </div>
+      <div class="pv-moves" id="pv-moves" hidden>
+        <button class="btn icon" id="move-down" type="button" aria-label="Previous move">‹</button>
+        <input type="range" id="move" min="1" max="1" value="1" aria-label="Move within the layer">
+        <button class="btn icon" id="move-up" type="button" aria-label="Next move">›</button>
+      </div>
       <div class="pv-info"><span id="layer-text"></span><span id="preview-stale" class="stale" hidden>Plate changed since this slice</span></div>
       <div class="lg-row" id="lg-row" hidden><span class="muted small">At this layer:</span>
         <button class="btn small-btn" id="lg-pause" type="button" title="Pause the print before this layer (to insert nuts, magnets…)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-pause"/></svg>Pause</button>
@@ -115,6 +121,7 @@
       <div class="lg-list" id="lg-list" hidden></div>
       <div class="mode-legend" id="mode-legend" hidden></div>
       <div class="legend" id="legend"></div>
+      <details class="feat-stats" id="feat-stats" hidden><summary>Time and filament per line type</summary><div id="feat-stats-body"></div></details>
     </div>
     <p id="plate-msg" class="msg warn" hidden></p>
     <p id="plate-flash" class="msg" hidden></p>
@@ -577,6 +584,7 @@
       <tr><th colspan="2">View</th></tr>
       <tr><td><kbd>Tab</kbd></td><td>Model ↔ Layers</td></tr>
       <tr><td><kbd>↑</kbd> / <kbd>↓</kbd> in Layers</td><td>Next / previous layer (<kbd>Shift</kbd>: 10)</td></tr>
+      <tr><td><kbd>←</kbd> / <kbd>→</kbd> in Layers</td><td>Step through the layer's moves (<kbd>Shift</kbd>: 10)</td></tr>
       <tr><td><kbd>0</kbd> <kbd>1</kbd> <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> <kbd>6</kbd></td><td>Fit · top · front · back · left · right</td></tr>
       <tr><td><kbd>Z</kbd></td><td>Zoom to the selected part</td></tr>
       <tr><th colspan="2">Plate and files</th></tr>
@@ -621,6 +629,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=40"></script>
+<script type="module" src="/static/app.js?v=42"></script>
 </body>
 </html>
