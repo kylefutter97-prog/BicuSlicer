@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=41">
+<link rel="stylesheet" href="/static/style.css?v=42">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -217,6 +217,11 @@
         </div>
       </div>
       <label class="fil-pick field" hidden><span>Filament</span><div class="fil-pick-row"><span class="fil-swatch"></span><select id="obj-filament"></select></div></label>
+      <div class="flush-opts" id="obj-flush" hidden><span class="muted small">Purge into it on filament changes (less waste in the prime tower):</span>
+        <label class="check-inline"><input type="checkbox" data-flush="flush_into_infill"> Its infill</label>
+        <label class="check-inline"><input type="checkbox" data-flush="flush_into_objects"> The whole part</label>
+        <label class="check-inline"><input type="checkbox" data-flush="flush_into_support"> Its supports</label>
+        <span class="muted small" id="obj-flush-off" hidden>Needs "Purge in prime tower" on (in the printer's settings, or under Purge volumes…).</span></div>
       <div class="group-label">Settings for this part <span class="muted" id="part-count"></span></div>
       <div id="part-settings" class="part-settings"></div>
       <div class="toolbar"><button class="btn" id="obj-edit-text" type="button" hidden>Edit text…</button><button class="btn" id="part-add" type="button">+ Add setting</button><button class="btn danger" id="obj-delete" type="button">Remove part</button></div>
@@ -567,6 +572,22 @@
   </form>
 </dialog>
 
+<dialog id="flush-dlg">
+  <form method="dialog" class="plate-dlg flush-dlg">
+    <p><b>Purge volumes</b></p>
+    <p class="muted small">How much filament (mm³) goes into the prime tower when changing from one filament (row) to another (column), times the multiplier.</p>
+    <label class="check-inline"><input type="radio" name="fl-mode" value="auto"> Automatic: OrcaSlicer works them out from the colours</label>
+    <label class="check-inline"><input type="radio" name="fl-mode" value="manual"> Set by hand</label>
+    <div class="msg warn small" id="fl-purge-off" hidden>Your printer's "Purge in prime tower" is off, so OrcaSlicer purges a fixed
+      <span id="fl-prime"></span> mm³ per change and doesn't use this table (or purging into parts).
+      <button class="link" id="fl-purge-on" type="button">Turn it on</button></div>
+    <div id="fl-grid" class="fl-grid"></div>
+    <div class="calib-fields"><label>Multiplier <input id="fl-mult" type="number" step="0.05" min="0" max="3" inputmode="decimal"></label></div>
+    <p class="small muted" id="fl-note"></p>
+    <div class="actions"><button value="cancel" type="submit" formnovalidate>Cancel</button><button value="ok" class="primary" type="submit">Save</button></div>
+  </form>
+</dialog>
+
 <dialog id="svg-dlg">
   <form method="dialog" class="plate-dlg text-dlg">
     <p><b id="svg-title">Add an SVG drawing</b></p>
@@ -689,6 +710,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=48"></script>
+<script type="module" src="/static/app.js?v=49"></script>
 </body>
 </html>

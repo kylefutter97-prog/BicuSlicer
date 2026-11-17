@@ -356,6 +356,13 @@ def gcode_multi_stats(gcode: Path) -> dict:
         m = re.search(r"; filament used \[g\] = ([\d., ]+)", tail)
         if m:
             out["filament_g_each"] = [float(x) for x in m.group(1).split(",") if x.strip()]
+        # the purge volumes the slice used (OrcaSlicer works them out from the colours unless they're set)
+        m = re.search(r"^; flush_volumes_matrix = ([\d., ]+)$", tail, re.M)
+        if m and out.get("filament_changes") is not None:
+            out["flush_matrix"] = [float(x) for x in m.group(1).split(",") if x.strip()]
+            m = re.search(r"^; flush_multiplier = ([\d.]+)", tail, re.M)
+            if m:
+                out["flush_multiplier"] = float(m.group(1))
     except (OSError, ValueError):
         pass
     return out

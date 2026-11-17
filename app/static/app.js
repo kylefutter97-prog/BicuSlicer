@@ -6,7 +6,7 @@ import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, unzipSync, strToU8 } from "three/addons/libs/fflate.module.js";
 import { readProject3mf, paintState, projectPlateOrigin, transformPositions } from "./project3mf.js";
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
-import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, filamentValue, filamentSlots, setFilamentSlots, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
+import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, applyMachineEdits, filamentValue, filamentSlots, setFilamentSlots, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview, RANGE_CSS, fmtTime as fmtSecs } from "./preview.js";
 import * as MS from "./measure.js";
 import * as MT from "./meshtools.js";
@@ -611,7 +611,17 @@ function towerFootprint(pi) {
   const n = usedFilaments(pi).size;
   const lh = Math.max(0.04, parseFloat(raw("layer_height")) || 0.2);
   const H = Math.max(1, ...modelsOn(pi).map((m) => m.size.z));
-  const area = (940 + 260 * Math.max(0, n - 2)) * (0.2 / lh) * 1.15;
+  // measured with a 45 mm³ purge per change (OrcaSlicer's prime volume); with "Purge in prime tower" on, each change
+  // purges the table's volume instead (× multiplier): 1 mm³ is 5 mm² of tower at 0.2 mm layers
+  const prime = +[processValue("prime_volume")].flat()[0] || 45;
+  let purge = prime;
+  if (purgeOn()) {
+    const mult = +[S.edits.process?.flush_multiplier ?? processValue("flush_multiplier")].flat()[0] || 0.3;
+    const last = plates.map((p) => p.job?.plates?.[0]).find((pl) => pl?.flush_matrix?.length === n * n);
+    const table = flushMatrix(n) || last?.flush_matrix || null;           // before the multiplier
+    purge = Math.max(prime, table ? Math.max(...table) * mult : 280 * mult);
+  }
+  const area = (940 + 260 * Math.max(0, n - 2) + 5 * Math.max(0, purge - 45) * Math.max(1, n - 1)) * (0.2 / lh) * 1.15;
   const type = String(raw("wipe_tower_wall_type") || "rib");
   let brim = parseFloat(raw("prime_tower_brim_width"));
   if (!Number.isFinite(brim)) brim = 3;
@@ -1634,6 +1644,7 @@ function refresh() {
     $("obj-edit-text").hidden = !selected.text;
     $("obj-edit-text").textContent = selected.text?.svg ? "Edit SVG…" : "Edit text…";
     fillFilamentSelect($("obj-filament"), partSlot(selected), false);
+    renderFlushOpts();
     const n = Object.keys(selected.overrides).length;
     $("part-count").textContent = n ? `· ${n}` : "";
     $("part-add").disabled = !partOptionsAvailable();
@@ -1878,7 +1889,9 @@ async function slice(pi = cur, quiet = false) {
     if (bp.spiral === "1") Object.assign(plateEdits, { wall_loops: "1", sparse_infill_density: "0%", top_shell_layers: "0", enable_support: "0", enforce_support_layers: "0" });
     // a calibration plate's own settings (as OrcaSlicer's calibrations set them), and its G-code step done by the server
     const ce = bp.calib?.edits || {};
-    fd.append("edits", JSON.stringify({ ...S.edits, process: { ...S.edits.process, ...plateEdits, ...(ce.process || {}) },
+    const proc = { ...S.edits.process };
+    if (proc.flush_volumes_matrix && !flushMatrix()) delete proc.flush_volumes_matrix;      // set for another number of filaments
+    fd.append("edits", JSON.stringify({ ...S.edits, process: { ...proc, ...plateEdits, ...(ce.process || {}) },
       filament: { ...S.edits.filament, ...(ce.filament || {}) }, machine: { ...S.edits.machine, ...(ce.machine || {}) } }));
     if (bp.calib?.post) fd.append("calib_post", JSON.stringify(bp.calib.post));
     if (multiColour()) fd.append("filaments", JSON.stringify(filamentSlots()));
@@ -4401,6 +4414,81 @@ $("lg-filament").addEventListener("click", (e) => {
   openMenu(r.left, r.bottom + 4, [{ head: "From this layer, print with" },
     ...filamentSlots().map((f, i) => ({ label: `Filament ${i + 1} · ${f.preset}`, run: () => addLayerGcode("filament", i + 1) }))]);
 });
+/* ---- purging (OrcaSlicer's flushing volumes, and flush into objects / infill / supports) */
+
+/** OrcaSlicer only uses the purge table, and purging into parts, with the printer's "Purge in prime tower" on. */
+const purgeOn = () => /^(1|true)$/.test(String([machineValues().purge_in_prime_tower].flat()[0] ?? "1"));
+const flushDefault = (k) => /^(1|true)$/.test(String([processValue(k)].flat()[0] ?? (k === "flush_into_support" ? "1" : "0")));
+function renderFlushOpts() {
+  const m = selected, wrap = $("obj-flush");
+  wrap.hidden = !m || !multiColour();
+  if (wrap.hidden) return;
+  for (const c of wrap.querySelectorAll("[data-flush]")) {
+    const k = c.dataset.flush;
+    c.checked = k in m.overrides ? /^(1|true)$/.test(String(m.overrides[k])) : flushDefault(k);
+  }
+  $("obj-flush-off").hidden = purgeOn();
+}
+$("obj-flush").addEventListener("change", (e) => {
+  const k = e.target.dataset.flush;
+  if (!k || !selected) return;
+  for (const m of selection()) {
+    if (e.target.checked === flushDefault(k)) delete m.overrides[k]; else m.overrides[k] = e.target.checked ? "1" : "0";
+  }
+  partEditor.model = null;
+  plateChanged();
+  refresh();
+});
+
+/** The purge table the print settings set by hand (row-major, from → to), when it fits the filament slots. */
+function flushMatrix(n = filamentSlots().length) {
+  const raw = [S.edits.process?.flush_volumes_matrix].flat()[0];
+  const v = String(raw ?? "").split(",").map(Number).filter((x) => Number.isFinite(x));
+  return v.length === n * n ? v : null;
+}
+
+async function openFlush() {
+  const slots = filamentSlots(), n = slots.length, dlg = $("flush-dlg");
+  if (n < 2) return;
+  const manual = flushMatrix(n);
+  // what the last slice used (OrcaSlicer's automatic values), as a starting point
+  const last = plates.map((p) => p.job?.plates?.[0]).find((pl) => pl?.flush_matrix?.length === n * n);
+  const seed = manual || last?.flush_matrix || Array.from({ length: n * n }, (_, i) => (Math.floor(i / n) === i % n ? 0 : 280));
+  const multRaw = [S.edits.process?.flush_multiplier ?? processValue("flush_multiplier")].flat()[0];
+  $("fl-mult").value = +(+multRaw || last?.flush_multiplier || 0.3).toFixed(3);
+  const sw = (i) => `<span class="sw" style="background:${esc(slots[i].colour)}"></span>${i + 1}`;
+  $("fl-grid").innerHTML = `<table><thead><tr><th>from \ to</th>${slots.map((_, j) => `<th>${sw(j)}</th>`).join("")}</tr></thead><tbody>${slots.map((_, i) =>
+    `<tr><th>${sw(i)}</th>${slots.map((_, j) => `<td><input type="number" min="0" max="20000" step="1" data-ij="${i * n + j}" value="${Math.round(seed[i * n + j])}"${i === j ? " disabled" : ""} aria-label="From ${i + 1} to ${j + 1}"></td>`).join("")}</tr>`).join("")}</tbody></table>`;
+  const mode = () => dlg.querySelector("input[name=fl-mode]:checked")?.value || "auto";
+  const sync = () => {
+    const auto = mode() === "auto";
+    for (const i of $("fl-grid").querySelectorAll("input")) i.disabled = auto || i.dataset.ij % (n + 1) === 0;
+    $("fl-note").textContent = auto ? (last ? "Shown: the values OrcaSlicer used for your last slice of these filaments." : "Slice once to see the values OrcaSlicer works out.") : "Your values replace OrcaSlicer's for every plate.";
+  };
+  for (const r of dlg.querySelectorAll("input[name=fl-mode]")) { r.checked = r.value === (manual ? "manual" : "auto"); r.onchange = sync; }
+  $("fl-purge-off").hidden = purgeOn();
+  $("fl-prime").textContent = +[processValue("prime_volume")].flat()[0] || 45;
+  $("fl-purge-on").onclick = () => {
+    applyMachineEdits({ purge_in_prime_tower: "1" });
+    $("fl-purge-off").hidden = true;
+    renderFlushOpts();
+    toast(`"Purge in prime tower" on: an unsaved change to ${S.selected.machine}.`);
+  };
+  sync();
+  dlg.returnValue = "";
+  dlg.showModal();
+  await new Promise((r) => dlg.addEventListener("close", r, { once: true }));
+  if (dlg.returnValue !== "ok") return;
+  const mult = Math.max(0, +$("fl-mult").value || 0);
+  const changes = { flush_multiplier: [String(mult)] };
+  if (mode() === "manual") changes.flush_volumes_matrix = [[...$("fl-grid").querySelectorAll("input")].map((i) => String(Math.max(0, Math.round(+i.value || 0)))).join(",")];
+  else delete S.edits.process.flush_volumes_matrix;
+  applyProcessEdits(changes);
+  plateChanged();
+  toast(mode() === "manual" ? "Purge volumes set by hand: an unsaved change to the print settings." : `Purge volumes automatic, × ${mult}.`);
+}
+$("fil-slots").addEventListener("click", (e) => { if (e.target.closest("#fil-flush")) openFlush(); });
+
 $("obj-filament").addEventListener("change", (e) => {
   if (!selected) return;
   for (const m of selection()) m.overrides.extruder = e.target.value;

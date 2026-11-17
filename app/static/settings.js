@@ -910,6 +910,12 @@ export function projectSettingsDiff(cfg) {
 
 /** Take setting changes as unsaved edits to the print settings (like typing them in). */
 /** Take filament setting changes as unsaved edits (calibration results). */
+export function applyMachineEdits(changes) {
+  Object.assign(S.edits.machine, changes);
+  renderPickers();
+  onChange("edits");
+}
+
 export function applyFilamentEdits(changes) {
   Object.assign(S.edits.filament, changes);
   renderPickers();
@@ -973,7 +979,8 @@ function renderSlots() {
       ${i === 0 ? `<span class="muted small fil-same">the filament above</span>`
         : `<select data-preset="${i}" aria-label="Filament ${i + 1}">${optionList(S.lists.filament, f.preset)}</select><button class="btn icon" type="button" data-remove="${i}" aria-label="Remove filament ${i + 1}">✕</button>`}
     </div>`).join("") : "")
-    + `<button class="link" type="button" id="fil-add">+ Add a filament${slots.length > 1 ? "" : " (multi-colour)"}</button>`;
+    + `<div class="fil-actions"><button class="link" type="button" id="fil-add">+ Add a filament${slots.length > 1 ? "" : " (multi-colour)"}</button>`
+    + (slots.length > 1 ? `<button class="link" type="button" id="fil-flush">Purge volumes…</button>` : "") + `</div>`;
 }
 
 function wireSlots() {
