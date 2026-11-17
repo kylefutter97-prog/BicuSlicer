@@ -631,3 +631,5 @@ dialog.cut-dlg { position: fixed; inset: auto 16px 16px auto; margin: 0; width: 
 /* ================================================================ SVG dialog */
 .svg-pick { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .svg-preview img { max-width: 100%; max-height: 140px; object-fit: contain; display: block; margin: 0 auto; }
+.ears-panel input { width: 5.5em; min-height: 32px; }
+.ears-panel label { align-items: center; }

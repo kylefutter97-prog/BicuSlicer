@@ -96,6 +96,11 @@ function initViewer() {
     modifierSel: new THREE.MeshStandardMaterial({ color: css("--ok"), transparent: true, opacity: 0.55, depthWrite: false }),
     negative: new THREE.MeshStandardMaterial({ color: css("--bad"), transparent: true, opacity: 0.28, depthWrite: false }),
     negativeSel: new THREE.MeshStandardMaterial({ color: css("--bad"), transparent: true, opacity: 0.55, depthWrite: false }),
+    // support enforcer / blocker parts, in the paint tool's support colours
+    enforcer: new THREE.MeshStandardMaterial({ color: 0x3d7dff, transparent: true, opacity: 0.3, depthWrite: false }),
+    enforcerSel: new THREE.MeshStandardMaterial({ color: 0x3d7dff, transparent: true, opacity: 0.58, depthWrite: false }),
+    blocker: new THREE.MeshStandardMaterial({ color: 0xf08c00, transparent: true, opacity: 0.3, depthWrite: false }),
+    blockerSel: new THREE.MeshStandardMaterial({ color: 0xf08c00, transparent: true, opacity: 0.58, depthWrite: false }),
   };
   Object.assign(view, { el, renderer, scene, camera, controls, mats, bedGroup: null, raycaster: new THREE.Raycaster() });
   new ResizeObserver(resize).observe(el);
@@ -302,7 +307,7 @@ function partsFromObject(ob, allowed, notes, layers = {}) {
   const firstSlot = slotOf(allNormals[0].settings) || slotOf(ob.settings) || 1;
   const normals = allNormals.filter((p) => (slotOf(p.settings) || firstSlot) === firstSlot);
   const colourParts = allNormals.filter((p) => !normals.includes(p));
-  for (const p of ob.parts) if (!["normal_part", "modifier_part", "negative_part"].includes(p.subtype)) notes.add(`${p.subtype.replace(/_/g, " ")}s aren't supported yet, so they were left out.`);
+  for (const p of ob.parts) if (!["normal_part", "modifier_part", "negative_part", "support_enforcer", "support_blocker"].includes(p.subtype)) notes.add(`${p.subtype.replace(/_/g, " ")}s aren't supported yet, so they were left out.`);
   if (normals.length > 1 && normals.some((p) => Object.keys(partSettings(p.settings, allowed)).filter((k) => k !== "extruder").length))
     notes.add(`${ob.name}: settings of its separate parts apply to the whole part here.`);
   for (const idx of groups.values()) {
@@ -335,15 +340,15 @@ function partsFromObject(ob, allowed, notes, layers = {}) {
       if (det > 0) m.paintRaw = raw;      // kept exactly as painted, for the slicer
     }
     if (firstSlot > 1) m.overrides.extruder = String(firstSlot);
-    for (const q of [...colourParts, ...ob.parts.filter((x) => x.subtype === "modifier_part" || x.subtype === "negative_part")]) {
+    for (const q of [...colourParts, ...ob.parts.filter((x) => ["modifier_part", "negative_part", "support_enforcer", "support_blocker"].includes(x.subtype))]) {
       const vg = geoFrom(transformPositions(q.pos, R), det < 0);
       const vc = centered(vg);
       vg.computeBoundingBox();
       const size = vg.boundingBox.getSize(new THREE.Vector3());
-      const kind = q.subtype === "negative_part" ? "negative" : q.subtype === "modifier_part" ? "modifier" : "part";
+      const kind = { negative_part: "negative", modifier_part: "modifier", support_enforcer: "enforcer", support_blocker: "blocker" }[q.subtype] || "part";
       const v = { id: nextId++, kind, shape: "mesh",
-        name: q.name || (kind === "negative" ? "Negative part" : kind === "part" ? "Part" : "Modifier"), size: size.clone(),
-        pos: new THREE.Vector3(vc.x - c.x, vc.y - c.y, vc.z - minZ), overrides: kind !== "negative" ? partSettings(q.settings, allowed) : {},
+        name: q.name || ({ negative: "Negative part", part: "Part", enforcer: "Support enforcer", blocker: "Support blocker" }[kind] || "Modifier"), size: size.clone(),
+        pos: new THREE.Vector3(vc.x - c.x, vc.y - c.y, vc.z - minZ), overrides: !SETTINGLESS.has(kind) ? partSettings(q.settings, allowed) : {},
         base: vg, baseSize: size.clone() };
       v.geo = volumeGeo(v);
       m.volumes.push(v);
@@ -585,7 +590,7 @@ function usedFilaments(pi, withLayerChanges = true) {
   for (const m of modelsOn(pi)) {
     if (m.printable === false) continue;
     used.add(partSlot(m));
-    for (const v of m.volumes) if (v.kind !== "negative" && slotOf(v.overrides)) used.add(Math.min(n, slotOf(v.overrides)));
+    for (const v of m.volumes) if (!SETTINGLESS.has(v.kind) && slotOf(v.overrides)) used.add(Math.min(n, slotOf(v.overrides)));
     const pc = m.paint?.color;
     if (pc) for (let i = 0; i < pc.length; i++) if (pc[i]) used.add(Math.min(n, pc[i]));
   }
@@ -687,13 +692,16 @@ function paintCodeN(s) {
   return nib.reverse().map((x) => hex[x]).join("");
 }
 
-const VOL_KIND = { negative: "negative part", modifier: "modifier", part: "raised part" };
+const VOL_KIND = { negative: "negative part", modifier: "modifier", part: "raised part", enforcer: "support enforcer", blocker: "support blocker" };
+const SETTINGLESS = new Set(["negative", "enforcer", "blocker"]);      // volume kinds without settings of their own
 function volMat(v, sel, m) {
   if (v.kind === "part") {     // raised text etc.: part of the print
     if (multiColour()) return filamentMat(slotColour(slotOf(v.overrides) || (m ? partSlot(m) : 1)), sel);
     return sel ? view.mats.selected : view.mats.normal;
   }
   if (v.kind === "negative") return sel ? view.mats.negativeSel : view.mats.negative;
+  if (v.kind === "enforcer") return sel ? view.mats.enforcerSel : view.mats.enforcer;
+  if (v.kind === "blocker") return sel ? view.mats.blockerSel : view.mats.blocker;
   return sel ? view.mats.modifierSel : view.mats.modifier;
 }
 
@@ -824,6 +832,7 @@ function takeSnapshot() {
           pos: v.pos.toArray(), overrides: JSON.stringify(v.overrides || {}), geo: v.geo, base: v.base, baseSize: v.baseSize?.toArray(),
           text: v.text ? JSON.stringify(v.text) : null })),
         textp: JSON.stringify(m.text || null),
+        earsp: JSON.stringify(m.ears || null),
         paintRaw: m.paintRaw || null,
         layers: JSON.stringify([m.vlh, m.ranges]),
         paintRev: m.paintRev || 0,
@@ -899,6 +908,7 @@ function restoreSnapshot(s) {
         pos: new THREE.Vector3().fromArray(v.pos), overrides: JSON.parse(v.overrides), geo: v.geo,
         ...(v.base ? { base: v.base, baseSize: new THREE.Vector3().fromArray(v.baseSize) } : {}), ...(v.text ? { text: JSON.parse(v.text) } : {}) }));
       m.text = JSON.parse(sm.textp || "null");
+      m.ears = JSON.parse(sm.earsp || "null");
       m.paintRaw = sm.paintRaw;
       [m.vlh, m.ranges] = JSON.parse(sm.layers);
       // painting changes the arrays in place, so the part gets its own copies
@@ -972,7 +982,8 @@ function setViewMode(mode) {
   $("lg-row").hidden = mode !== "preview";
   $("lg-filament").hidden = !multiColour();
   if (mode !== "preview") $("lg-list").hidden = true; else renderLayerGcodes();
-  if (mode === "preview") { setPickMode(false); if (measure.on) setMeasure(false); }
+  if (mode === "preview") { setPickMode(false); if (measure.on) setMeasure(false); if (ears.on) stopEars(); }
+  drawEars();
   $("tip").textContent = mode === "preview"
     ? "Drag to turn the view · pinch or scroll to zoom · slide to step through the layers"
     : "Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom · press ? for keyboard shortcuts";
@@ -1357,7 +1368,7 @@ function wirePointer() {
         openMenu(sx, sy, partMenu());
       }, 550);
     }
-    if (pickMode || measure.on || e.button > 0) return;
+    if (pickMode || measure.on || ears.on || e.button > 0) return;
     const hit = hitPart(e);
     const p = hit && bedPoint(e);
     if (!hit || !p) return;
@@ -1414,6 +1425,7 @@ function wirePointer() {
     if (cut && cutTap(e)) return;
     const hit = hitPart(e);
     if (measure.on) { measureTap(hit); return; }
+    if (ears.on) { earTap(e, hit); return; }
     if (textPlace) {
       if (hit && hit.object.userData.model === textPlace.model && hit.face) placeText(hit);
       else flash(`Tap a face of ${textPlace.model.name}.`, "warn");
@@ -1569,6 +1581,8 @@ const fmtMm = (v) => v.toFixed(v < 100 ? 1 : 0);
 
 function refresh() {
   const has = models.length > 0;
+  if (ears.on && (!models.includes(ears.m) || selected !== ears.m)) { ears.on = false; ears.m = null; $("ears-panel").hidden = true; showHint(""); }
+  drawEars();
   $("empty").hidden = has;
   if (!has) $("preview-controls").hidden = true;      // nothing on the plates (e.g. after undo): no layers to show
   $("plate-tools").hidden = !has;
@@ -1679,7 +1693,7 @@ function build3mf(pi = cur) {
   // A part with modifier / negative parts becomes an object made of components, with each component's type and
   // settings in Metadata/model_settings.config (the layout OrcaSlicer itself writes; checked with test slices).
   const objects = [], items = [], configs = [];
-  const profiles = [], rangesBy = {};
+  const profiles = [], rangesBy = {}, earLines = [];
   let id = 1;
   const ox = plateX(pi);            // the plate's own coordinates
   const toPlate = new THREE.Matrix4().makeTranslation(-ox, 0, 0);
@@ -1692,6 +1706,17 @@ function build3mf(pi = cur) {
       const prof = partProfile(m);
       if (prof) profiles.push(LH.profileLine(itemNo, prof));
       if (m.ranges.length) rangesBy[itemNo] = m.ranges.map((r) => ({ from: r.from, to: r.to, settings: { layer_height: lhParams(m).layer, ...r.overrides } }));
+      // hand-placed brim ears (OrcaSlicer's "Painted" brim): bed points of this copy. The slicer re-centres each object
+      // on the middle of its parts' bounding box (z too) before using them, so they're given relative to that centre
+      // (checked by slicing: plate coordinates are dropped).
+      const ears = earsOf(m, mesh);
+      if (ears.length) {
+        const box = new THREE.Box3().setFromObject(mesh);
+        syncVolumes(m);
+        for (const vm of m.volMeshes || []) if (vm.userData.copy === mesh && vm.userData.volume.kind === "part") box.union(new THREE.Box3().setFromObject(vm));
+        const c = box.getCenter(new THREE.Vector3());
+        earLines.push(`object_id=${itemNo}|` + ears.map((e) => `${(e.x - c.x).toFixed(6)} ${(e.y - c.y).toFixed(6)} ${(-c.z).toFixed(6)} ${e.r.toFixed(6)}`).join(" "));
+      }
       const bodyId = id++;
       objects.push(`<object id="${bodyId}" type="model" name="${esc(m.name)}">${meshXml(m.geo, toPlate.clone().multiply(mesh.matrixWorld), m.paint, m.paintRaw)}</object>`);
       if (!m.volumes.length) {
@@ -1707,7 +1732,7 @@ function build3mf(pi = cur) {
         const mat = new THREE.Matrix4().makeTranslation(mesh.position.x - ox + v.pos.x, mesh.position.y + v.pos.y, v.pos.z);
         objects.push(`<object id="${vid}" type="model" name="${esc(v.name)}">${meshXml(v.geo, mat, null)}</object>`);
         comps.push(`<component objectid="${vid}"/>`);
-        parts.push(`    <part id="${vid}" subtype="${{ negative: "negative_part", modifier: "modifier_part", part: "normal_part" }[v.kind] || "modifier_part"}">\n      <metadata key="name" value="${esc(v.name)}"/>\n${v.kind === "negative" ? "" : metaXml(v.overrides, "      ")}    </part>\n`);
+        parts.push(`    <part id="${vid}" subtype="${{ negative: "negative_part", modifier: "modifier_part", part: "normal_part", enforcer: "support_enforcer", blocker: "support_blocker" }[v.kind] || "modifier_part"}">\n      <metadata key="name" value="${esc(v.name)}"/>\n${SETTINGLESS.has(v.kind) ? "" : metaXml(v.overrides, "      ")}    </part>\n`);
       }
       const objId = id++;
       objects.push(`<object id="${objId}" type="model" name="${esc(m.name)}"><components>${comps.join("")}</components></object>`);
@@ -1722,6 +1747,7 @@ function build3mf(pi = cur) {
     "3D/3dmodel.model": strToU8(model),
     "Metadata/model_settings.config": strToU8(`<?xml version="1.0" encoding="UTF-8"?>\n<config>\n${configs.join("\n")}\n</config>\n`),
     ...(profiles.length ? { "Metadata/layer_heights_profile.txt": strToU8(profiles.join("\n") + "\n") } : {}),
+    ...(earLines.length ? { "Metadata/brim_ear_points.txt": strToU8("brim_points_format_version=0\n" + earLines.join("\n") + "\n") } : {}),
     ...(plates[pi]?.gcodes?.length ? { "Metadata/custom_gcode_per_layer.xml": strToU8(CAL.customGcodeXml(plates[pi].gcodes, filamentSlots().map((f) => f.colour), multiColour())) } : {}),
     ...(Object.keys(rangesBy).length ? { "Metadata/layer_config_ranges.xml": strToU8(LH.rangesXml(rangesBy)) } : {}),
   }, { level: 6 });
@@ -2038,6 +2064,9 @@ const volumeItems = () => [
   ...["box", "cylinder", "sphere"].map((s) => ({ label: `Modifier: ${s}`, run: () => addVolume("modifier", s), disabled: !selected })),
   { head: "Negative part (cut away)" },
   ...["box", "cylinder", "sphere"].map((s) => ({ label: `Negative part: ${s}`, run: () => addVolume("negative", s), disabled: !selected })),
+  { head: "Supports" },
+  ...["box", "cylinder", "sphere"].map((s) => ({ label: `Support enforcer: ${s}`, run: () => addVolume("enforcer", s), disabled: !selected })),
+  ...["box", "cylinder", "sphere"].map((s) => ({ label: `Support blocker: ${s}`, run: () => addVolume("blocker", s), disabled: !selected })),
 ];
 const paintItems = () => [
   { head: "Paint on the part" },
@@ -2080,7 +2109,8 @@ function partMenu() {
     { label: "Simplify…", run: openSimplify, disabled: many },
     { sep: true },
     ...volumeItems().filter((it) => !it.head).slice(0, 1), { label: "Negative part: box", run: () => addVolume("negative", "box") },
-    { label: "Brim ears", check: selected?.overrides.brim_type === "brim_ears", run: toggleEars },
+    { label: "Brim ears: automatic", check: selected?.overrides.brim_type === "brim_ears", run: toggleEars },
+    { label: "Brim ears: place by hand…", run: startEars, disabled: many },
     { label: "Paint supports…", run: () => startPaint("supports") },
     { label: "Paint seam…", run: () => startPaint("seam") },
     { label: "Paint fuzzy skin…", run: () => startPaint("fuzzy") },
@@ -2109,7 +2139,7 @@ function updateToolbar() {
   for (const b of document.querySelectorAll("#plate-toolbar [data-needs]")) {
     b.disabled = b.dataset.needs === "one" ? !one || many : b.dataset.needs === "many" ? !many : b.dataset.needs === "parts" ? !models.length : b.dataset.needs === "sel" ? !one : false;
   }
-  $("tb-ears").classList.toggle("on", !!selected && selected.overrides.brim_type === "brim_ears");
+  $("tb-ears").classList.toggle("on", ears.on || (!!selected && ["brim_ears", "painted"].includes(selected.overrides.brim_type)));
   $("tb-paint").classList.toggle("on", paint.on);
 }
 
@@ -2120,7 +2150,7 @@ $("plate-toolbar").addEventListener("click", (e) => {
   const at = (items) => openMenu(r.left, r.bottom + 4, items);
   ({
     shape: () => at(shapeItems()), arrange, "orient-all": orientAll, split: splitSelected, merge: mergeSelected, cut: openCut,
-    mirror: () => at(mirrorItems()), volume: () => at(volumeItems()), ears: toggleEars,
+    mirror: () => at(mirrorItems()), volume: () => at(volumeItems()), ears: () => (ears.on ? stopEars() : at(earItems())),
     svg: addSvg, measure: () => setMeasure(!measure.on), boolean: () => at(booleanItems()), simplify: openSimplify,
     paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()), calib: () => at(calibItems()), face: () => setPickMode(!pickMode), text: addText,
   })[b.dataset.tool]?.();
@@ -2158,11 +2188,151 @@ function togglePrintable() {
 function toggleEars() {
   // OrcaSlicer's "Mouse ear" brim: small round tabs on sharp corners, found automatically
   const on = !(selected?.overrides.brim_type === "brim_ears");
-  for (const m of selection()) { if (on) m.overrides.brim_type = "brim_ears"; else delete m.overrides.brim_type; }
+  for (const m of selection()) { if (on) { m.overrides.brim_type = "brim_ears"; m.ears = null; } else delete m.overrides.brim_type; }
+  drawEars();
   if (selected) partEditor.model = null;
   plateChanged();
   refresh();
   flash(on ? "Brim ears on: tabs on the sharp corners (tune them under the part's own settings)" : "Brim ears off", "ok");
+}
+
+/* ---- brim ears placed by hand (OrcaSlicer's brim ears tool; its "Painted" brim type) */
+
+const ears = { on: false, m: null, group: null };
+const earItems = () => [
+  { head: "Brim ears" },
+  { label: "Automatic: on sharp corners", check: selected?.overrides.brim_type === "brim_ears", run: toggleEars },
+  { label: "Place them by hand…", run: startEars },
+  ...(selected?.ears?.length ? [{ label: `Remove the ${selected.ears.length} hand-placed ear${selected.ears.length > 1 ? "s" : ""}`, run: () => clearEars(selected) }] : []),
+];
+
+/** A part's hand-placed ears for one copy, on the bed: [{ x, y, r }] (ears the part's turned away from the bed are left out, as OrcaSlicer does). */
+function earsOf(m, mesh) {
+  if (!m.ears?.length || m.overrides.brim_type !== "painted") return [];
+  mesh.updateMatrixWorld(true);
+  return m.ears.map((e) => { const w = new THREE.Vector3(...e.p).applyMatrix4(mesh.matrixWorld); return { x: w.x, y: w.y, z: w.z, r: e.r }; })
+    .filter((e) => e.z < 0.5);
+}
+
+function drawEars() {
+  if (ears.group) { view.scene.remove(ears.group); ears.group.traverse((o) => o.geometry?.dispose()); ears.group = null; }
+  if (!view.scene || viewMode !== "model") return;
+  const g = new THREE.Group();
+  const mat = new THREE.MeshBasicMaterial({ color: css("--accent"), transparent: true, opacity: 0.55, depthWrite: false });
+  for (const m of models) for (const mesh of m.meshes) for (const e of earsOf(m, mesh)) {
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(e.r, e.r, 0.3, 40).rotateX(Math.PI / 2), mat);
+    disc.position.set(e.x, e.y, 0.16);
+    g.add(disc);
+  }
+  view.scene.add(g);
+  ears.group = g;
+}
+
+function startEars() {
+  const m = selected;
+  if (!m || selection().length > 1) return;
+  if (measure.on) setMeasure(false);
+  if (pickMode) setPickMode(false);
+  if (paint.on) stopPaint();
+  ears.on = true; ears.m = m;
+  $("ears-panel").hidden = false;
+  $("ears-name").textContent = m.name;
+  renderEarsPanel();
+  showHint("Tap by the part's edge to add an ear; tap an ear to remove it.");
+  updateToolbar();
+}
+
+function stopEars() {
+  ears.on = false; ears.m = null;
+  $("ears-panel").hidden = true;
+  showHint("");
+  updateToolbar();
+  refresh();
+}
+
+function renderEarsPanel() {
+  const n = ears.m?.ears?.length || 0;
+  $("ears-count").textContent = n ? `${n} ear${n > 1 ? "s" : ""}` : "No ears yet";
+}
+
+function clearEars(m) {
+  m.ears = null;
+  if (m.overrides.brim_type === "painted") delete m.overrides.brim_type;
+  partEditor.model = null;
+  drawEars(); plateChanged(); refresh();
+  if (ears.on) renderEarsPanel();
+}
+
+/** The nearest point to p on a copy's outline on the bed: { x, y, d } (from its bottom faces, else its lowest points' hull). */
+function nearestOnBottomOutline(m, mesh, p) {
+  const g = MO.bake(m.geo, mesh.matrixWorld), pos = g.getAttribute("position");
+  const zMin = (() => { let z = Infinity; for (let i = 0; i < pos.count; i++) z = Math.min(z, pos.getZ(i)); return z; })();
+  const key = (i) => `${pos.getX(i).toFixed(3)},${pos.getY(i).toFixed(3)}`;
+  const edges = new Map();
+  for (let t = 0; t < pos.count; t += 3) {
+    if (![0, 1, 2].every((j) => pos.getZ(t + j) < zMin + 0.05)) continue;     // a face on the bed
+    for (let j = 0; j < 3; j++) {
+      const a = t + j, b = t + (j + 1) % 3, ka = key(a), kb = key(b), k = ka < kb ? ka + "|" + kb : kb + "|" + ka;
+      const e = edges.get(k);
+      if (e) e.n++; else edges.set(k, { n: 1, a: [pos.getX(a), pos.getY(a)], b: [pos.getX(b), pos.getY(b)] });
+    }
+  }
+  let segs = [...edges.values()].filter((e) => e.n === 1).map((e) => [e.a, e.b]);
+  if (!segs.length) {        // no flat bottom (a sphere, a cone's tip): the outline of its lowest points
+    const pts = [];
+    for (let i = 0; i < pos.count; i++) if (pos.getZ(i) < zMin + 0.4) pts.push(new THREE.Vector2(pos.getX(i), pos.getY(i)));
+    if (pts.length < 3) return null;
+    const hull = convexHull2(pts);
+    segs = hull.map((v, i) => [[v.x, v.y], [hull[(i + 1) % hull.length].x, hull[(i + 1) % hull.length].y]]);
+  }
+  g.dispose();
+  let best = null;
+  for (const [a, b] of segs) {
+    const dx = b[0] - a[0], dy = b[1] - a[1], L = dx * dx + dy * dy;
+    const t = L ? Math.max(0, Math.min(1, ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / L)) : 0;
+    const x = a[0] + t * dx, y = a[1] + t * dy, d = Math.hypot(p.x - x, p.y - y);
+    if (!best || d < best.d) best = { x, y, d };
+  }
+  return best;
+}
+
+function convexHull2(pts) {
+  const s = [...pts].sort((a, b) => a.x - b.x || a.y - b.y), cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lo = [], hi = [];
+  for (const p of s) { while (lo.length >= 2 && cross(lo[lo.length - 2], lo[lo.length - 1], p) <= 0) lo.pop(); lo.push(p); }
+  for (const p of s.reverse()) { while (hi.length >= 2 && cross(hi[hi.length - 2], hi[hi.length - 1], p) <= 0) hi.pop(); hi.push(p); }
+  return lo.slice(0, -1).concat(hi.slice(0, -1));
+}
+
+function earTap(e, hit) {
+  const m = ears.m;
+  if (!m || !models.includes(m)) { stopEars(); return; }
+  const p = hit && hit.object.userData.model === m ? hit.point : bedPoint(e);
+  if (!p) return;
+  const r = Math.max(1, (+$("ears-size").value || 8) / 2);
+  // which copy: the nearest one (the ear is kept in the part's own coordinates, so every copy gets it)
+  let best = m.meshes[0], bd = Infinity;
+  for (const mesh of m.meshes) { const d = Math.hypot(mesh.position.x - p.x, mesh.position.y - p.y); if (d < bd) { bd = d; best = mesh; } }
+  best.updateMatrixWorld(true);
+  // an ear sits on the part's edge on the bed (OrcaSlicer drops ears that don't touch it): snap to the nearest point
+  const q = nearestOnBottomOutline(m, best, p);
+  // tapping an ear (or the edge right by it) removes it
+  const inv = best.matrixWorld.clone().invert();
+  for (const ear of m.ears || []) {
+    const w = new THREE.Vector3(...ear.p).applyMatrix4(best.matrixWorld);
+    if (w.z > 0.5) continue;
+    if (Math.hypot(w.x - p.x, w.y - p.y) <= Math.max(ear.r, 2) || (q && Math.hypot(w.x - q.x, w.y - q.y) <= Math.max(ear.r * 0.75, 1.5))) {
+      m.ears.splice(m.ears.indexOf(ear), 1);
+      if (!m.ears.length) clearEars(m); else { drawEars(); plateChanged(); renderEarsPanel(); }
+      return;
+    }
+  }
+  if (!q || q.d > 15) { flash("Tap closer to the part's edge on the bed.", "warn"); return; }
+  const local = new THREE.Vector3(q.x, q.y, 0).applyMatrix4(inv);
+  m.ears = [...(m.ears || []), { p: local.toArray().map((v) => +v.toFixed(4)), r }];
+  m.overrides.brim_type = "painted";
+  partEditor.model = null;
+  drawEars(); plateChanged(); renderEarsPanel();
 }
 
 function convertUnits(f) {
@@ -2381,7 +2551,7 @@ function addVolume(kind, shape) {
   const m = selected;
   if (!m) return;
   const s = m.size;
-  const v = { id: nextId++, kind, shape, name: `${kind === "negative" ? "Negative" : "Modifier"} ${shape}`,
+  const v = { id: nextId++, kind, shape, name: `${{ negative: "Negative", enforcer: "Support enforcer", blocker: "Support blocker" }[kind] || "Modifier"} ${shape}`,
     size: new THREE.Vector3(Math.max(2, s.x * 0.5), Math.max(2, s.y * 0.5), Math.max(2, s.z * 0.5)),
     pos: new THREE.Vector3(0, 0, s.z / 2), overrides: {} };
   if (kind === "modifier") v.overrides.sparse_infill_density = "40%";   // a sensible start, change it below
@@ -2390,7 +2560,27 @@ function addVolume(kind, shape) {
   selectedVolume = v;
   plateChanged();
   refresh();
-  flash(kind === "negative" ? "Negative part added: it is cut away from the part when slicing." : "Modifier added: its settings apply inside it.", "ok");
+  flash({ negative: "Negative part added: it is cut away from the part when slicing.",
+    enforcer: supportsOn(m) ? "Support enforcer added: overhangs inside it get supports." : "Support enforcer added. Supports are off for this part: turn them on (below) for it to work.",
+    blocker: "Support blocker added: no supports inside it." }[kind] || "Modifier added: its settings apply inside it.", kind === "enforcer" && !supportsOn(m) ? "warn" : "ok");
+}
+
+/** Whether a part gets supports (its own setting, else the print settings'). */
+function supportsOn(m) {
+  const raw = "enable_support" in m.overrides ? m.overrides.enable_support : processValue("enable_support");
+  return /^(1|true)$/.test(String((Array.isArray(raw) ? raw[0] : raw) ?? ""));
+}
+
+/** OrcaSlicer only uses enforcers with supports on: "only where enforced" is its manual support type. */
+function enforcedSupportsOnly(m) {
+  const raw = processValue("support_type");
+  const cur = String((Array.isArray(raw) ? raw[0] : raw) || "tree(auto)");
+  m.overrides.enable_support = "1";
+  m.overrides.support_type = /tree/.test(cur) ? "tree(manual)" : "normal(manual)";
+  partEditor.model = null;
+  plateChanged();
+  refresh();
+  flash(`Supports on for ${m.name}, only where enforced (support type "${m.overrides.support_type}").`, "ok");
 }
 
 function fillFilamentSelect(sel, current, allowDefault, hide = false) {
@@ -2409,14 +2599,21 @@ function renderVolumePanel() {
   if (!v) return;
   $("vol-name").textContent = v.name;
   $("vol-kind").textContent = { negative: "Negative part: cut away from the part", modifier: "Modifier: these settings apply inside it",
-    part: "Raised part: printed as part of it" }[v.kind] || "";
+    part: "Raised part: printed as part of it", enforcer: "Support enforcer: overhangs inside it get supports",
+    blocker: "Support blocker: no supports inside it" }[v.kind] || "";
+  // enforcers only work with supports on; "only where enforced" is OrcaSlicer's manual support type
+  const manual = selected && /manual/.test(String(selected.overrides.support_type ?? [processValue("support_type")].flat()[0] ?? ""));
+  $("vol-support-on").hidden = !(v.kind === "enforcer" && selected && (!supportsOn(selected) || !manual));
+  $("vol-support-on").classList.toggle("warn", !!selected && !supportsOn(selected));
+  $("vol-support-text").textContent = selected && !supportsOn(selected) ? "Supports are off for this part, so OrcaSlicer ignores the enforcer." : "Supports are also made automatically elsewhere on this part.";
+  $("vol-support-btn").textContent = selected && !supportsOn(selected) ? "Turn supports on for it, only where enforced" : "Support it only where enforced";
   $("vol-edit-text").hidden = !v.text;
   $("vol-edit-text").textContent = v.text?.svg ? "Edit SVG…" : "Edit text…";
-  fillFilamentSelect($("vol-filament"), slotOf(v.overrides), true, v.kind === "negative");
+  fillFilamentSelect($("vol-filament"), slotOf(v.overrides), true, SETTINGLESS.has(v.kind));
   const set = (id, val) => { if (!focusedInput(id)) $(id).value = +val.toFixed(2); };
   set("v-sx", v.size.x); set("v-sy", v.size.y); set("v-sz", v.size.z);
   set("v-px", v.pos.x); set("v-py", v.pos.y); set("v-pz", v.pos.z);
-  $("vol-settings-wrap").hidden = v.kind === "negative";
+  $("vol-settings-wrap").hidden = SETTINGLESS.has(v.kind);
   $("vol-settings-wrap").querySelector(".group-label").textContent = v.kind === "part" ? "Settings for it" : "Settings inside it";
   if (volEditor.vol !== v) { volEditor.vol = v; volEditor.render(); }
 }
@@ -3219,6 +3416,7 @@ function pasteModel() {
   if (src.paint) m.paint = { fine: src.paint.fine, ...Object.fromEntries(PAINT_KINDS.map((k) => [k, src.paint[k]?.slice() || null])) };
   m.paintRaw = src.paintRaw || null;
   m.text = src.text || null;
+  m.ears = src.ears ? JSON.parse(JSON.stringify(src.ears)) : null;
   m.vlh = src.vlh ? JSON.parse(JSON.stringify(src.vlh)) : null;
   if (m.vlh?.mode === "imported") m.vlh.pose = poseKey(m);
   m.ranges = (src.ranges || []).map((r) => ({ ...r, id: nextId++, overrides: { ...r.overrides } }));
@@ -3268,7 +3466,7 @@ function onKey(e) {
     }
   }
   switch (k) {
-    case "Escape": if (simp) closeSimplify(false); else if (measure.on) setMeasure(false); else if (textPlace) cancelTextPlace(); else if (paint.on) stopPaint(); else if (pickMode) setPickMode(false); else { selected = null; multi.clear(); selectedVolume = null; refresh(); } break;
+    case "Escape": if (simp) closeSimplify(false); else if (ears.on) stopEars(); else if (measure.on) setMeasure(false); else if (textPlace) cancelTextPlace(); else if (paint.on) stopPaint(); else if (pickMode) setPickMode(false); else { selected = null; multi.clear(); selectedVolume = null; refresh(); } break;
     case "Delete": case "Backspace": if (selected || multi.size) { handled(); $("obj-delete").click(); } return;
     case "a": case "A": if (models.length) { handled(); arrange(); } return;
     case "f": case "F": if (selected) { handled(); setPickMode(!pickMode); } return;
@@ -3418,6 +3616,7 @@ async function saveProject(asNew) {
     models: models.map((m, i) => ({
       mid: i, name: m.name, quat: m.quat.toArray(), scale: m.scale.toArray(), overrides: m.overrides, printable: m.printable !== false,
       text: m.text || null,
+      ears: m.ears || null,
       volumes: m.volumes.map((v) => ({ name: v.name, kind: v.kind, shape: v.shape, size: v.size.toArray(), pos: v.pos.toArray(), overrides: v.overrides, text: v.text || null,
         ...(v.shape === "mesh" ? { vmid: extraMeshes.push(v.base) - 1 + models.length, base_size: v.baseSize.toArray() } : {}) })),
       paint: m.paint ? Object.fromEntries(PAINT_KINDS.map((k) => [k, m.paint[k] ? b64(m.paint[k]) : null])) : null,
@@ -3470,6 +3669,7 @@ async function openProject(id) {
       if (Array.isArray(pm.scale)) m.scale.fromArray(pm.scale); else m.scale.setScalar(pm.scale || 1);
       m.overrides = pm.overrides || {};
       m.text = pm.text || null;
+      m.ears = Array.isArray(pm.ears) ? pm.ears : null;
       m.printable = pm.printable !== false;
       m.volumes = [];
       for (const v of pm.volumes || []) {
@@ -4105,6 +4305,8 @@ $("empty-calib").addEventListener("click", (e) => { e.stopPropagation(); const r
 $("obj-edit-text").addEventListener("click", editText);
 $("cut-clear-points").addEventListener("click", () => { if (cut) { cut.points = []; cutPreview(); } });
 $("vol-edit-text").addEventListener("click", editText);
+$("vol-support-btn").addEventListener("click", () => { if (selected) enforcedSupportsOnly(selected); });
+$("ears-done").addEventListener("click", stopEars);
 $("lg-pause").addEventListener("click", () => addLayerGcode("pause"));
 $("lg-custom").addEventListener("click", () => addLayerGcode("custom"));
 $("lg-filament").addEventListener("click", (e) => {
