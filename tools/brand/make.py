@@ -1,6 +1,6 @@
 """Build BicuSlicer's brand assets from the 16x16 pixel drawing in pixels.py (needs Pillow).
 
-Usage (from the repo root): python3 tools/brand/make.py app/static/brand docs
+Usage (from the repo root): python3 tools/brand/make.py app/static/brand docs [homeassistant/bicuslicer windows]
 Writes the favicons, app icons, header logo (logo.svg + logo-inline.txt to paste into index.html),
 the README banner and app/static/manifest.webmanifest.
 """
@@ -78,3 +78,27 @@ W, H = e2 + 40, 16*s + 48
               {"src": "/static/brand/favicon.svg", "sizes": "any", "type": "image/svg+xml"}]}, indent=1))
 for f in sorted(OUT.iterdir()): print(f.name, f.stat().st_size)
 print("banner", W, H)
+
+# optional: the Home Assistant add-on's icon (128 px) and logo (250 x 100), and the Windows app's icon (16-256 px)
+if len(sys.argv) > 3:
+    HA = Path(sys.argv[3]); HA.mkdir(parents=True, exist_ok=True)
+    tile(8).save(HA / "icon.png")                                              # 128 x 128
+    logo = Image.new("RGBA", (250, 100), (0, 0, 0, 0))
+    logo.paste(tile(5), (4, 10))                                               # 80 x 80
+    x = 96
+    for i, ch in enumerate("BicuSlicer"):
+        col = rgb("#8a94a6" if i < 4 else ACCENT) + (255,)
+        g = FONT[ch]
+        for r, row in enumerate(g):
+            for c, bit in enumerate(row):
+                if bit == "1":
+                    for dy in range(3):
+                        for dx in range(3):
+                            logo.putpixel((x + c * 3 + dx, 40 + r * 3 + dy), col)
+        x += (len(g[0]) + 1) * 3
+    logo.save(HA / "logo.png")
+if len(sys.argv) > 4:
+    WIN = Path(sys.argv[4]); WIN.mkdir(parents=True, exist_ok=True)
+    big = tile(16)                                                             # 256 x 256
+    big.save(WIN / "bicuslicer.ico", sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)])
+

@@ -1,0 +1,5 @@
+# Home Assistant add-on repository: add https://github.com/kylefutter97-prog/BicuSlicer under
+# Settings > Add-ons > Add-on store > ⋮ > Repositories. The add-on is in homeassistant/bicuslicer.
+name: BicuSlicer
+url: https://github.com/kylefutter97-prog/BicuSlicer
+maintainer: BicuSlicer

@@ -74,6 +74,12 @@ What the page shows is what gets sliced. The page bakes every placed part into o
 
 Your printers, presets and projects are in `%LOCALAPPDATA%\BicuSlicer\data` (the same layout as the Docker image's `/data`), and uninstalling keeps them. Windows 10/11, 64-bit (Windows on ARM runs it too). How it's built: [docs/WINDOWS.md](docs/WINDOWS.md).
 
+### In Home Assistant (add-on)
+
+[![Add the repository to Home Assistant](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fkylefutter97-prog%2FBicuSlicer)
+
+Or add `https://github.com/kylefutter97-prog/BicuSlicer` under **Settings → Add-ons → Add-on store → ⋮ → Repositories**, then install **BicuSlicer**. It opens in Home Assistant's sidebar (behind Home Assistant's login, and through its remote access), and keeps its data in the add-on's storage, included in backups. Needs a 64-bit system (x86-64 or ARM64) with about 2 GB of RAM free while slicing.
+
 ### With Docker
 
 You need [Docker](https://docs.docker.com/engine/install/) with the Compose plugin. On most Linux systems, `curl -fsSL https://get.docker.com | sudo sh` installs both.

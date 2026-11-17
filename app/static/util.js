@@ -2,6 +2,15 @@
 
 export const $ = (id) => document.getElementById(id);
 
+// In Home Assistant's sidebar (ingress) the page is served under a path, which the server puts in window.BICU_BASE
+// and adds to the page's own links; URLs the server returns at run time (user fonts, ...) get it here.
+export const BASE = window.BICU_BASE || "";
+export const withBase = (u) => (BASE && typeof u === "string" && u.startsWith("/") && !u.startsWith(BASE + "/") ? BASE + u : u);
+if (BASE) {
+  const f = window.fetch.bind(window);
+  window.fetch = (u, o) => f(withBase(u), o);
+}
+
 // iPhone/iPad: Safari only enables files whose type iOS knows, and iOS has no type for .stl/.3mf (or
 // .orca_printer), so an accept=".stl,.3mf" picker greys them out. Let iOS pick any file; the page checks
 // the extension itself. (iPadOS reports itself as a Mac, so also look for a touch screen.)

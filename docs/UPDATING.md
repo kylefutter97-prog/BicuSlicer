@@ -63,3 +63,11 @@ For the workflow to open pull requests, enable **Settings → Actions → Genera
 
 - **The smoke test fails at "settings catalogue parsed" or "per-part settings list".** OrcaSlicer changed the shape of its source code. Fix `app/tools/orca_data.py` or `app/tools/orca_scopes.py`. They check their own output and fail loudly rather than produce a wrong settings list.
 - **A slice check fails.** Look at the workflow's `bicuslicer.log` artifact, and try the same slice in the OrcaSlicer desktop app at that version. Sometimes OrcaSlicer changes a setting's meaning, and the settings diff usually shows which one.
+
+## Releasing a version
+
+1. Bump `version` in `homeassistant/bicuslicer/config.yaml` to the new version (Home Assistant installs the add-on
+   image with that tag, and only offers an update when it changes). The release workflow fails a check if they differ.
+2. Tag the release (`vX.Y.Z`). The workflows then publish the Docker image, the Home Assistant add-on image
+   (`bicuslicer-ha`), and the Windows installer (after its smoke test with OrcaSlicer for Windows passes).
+

@@ -33,6 +33,8 @@ ORCA_BIN = os.environ.get("ORCA_BIN") or next(
 ORCA_FETCH = os.environ.get("ORCA_FETCH", "") == "1"
 ORCA_VERSION = os.environ.get("ORCA_VERSION", "2.5.1")
 HOST = os.environ.get("HOST", "0.0.0.0")
+# Home Assistant add-on: served in Home Assistant's sidebar ("ingress") under /api/hassio_ingress/<token>/
+INGRESS = os.environ.get("INGRESS", "") == "1"
 WINDOWS = sys.platform == "win32"
 # child processes without a console window popping up (Windows)
 NOWIN = {"creationflags": 0x08000000} if WINDOWS else {}
@@ -1612,6 +1614,48 @@ async def static_revalidate(request, handler):
     return resp
 
 
+_INGRESS_PATH = re.compile(r"/api/hassio_ingress/[A-Za-z0-9_-]{1,200}")
+_ABS_URL = re.compile(r"""(["'`(])/(static/|api/|fonts/|ext/|manifest\.webmanifest)""")
+_TEXT_TYPES = {".html": "text/html", ".js": "text/javascript", ".css": "text/css", ".svg": "image/svg+xml",
+               ".webmanifest": "application/manifest+json"}
+_ingress_cache: dict = {}
+
+
+def ingress_prefix(request) -> str:
+    """The path Home Assistant serves this add-on under (its X-Ingress-Path header), only in that exact shape."""
+    if not INGRESS:
+        return ""
+    p = request.headers.get("X-Ingress-Path", "").rstrip("/")
+    return p if _INGRESS_PATH.fullmatch(p) else ""
+
+
+@web.middleware
+async def ingress_paths(request, handler):
+    """Under Home Assistant's ingress the page's own absolute links (/static/..., /api/...) must carry the ingress
+    path: the page and its scripts and styles are sent with it added, and the page adds it to any URL the server
+    hands it at run time (see util.js). Vendored libraries have no such links and are served as they are."""
+    prefix = ingress_prefix(request)
+    if prefix and request.method in ("GET", "HEAD"):
+        rel = "index.html" if request.path == "/" else "manifest.webmanifest" if request.path == "/manifest.webmanifest" else (request.path[len("/static/"):]
+              if request.path.startswith("/static/") and not request.path.startswith("/static/vendor/") else None)
+        if rel is not None:
+            f = (STATIC / rel).resolve()
+            ctype = _TEXT_TYPES.get(f.suffix.lower())
+            if ctype and f.is_relative_to(STATIC.resolve()) and f.is_file():
+                key = (str(f), f.stat().st_mtime_ns, prefix)
+                body = _ingress_cache.get(key)
+                if body is None:
+                    text = _ABS_URL.sub(lambda m: f"{m.group(1)}{prefix}/{m.group(2)}", f.read_text("utf-8"))
+                    if rel == "index.html":
+                        text = text.replace("<head>", f'<head>\n<script>window.BICU_BASE = "{prefix}";</script>', 1)
+                    body = text.encode("utf-8")
+                    if len(_ingress_cache) > 500:
+                        _ingress_cache.clear()
+                    _ingress_cache[key] = body
+                return web.Response(body=body, content_type=ctype, charset="utf-8", headers={"Cache-Control": "no-cache"})
+    return await handler(request)
+
+
 @web.middleware
 async def errors_as_text(request, handler):
     try:
@@ -1644,7 +1688,7 @@ def main():
                 meta.write_text(json.dumps(j, indent=1))
         except (OSError, ValueError):
             pass
-    app = web.Application(client_max_size=MAX_UPLOAD_MB * 1024 * 1024, middlewares=[static_revalidate, errors_as_text])
+    app = web.Application(client_max_size=MAX_UPLOAD_MB * 1024 * 1024, middlewares=[ingress_paths, static_revalidate, errors_as_text])
     app.add_routes(routes)
     app.on_startup.append(on_startup)
     app.router.add_static("/static/", STATIC, append_version=False)

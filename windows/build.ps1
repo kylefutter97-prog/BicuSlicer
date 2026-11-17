@@ -41,7 +41,7 @@ if ($LASTEXITCODE -ne 0) { throw "pip failed" }
 Copy-Item -Recurse "$root\app" "$dist\app"
 Get-ChildItem "$dist\app" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 Copy-Item "$root\windows\launcher.pyw" "$dist\launcher.pyw"
-Copy-Item "$root\app\static\brand\favicon.ico" "$dist\icon.ico"
+Copy-Item "$root\windows\bicuslicer.ico" "$dist\icon.ico"
 Copy-Item "$root\app\static\brand\icon-192.png" "$dist\icon.png"
 Copy-Item "$root\LICENSE" "$dist\LICENSE.txt"
 Copy-Item "$root\THIRD_PARTY_NOTICES.md" "$dist\THIRD_PARTY_NOTICES.md"

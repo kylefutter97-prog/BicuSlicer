@@ -1,5 +1,5 @@
 # Builds the BicuSlicer image for amd64 and arm64 and publishes it to GitHub's container registry
-# (ghcr.io/<owner>/bicuslicer). Runs when you push a version tag (v1.2.3) or start it by hand
+# (ghcr.io/<owner>/bicuslicer), and the Home Assistant add-on image on top of it (ghcr.io/<owner>/bicuslicer-ha). Runs when you push a version tag (v1.2.3) or start it by hand
 # from the Actions tab; ordinary pushes don't build, to save Actions minutes.
 name: Docker image
 
@@ -46,3 +46,36 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      # the Home Assistant add-on image (homeassistant/bicuslicer): the image just built, with ingress on
+      - id: meta_ha
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/bicuslicer-ha
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+      - uses: docker/build-push-action@v6
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          context: .
+          file: docker/homeassistant.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: BASE=ghcr.io/${{ github.repository_owner }}/bicuslicer:${{ steps.meta.outputs.version }}
+          push: true
+          tags: ${{ steps.meta_ha.outputs.tags }}
+          labels: ${{ steps.meta_ha.outputs.labels }}
+
+  addon-version:
+    # Home Assistant installs the add-on image tagged with homeassistant/bicuslicer/config.yaml's version
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: The add-on's version is this release's
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          have=$(sed -n 's/^version: *"\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' homeassistant/bicuslicer/config.yaml)
+          if [ "$have" != "$want" ]; then
+            echo "::error::homeassistant/bicuslicer/config.yaml says version $have, but this release is $want: bump it, or Home Assistant won't offer the update"
+            exit 1
+          fi
