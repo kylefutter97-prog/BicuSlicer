@@ -267,7 +267,7 @@ export function readProject3mf(files) {
   }
 
   const extra = {};
-  for (const n of ["Metadata/layer_heights_profile.txt", "Metadata/layer_config_ranges.xml"]) {
+  for (const n of ["Metadata/layer_heights_profile.txt", "Metadata/layer_config_ranges.xml", "Metadata/brim_ear_points.txt"]) {
     const key = Object.keys(files).find((f) => f.toLowerCase() === n.toLowerCase());
     if (key) extra[n.split("/")[1]] = text(files[key]);
   }
@@ -276,6 +276,20 @@ export function readProject3mf(files) {
 }
 
 /** Where plate i (0-based) of a project with n plates starts, as OrcaSlicer lays plates out (a grid, gaps of a fifth of the bed). */
+/** OrcaSlicer's brim_ear_points.txt: { objectNumber (1-based): [[x, y, z, radius], ...] } in each object's coordinates. */
+export function parseBrimEars(text) {
+  const out = {};
+  for (const line of String(text || "").split(/\r?\n/)) {
+    const m = line.match(/^object_id=(\d+)\|(.*)$/);
+    if (!m) continue;
+    const v = m[2].trim().split(/\s+/).map(Number);
+    const pts = [];
+    for (let i = 0; i + 3 < v.length; i += 4) if (v.slice(i, i + 4).every(Number.isFinite)) pts.push(v.slice(i, i + 4));
+    if (pts.length) out[+m[1]] = pts;
+  }
+  return out;
+}
+
 export function projectPlateOrigin(i, n, bed) {
   const v = Math.sqrt(n), r = Math.round(v);
   const cols = v > r ? r + 1 : r;

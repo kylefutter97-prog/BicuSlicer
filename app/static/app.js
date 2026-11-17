@@ -4,7 +4,7 @@ import { STLLoader } from "three/addons/loaders/STLLoader.js";
 import { OBJLoader } from "three/addons/loaders/OBJLoader.js";
 import { ThreeMFLoader } from "three/addons/loaders/3MFLoader.js";
 import { zipSync, unzipSync, strToU8 } from "three/addons/libs/fflate.module.js";
-import { readProject3mf, paintState, projectPlateOrigin, transformPositions } from "./project3mf.js";
+import { readProject3mf, paintState, projectPlateOrigin, transformPositions, parseBrimEars } from "./project3mf.js";
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
 import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, applyMachineEdits, filamentValue, filamentSlots, setFilamentSlots, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview, RANGE_CSS, fmtTime as fmtSecs } from "./preview.js";
@@ -340,6 +340,11 @@ function partsFromObject(ob, allowed, notes, layers = {}) {
       if (det > 0) m.paintRaw = raw;      // kept exactly as painted, for the slicer
     }
     if (firstSlot > 1) m.overrides.extruder = String(firstSlot);
+    // hand-placed brim ears: object coordinates, turned like the mesh and moved with its centre
+    if (layers.ears?.length) {
+      m.ears = layers.ears.map(([x, y, z, r]) => { const p = transformPositions(Float32Array.of(x, y, z), R); return { p: [+(p[0] - c.x).toFixed(4), +(p[1] - c.y).toFixed(4), +(p[2] - c.z).toFixed(4)], r }; });
+      if (String(m.overrides.brim_type ?? [processValue("brim_type")].flat()[0]) !== "painted") notes.add(`${ob.name}: its hand-placed brim ears only print with the brim type "Painted".`);
+    }
     for (const q of [...colourParts, ...ob.parts.filter((x) => ["modifier_part", "negative_part", "support_enforcer", "support_blocker"].includes(x.subtype))]) {
       const vg = geoFrom(transformPositions(q.pos, R), det < 0);
       const vc = centered(vg);
@@ -423,8 +428,9 @@ async function openProject3mf(name, proj) {
     const allowed = new Set(S.catalog?.part_options || []);
     const placed = new Map();          // our plate index -> copies placed there
     const profiles = LH.parseProfiles(proj.extra["layer_heights_profile.txt"]), rangesOf = LH.parseRanges(proj.extra["layer_config_ranges.xml"]);
+    const earsOfObj = parseBrimEars(proj.extra["brim_ear_points.txt"]);
     for (const [n, ob] of proj.objects.entries()) {
-      for (const { m, copies } of partsFromObject(ob, allowed, notes, { profile: profiles[n + 1], ranges: rangesOf[n + 1] })) {
+      for (const { m, copies } of partsFromObject(ob, allowed, notes, { profile: profiles[n + 1], ranges: rangesOf[n + 1], ears: earsOfObj[n + 1] })) {
         models.push(m);
         setCopies(m, copies.length);
         updateBox(m);
@@ -1717,15 +1723,12 @@ function build3mf(pi = cur) {
       const prof = partProfile(m);
       if (prof) profiles.push(LH.profileLine(itemNo, prof));
       if (m.ranges.length) rangesBy[itemNo] = m.ranges.map((r) => ({ from: r.from, to: r.to, settings: { layer_height: lhParams(m).layer, ...r.overrides } }));
-      // hand-placed brim ears (OrcaSlicer's "Painted" brim): bed points of this copy. The slicer re-centres each object
-      // on the middle of its parts' bounding box (z too) before using them, so they're given relative to that centre
-      // (checked by slicing: plate coordinates are dropped).
+      // hand-placed brim ears (OrcaSlicer's "Painted" brim): bed points of this copy. Found by slicing: a plain part is
+      // re-centred on its bounding box's middle (z too) before the points are used, so they're given relative to that;
+      // a part with modifiers / negative / raised parts (written as components) keeps plate coordinates.
       const ears = earsOf(m, mesh);
       if (ears.length) {
-        const box = new THREE.Box3().setFromObject(mesh);
-        syncVolumes(m);
-        for (const vm of m.volMeshes || []) if (vm.userData.copy === mesh && vm.userData.volume.kind === "part") box.union(new THREE.Box3().setFromObject(vm));
-        const c = box.getCenter(new THREE.Vector3());
+        const c = m.volumes.length ? new THREE.Vector3(ox, 0, 0) : new THREE.Box3().setFromObject(mesh).getCenter(new THREE.Vector3());
         earLines.push(`object_id=${itemNo}|` + ears.map((e) => `${(e.x - c.x).toFixed(6)} ${(e.y - c.y).toFixed(6)} ${(-c.z).toFixed(6)} ${e.r.toFixed(6)}`).join(" "));
       }
       const bodyId = id++;
@@ -2227,7 +2230,7 @@ const earItems = () => [
 
 /** A part's hand-placed ears for one copy, on the bed: [{ x, y, r }] (ears the part's turned away from the bed are left out, as OrcaSlicer does). */
 function earsOf(m, mesh) {
-  if (!m.ears?.length || m.overrides.brim_type !== "painted") return [];
+  if (!m.ears?.length || String(m.overrides.brim_type ?? [processValue("brim_type")].flat()[0]) !== "painted") return [];
   mesh.updateMatrixWorld(true);
   return m.ears.map((e) => { const w = new THREE.Vector3(...e.p).applyMatrix4(mesh.matrixWorld); return { x: w.x, y: w.y, z: w.z, r: e.r }; })
     .filter((e) => e.z < 0.5);
