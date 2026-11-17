@@ -54,7 +54,22 @@ jobs:
           if ($s.orca.status -ne "ready") { Get-Content "$env:RUNNER_TEMP\server.log","$env:RUNNER_TEMP\server.err" -Tail 80; throw "OrcaSlicer setup didn't finish: $($s.orca.error)" }
       - name: Smoke test (real slices with OrcaSlicer for Windows)
         shell: pwsh
-        run: python tools\smoke_test.py --url http://127.0.0.1:8000 --report "$env:RUNNER_TEMP\smoke.md"
+        run: |
+          python tools\smoke_test.py --url http://127.0.0.1:8000 --report "$env:RUNNER_TEMP\smoke.md" 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\smoke.out"
+          $code = $LASTEXITCODE
+          # failures as annotations: public on the run page and through GitHub's API, unlike the log
+          Get-Content "$env:RUNNER_TEMP\smoke.out" | Where-Object { $_ -like "FAIL *" } | Select-Object -First 15 | ForEach-Object { Write-Output "::error title=Smoke test::$($_ -replace '[\r\n]', ' ')" }
+          if ($code -ne 0) {
+            Get-ChildItem "$env:RUNNER_TEMP\data\jobs\*\meta.json" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
+              $m = Get-Content $_ -Raw | ConvertFrom-Json
+              $log = Join-Path $_.DirectoryName "slice.log"
+              $tail = if (Test-Path $log) { (Get-Content $log -Tail 12) -join " / " } else { "(no slice.log)" }
+              Write-Output "::error title=Job $($m.id) $($m.status)::error: $($m.error) | slice.log: $tail"
+            }
+            $srv = (Get-Content "$env:RUNNER_TEMP\server.log","$env:RUNNER_TEMP\server.err" -Tail 25 -ErrorAction SilentlyContinue) -join " / "
+            Write-Output "::error title=Server log::$srv"
+          }
+          exit $code
       - name: Report
         if: always()
         shell: pwsh
