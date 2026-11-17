@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=38">
+<link rel="stylesheet" href="/static/style.css?v=39">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -56,8 +56,11 @@
       <button class="tb" type="button" data-tool="orient-all" data-needs="parts" title="Auto-orient every part"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-rotate-3d"/></svg>Orient all</button>
       <button class="tb" type="button" id="tb-face" data-tool="face" data-needs="one" title="Lay on face: click the face that should go on the bed (F)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-arrow-down-to-line"/></svg>Lay on face</button>
       <span class="tb-sep"></span>
+      <button class="tb" type="button" id="tb-measure" data-tool="measure" data-needs="parts" title="Measure: tap corners, circles or faces (M)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-ruler"/></svg>Measure</button>
       <button class="tb" type="button" data-tool="split" data-needs="one" title="Split into separate parts"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-ungroup"/></svg>Split</button>
       <button class="tb" type="button" data-tool="merge" data-needs="many" title="Merge the selected parts (Shift-click to select several)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-group"/></svg>Merge</button>
+      <button class="tb" type="button" id="tb-boolean" data-tool="boolean" data-needs="sel" title="Boolean: combine parts, cut one with others, or keep their overlap"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-combine"/></svg>Boolean ▾</button>
+      <button class="tb" type="button" data-tool="simplify" data-needs="one" title="Simplify: fewer triangles, same shape"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-minimize-2"/></svg>Simplify</button>
       <button class="tb" type="button" data-tool="cut" data-needs="one" title="Cut at a height"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-scissors"/></svg>Cut</button>
       <button class="tb" type="button" data-tool="mirror" data-needs="one" title="Mirror"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-flip-horizontal-2"/></svg>Mirror ▾</button>
       <button class="tb" type="button" data-tool="volume" data-needs="one" title="Add a modifier or negative part"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-boxes"/></svg>Modifier ▾</button>
@@ -80,6 +83,7 @@
         <button class="btn" id="empty-calib" type="button"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-flask-conical"/></svg>Or print a calibration test ▾</button>
       </div>
       <div id="hint" class="hint" hidden></div>
+      <div id="measure-panel" class="measure-panel" hidden></div>
       <div id="busy" class="busy" hidden><span class="spinner"></span><span id="busy-text"></span></div>
       <div id="paint-panel" class="paint-panel" hidden>
         <div class="paint-head"><b id="paint-title">Paint</b><button class="btn" id="paint-done" type="button">Done</button></div>
@@ -457,6 +461,22 @@
   </form>
 </dialog>
 
+<dialog id="simplify-dlg" class="cut-dlg">
+  <form method="dialog">
+    <p><b>Simplify</b> <span class="muted" id="simp-name"></span></p>
+    <label class="field"><span>Keep <b id="simp-pct">50%</b> of the triangles</span>
+      <input type="range" id="simp-keep" min="2" max="98" step="1" value="50"></label>
+    <div class="calib-fields">
+      <label>Most it may change the shape <select id="simp-err">
+        <option value="0.02">0.02 mm (extra high detail)</option><option value="0.05">0.05 mm (high detail)</option>
+        <option value="0.1" selected>0.1 mm (medium)</option><option value="0.25">0.25 mm (low detail)</option><option value="1">1 mm (extra low)</option></select></label>
+    </div>
+    <p class="small" id="simp-out"></p>
+    <p class="muted small" id="simp-paint" hidden>Painting on this part (supports, seam, fuzzy skin, colours) is cleared by simplifying.</p>
+    <div class="actions"><button value="cancel" class="btn" type="submit">Cancel</button><button value="ok" class="primary" id="simp-ok" type="submit">Simplify</button></div>
+  </form>
+</dialog>
+
 <dialog id="import-dlg">
   <form method="dialog" class="import-dlg">
     <p class="imp-head"><span class="muted small">Open project</span><b id="imp-title"></b></p>
@@ -583,6 +603,7 @@
       <tr><td><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> / <kbd>Ctrl</kbd>+<kbd>Y</kbd></td><td>Redo</td></tr>
       <tr><th colspan="2">View</th></tr>
       <tr><td><kbd>Tab</kbd></td><td>Model ↔ Layers</td></tr>
+      <tr><td><kbd>M</kbd></td><td>Measure</td></tr>
       <tr><td><kbd>↑</kbd> / <kbd>↓</kbd> in Layers</td><td>Next / previous layer (<kbd>Shift</kbd>: 10)</td></tr>
       <tr><td><kbd>←</kbd> / <kbd>→</kbd> in Layers</td><td>Step through the layer's moves (<kbd>Shift</kbd>: 10)</td></tr>
       <tr><td><kbd>0</kbd> <kbd>1</kbd> <kbd>3</kbd> <kbd>4</kbd> <kbd>5</kbd> <kbd>6</kbd></td><td>Fit · top · front · back · left · right</td></tr>
@@ -629,6 +650,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=42"></script>
+<script type="module" src="/static/app.js?v=44"></script>
 </body>
 </html>

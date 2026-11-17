@@ -8,6 +8,8 @@ import { readProject3mf, paintState, projectPlateOrigin, transformPositions } fr
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
 import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, filamentValue, filamentSlots, setFilamentSlots, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
 import { Preview, RANGE_CSS, fmtTime as fmtSecs } from "./preview.js";
+import * as MS from "./measure.js";
+import * as MT from "./meshtools.js";
 import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
 import * as CAL from "./calibration.js";
@@ -64,6 +66,7 @@ const multi = new Set();      // extra parts picked with Shift/Ctrl-click (merge
 let selectedVolume = null;    // a modifier / negative part of the selected part, when one is picked in the list
 const selection = () => [...new Set([...multi, ...(selected ? [selected] : [])])].filter((m) => models.includes(m));
 let pickMode = false;
+const measure = { on: false, picks: [], group: null };     // the Measure tool
 let nextId = 1;
 
 const view = {};
@@ -969,7 +972,7 @@ function setViewMode(mode) {
   $("lg-row").hidden = mode !== "preview";
   $("lg-filament").hidden = !multiColour();
   if (mode !== "preview") $("lg-list").hidden = true; else renderLayerGcodes();
-  if (mode === "preview") setPickMode(false);
+  if (mode === "preview") { setPickMode(false); if (measure.on) setMeasure(false); }
   $("tip").textContent = mode === "preview"
     ? "Drag to turn the view · pinch or scroll to zoom · slide to step through the layers"
     : "Drag a part to move it · drag empty space to turn the view · pinch or scroll to zoom · press ? for keyboard shortcuts";
@@ -978,6 +981,7 @@ function setViewMode(mode) {
 function plateChanged(keepView = false) {
   // the plate or settings no longer match the last slice
   plateVersion++;
+  if (measure.picks.length) { measure.picks = []; drawMeasure(); }     // what was measured has moved
   scheduleHistory();
   updateProjectLabel();
   updatePlateTabs();
@@ -1353,7 +1357,7 @@ function wirePointer() {
         openMenu(sx, sy, partMenu());
       }, 550);
     }
-    if (pickMode || e.button > 0) return;
+    if (pickMode || measure.on || e.button > 0) return;
     const hit = hitPart(e);
     const p = hit && bedPoint(e);
     if (!hit || !p) return;
@@ -1409,6 +1413,7 @@ function wirePointer() {
   function onTap(e) {
     if (cut && cutTap(e)) return;
     const hit = hitPart(e);
+    if (measure.on) { measureTap(hit); return; }
     if (textPlace) {
       if (hit && hit.object.userData.model === textPlace.model && hit.face) placeText(hit);
       else flash(`Tap a face of ${textPlace.model.name}.`, "warn");
@@ -1462,8 +1467,79 @@ function wireContextMenu() {
   for (const target of [view.el, $("menu")]) target.addEventListener("contextmenu", (e) => e.preventDefault());
 }
 
+/* ---------------------------------------------------------------- measure (OrcaSlicer's Measure tool) */
+
+function setMeasure(on) {
+  measure.on = on && viewMode === "model" && models.length > 0;
+  if (measure.on) { if (pickMode) setPickMode(false); }
+  measure.picks = [];
+  drawMeasure();
+  $("tb-measure").classList.toggle("on", measure.on);
+  const hint = $("hint");
+  if (measure.on) { hint.hidden = false; hint.textContent = "Tap a corner, a circle's edge or a face; then another to measure between them. Esc to finish."; }
+  else if (!pickMode && !textPlace) hint.hidden = true;
+}
+
+function toScreen(v) {
+  const r = view.renderer.domElement.getBoundingClientRect(), p = v.clone().project(view.camera);
+  return { x: r.left + (p.x + 1) / 2 * r.width, y: r.top + (1 - p.y) / 2 * r.height };
+}
+
+function measureTap(hit) {
+  if (!hit || !hit.face) { measure.picks = []; drawMeasure(); return; }
+  const f = MS.pickFeature(hit.object, hit, toScreen);
+  f.part = hit.object.userData.model?.name || "";
+  measure.picks = measure.picks.length >= 2 ? [f] : [...measure.picks, f];
+  drawMeasure();
+}
+
+function drawMeasure() {
+  if (measure.group) { view.scene.remove(measure.group); measure.group.traverse((o) => { o.geometry?.dispose(); o.material?.dispose?.(); }); measure.group = null; }
+  const panel = $("measure-panel");
+  if (!measure.on || !measure.picks.length) {
+    panel.hidden = !measure.on;
+    panel.innerHTML = measure.on ? `<span class="m-note">Nothing picked yet.</span>` : "";
+    return;
+  }
+  const g = new THREE.Group();
+  const accent = new THREE.Color(css("--accent")), second = new THREE.Color("#f5a524");
+  measure.picks.forEach((p, i) => {
+    const col = i ? second : accent;
+    if (p.kind === "face") {
+      // the picked face, drawn just above the part
+      const tp = p.region.topo, arr = new Float32Array(p.region.tris.length * 9);
+      p.region.tris.forEach((t, k) => { for (let j = 0; j < 3; j++) { const v = tp.verts[tp.tv[t * 3 + j]]; arr.set([v.x, v.y, v.z], k * 9 + j * 3); } });
+      const geo = new THREE.BufferGeometry(); geo.setAttribute("position", new THREE.BufferAttribute(arr, 3));
+      const m = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: col, transparent: true, opacity: 0.7, side: THREE.DoubleSide, depthWrite: false, polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+      m.renderOrder = 4; g.add(m);
+    }
+    if (p.kind === "circle") {
+      const c = p.circle, pts = [];
+      const u = new THREE.Vector3().copy(Math.abs(c.normal.z) < 0.9 ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0)).cross(c.normal).normalize();
+      const w = new THREE.Vector3().crossVectors(c.normal, u);
+      for (let k = 0; k <= 64; k++) { const a = k / 64 * Math.PI * 2; pts.push(c.center.clone().addScaledVector(u, Math.cos(a) * c.radius).addScaledVector(w, Math.sin(a) * c.radius)); }
+      const ring = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: col, depthTest: false }));
+      ring.renderOrder = 5; g.add(ring);
+    }
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(0.6, 16, 12), new THREE.MeshBasicMaterial({ color: col, depthTest: false }));
+    dot.position.copy(p.point); dot.renderOrder = 6; g.add(dot);
+  });
+  if (measure.picks.length === 2) {
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([measure.picks[0].point, measure.picks[1].point]),
+      new THREE.LineDashedMaterial({ color: 0xffffff, dashSize: 1, gapSize: 0.6, depthTest: false }));
+    line.computeLineDistances(); line.renderOrder = 6; g.add(line);
+  }
+  view.scene.add(g);
+  measure.group = g;
+  const rows = measure.picks.length === 2 ? MS.measureBetween(...measure.picks) : MS.describe(measure.picks[0]);
+  panel.innerHTML = rows.map((r) => `<div class="m-row"><span>${esc(r.label)}</span><b>${esc(r.value)}</b></div>${r.detail ? `<div class="m-detail">${esc(r.detail)}</div>` : ""}`).join("")
+    + (measure.picks.length === 1 ? `<span class="m-note">Tap a second corner, circle or face to measure to it.</span>` : "");
+  panel.hidden = false;
+}
+
 function setPickMode(on) {
   pickMode = on && !!selected;
+  if (pickMode && measure.on) setMeasure(false);
   $("tb-face").classList.toggle("on", pickMode);
   $("tb-face").title = pickMode ? "Click the face that should go on the bed · click again or press Esc to cancel" : "Lay on face: click the face that should go on the bed (F)";
   const hint = $("hint");
@@ -1998,6 +2074,8 @@ function partMenu() {
     { label: "Split into parts", run: splitSelected, disabled: many },
     { label: "Cut…", run: openCut, disabled: many },
     { label: "Merge selected parts", run: mergeSelected, disabled: !many },
+    ...booleanItems().filter((it) => !it.head && !it.disabled),
+    { label: "Simplify…", run: openSimplify, disabled: many },
     { sep: true },
     ...volumeItems().filter((it) => !it.head).slice(0, 1), { label: "Negative part: box", run: () => addVolume("negative", "box") },
     { label: "Brim ears", check: selected?.overrides.brim_type === "brim_ears", run: toggleEars },
@@ -2027,7 +2105,7 @@ const plateMenu = () => [
 function updateToolbar() {
   const one = !!selected, many = selection().length > 1;
   for (const b of document.querySelectorAll("#plate-toolbar [data-needs]")) {
-    b.disabled = b.dataset.needs === "one" ? !one || many : b.dataset.needs === "many" ? !many : b.dataset.needs === "parts" ? !models.length : false;
+    b.disabled = b.dataset.needs === "one" ? !one || many : b.dataset.needs === "many" ? !many : b.dataset.needs === "parts" ? !models.length : b.dataset.needs === "sel" ? !one : false;
   }
   $("tb-ears").classList.toggle("on", !!selected && selected.overrides.brim_type === "brim_ears");
   $("tb-paint").classList.toggle("on", paint.on);
@@ -2041,6 +2119,7 @@ $("plate-toolbar").addEventListener("click", (e) => {
   ({
     shape: () => at(shapeItems()), arrange, "orient-all": orientAll, split: splitSelected, merge: mergeSelected, cut: openCut,
     mirror: () => at(mirrorItems()), volume: () => at(volumeItems()), ears: toggleEars,
+    measure: () => setMeasure(!measure.on), boolean: () => at(booleanItems()), simplify: openSimplify,
     paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()), calib: () => at(calibItems()), face: () => setPickMode(!pickMode), text: addText,
   })[b.dataset.tool]?.();
 });
@@ -2135,6 +2214,130 @@ function mergeSelected() {
   settle([]);
   flash(`Merged ${list.length} parts into one`, "ok");
 }
+
+/* ---- boolean (OrcaSlicer's Mesh boolean) and simplify */
+
+function booleanItems() {
+  const list = selection(), m = selected;
+  if (list.length > 1) {
+    return [{ head: "Boolean" },
+      { label: "Combine into one part (union)", run: () => booleanSelected("union") },
+      { label: `Cut the others out of ${list[0].name} (difference)`, run: () => booleanSelected("subtract") },
+      { label: "Keep only where they overlap (intersection)", run: () => booleanSelected("intersect") }];
+  }
+  const neg = m?.volumes?.some((v) => v.kind === "negative"), raised = m?.volumes?.some((v) => v.kind === "part");
+  return [{ head: "Boolean" },
+    ...(neg ? [{ label: "Apply its negative parts (cut them out for good)", run: () => applyVolumes("negative") }] : []),
+    ...(raised ? [{ label: "Join its raised parts into it", run: () => applyVolumes("part") }] : []),
+    { label: "Shift-click more parts to combine, cut or intersect them", disabled: true }];
+}
+
+/** The part's copies (or one copy) baked into plate axes. */
+const bakedCopies = (m) => m.meshes.map((mesh) => { mesh.updateMatrixWorld(true); return MO.bake(m.geo, mesh.matrixWorld); });
+
+async function booleanSelected(op) {
+  const list = selection();
+  if (list.length < 2) return;
+  const name = { union: "combined", subtract: "cut", intersect: "overlap" }[op];
+  busy(op === "union" ? "Combining…" : op === "subtract" ? "Cutting…" : "Intersecting…");
+  try {
+    const union = async (geos) => (geos.length === 1 ? geos[0] : MT.boolean("union", geos));
+    let g;
+    if (op === "union") g = await MT.boolean("union", list.flatMap(bakedCopies));
+    else if (op === "subtract") g = await MT.boolean("subtract", [await union(bakedCopies(list[0])), ...list.slice(1).flatMap(bakedCopies)]);
+    else g = await MT.boolean("intersect", await Promise.all(list.map((m) => union(bakedCopies(m)))));
+    const first = list[0];
+    for (const m of list) removeModel(m);
+    g.computeBoundingBox();
+    const c = g.boundingBox.getCenter(new THREE.Vector3());
+    const { m } = addModel(`${first.name} (${name})`, g, { x: c.x, y: c.y }, first);
+    selected = m; multi.clear();
+    settle([]);
+    const what = op === "union" ? `Combined ${list.length} parts into one` : op === "subtract" ? `Cut ${list.length - 1 > 1 ? `${list.length - 1} parts` : list[1].name} out of ${first.name}` : `Kept where ${list.length} parts overlap`;
+    flash(`${what} (${MT.triangleCount(g).toLocaleString()} triangles)`, "ok");
+  } catch (e) {
+    flash(`Couldn't do that: ${e.message}`, "err");
+  } finally { busy(null); }
+}
+
+/** Make a part's negative parts (cut out) or raised parts (joined) part of its mesh. */
+async function applyVolumes(kind) {
+  const m = selected;
+  if (!m) return;
+  const copy = m.meshes[0];
+  syncVolumes(m);
+  const vms = (m.volMeshes || []).filter((vm) => vm.userData.copy === copy && vm.userData.volume.kind === kind);
+  if (!vms.length) return;
+  busy(kind === "negative" ? "Cutting out its negative parts…" : "Joining its raised parts…");
+  try {
+    copy.updateMatrixWorld(true);
+    const base = MO.bake(m.geo, copy.matrixWorld);
+    const tools = vms.map((vm) => { vm.updateMatrixWorld(true); return MO.bake(vm.geometry, vm.matrixWorld); });
+    const g = await MT.boolean(kind === "negative" ? "subtract" : "union", [base, ...tools]);
+    g.translate(-copy.position.x, -copy.position.y, 0);
+    const used = new Set(vms.map((vm) => vm.userData.volume));
+    m.volumes = m.volumes.filter((v) => !used.has(v));
+    if (used.has(selectedVolume)) selectedVolume = null;
+    replaceGeo(m, g);
+    syncVolumes(m);
+    settle(m.meshes);
+    flash(kind === "negative" ? `Cut ${used.size} negative part${used.size > 1 ? "s" : ""} out of ${m.name}` : `Joined ${used.size} raised part${used.size > 1 ? "s" : ""} into ${m.name}`, "ok");
+  } catch (e) {
+    flash(`Couldn't do that: ${e.message}`, "err");
+  } finally { busy(null); }
+}
+
+let simp = null;          // the Simplify panel's state: { m, geo (before), result }
+function openSimplify() {
+  const m = selected;
+  if (!m || selection().length > 1) return;
+  if (simp) closeSimplify(false);
+  simp = { m, geo: m.geo, result: null, seq: 0 };
+  $("simp-name").textContent = m.name;
+  $("simp-paint").hidden = !(m.paintRaw && Object.keys(m.paintRaw).length);
+  $("simplify-dlg").returnValue = "";
+  $("simplify-dlg").show();
+  runSimplify();
+}
+
+let simpTimer = null;
+function runSimplify() {
+  if (!simp) return;
+  const keep = +$("simp-keep").value / 100, err = +$("simp-err").value, seq = ++simp.seq;
+  $("simp-pct").textContent = `${Math.round(keep * 100)}%`;
+  $("simp-out").textContent = "Working…";
+  clearTimeout(simpTimer);
+  simpTimer = setTimeout(async () => {
+    try {
+      const r = await MT.simplify(simp.geo, keep, err);
+      if (!simp || seq !== simp.seq) return;
+      simp.result = r;
+      for (const x of simp.m.meshes) x.geometry = r.geo;       // preview on the part
+      const before = MT.triangleCount(simp.geo);
+      $("simp-out").innerHTML = `${before.toLocaleString()} → <b>${r.triangles.toLocaleString()}</b> triangles · shape changed by up to ${r.error.toFixed(3)} mm`
+        + (r.triangles > before * keep * 1.15 ? `<br><span class="muted">It stopped there to stay within ${err} mm: allow more change to go further.</span>` : "");
+    } catch (e) { if (simp) $("simp-out").textContent = `Couldn't simplify: ${e.message}`; }
+  }, 120);
+}
+
+function closeSimplify(apply) {
+  const s = simp;
+  simp = null;
+  if ($("simplify-dlg").open) $("simplify-dlg").close();
+  if (!s) return;
+  for (const x of s.m.meshes) x.geometry = s.geo;
+  if (!apply || !s.result) return;
+  const m = s.m, before = MT.triangleCount(s.geo);
+  const keepT = { quat: m.quat.clone(), scale: m.scale.clone() };
+  replaceGeo(m, s.result.geo);
+  m.quat.copy(keepT.quat); m.scale.copy(keepT.scale);
+  updateBox(m);
+  settle(m.meshes);
+  flash(`Simplified ${m.name}: ${before.toLocaleString()} → ${s.result.triangles.toLocaleString()} triangles`, "ok");
+}
+$("simp-keep").addEventListener("input", runSimplify);
+$("simp-err").addEventListener("change", runSimplify);
+$("simplify-dlg").addEventListener("close", () => closeSimplify($("simplify-dlg").returnValue === "ok"));
 
 async function fixSelected() {
   const m = selected;
@@ -3008,10 +3211,11 @@ function onKey(e) {
     }
   }
   switch (k) {
-    case "Escape": if (textPlace) cancelTextPlace(); else if (paint.on) stopPaint(); else if (pickMode) setPickMode(false); else { selected = null; multi.clear(); selectedVolume = null; refresh(); } break;
+    case "Escape": if (simp) closeSimplify(false); else if (measure.on) setMeasure(false); else if (textPlace) cancelTextPlace(); else if (paint.on) stopPaint(); else if (pickMode) setPickMode(false); else { selected = null; multi.clear(); selectedVolume = null; refresh(); } break;
     case "Delete": case "Backspace": if (selected || multi.size) { handled(); $("obj-delete").click(); } return;
     case "a": case "A": if (models.length) { handled(); arrange(); } return;
     case "f": case "F": if (selected) { handled(); setPickMode(!pickMode); } return;
+    case "m": case "M": if (models.length) { handled(); setMeasure(!measure.on); } return;
     case "r": case "R":
       if (selected) { handled(); rotateModel(selected, new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 0, 1), (e.shiftKey ? -1 : 1) * Math.PI / 4)); }
       return;

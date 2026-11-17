@@ -14,7 +14,7 @@ from pathlib import Path
 VERSION = "0.460.0"
 ICONS = """undo-2 redo-2 file-plus shapes layout-grid rotate-3d arrow-down-to-line ungroup group scissors flip-horizontal-2
 boxes ear paintbrush flask-conical ellipsis plus save scan trash-2 folder-open printer sliders-horizontal layers box pause
-code type""".split()
+code type ruler combine minimize-2 image-plus replace""".split()
 
 OUT = Path(__file__).resolve().parents[2] / "app" / "static" / "icons.svg"
 
