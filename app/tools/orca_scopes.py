@@ -110,7 +110,7 @@ def main() -> int:
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     tmp = out / "scopes.json.tmp"
-    tmp.write_text(json.dumps(scopes, indent=1))
+    tmp.write_text(json.dumps(scopes, indent=1), encoding="utf-8")
     tmp.replace(out / "scopes.json")
     print(f"object {len(scopes['object'])}, region {len(scopes['region'])}, named-row options {len(scopes['lines'])}", file=sys.stderr)
     return 0

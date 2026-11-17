@@ -89,7 +89,7 @@ def orca_tag() -> str:
     """'v2.5.1' from the CLI's banner ('OrcaSlicer-2.5.1:')."""
     import subprocess
     try:
-        out = subprocess.run([ORCA_BIN, "--help"], capture_output=True, text=True, timeout=60, **NOWIN).stdout
+        out = subprocess.run([ORCA_BIN, "--help"], capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=60, **NOWIN).stdout
         m = re.search(r"OrcaSlicer-([\d.]+)", out)
         if m:
             return "v" + m.group(1)
@@ -116,13 +116,13 @@ async def ensure_orca_program() -> None:
 
 def load_settings() -> dict:
     try:
-        return json.loads(SETTINGS_FILE.read_text())
+        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {"setup_done": False, "machines": []}
 
 
 def save_settings(st: dict) -> None:
-    SETTINGS_FILE.write_text(json.dumps(st, indent=1))
+    SETTINGS_FILE.write_text(json.dumps(st, indent=1), encoding="utf-8")
 
 
 def build_library() -> None:
@@ -153,7 +153,7 @@ async def ensure_orca_data() -> None:
                 raise RuntimeError(out.decode("utf-8", "replace").strip().splitlines()[-1:] or "download failed")
         def scopes_ok():
             try:
-                return "lines" in json.loads((d / "scopes.json").read_text())
+                return "lines" in json.loads((d / "scopes.json").read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 return False
         if not scopes_ok():
@@ -255,7 +255,7 @@ def safe_stem(name: str) -> str:
 def save_meta(job: dict) -> None:
     d = JOBS / job["id"]
     d.mkdir(parents=True, exist_ok=True)
-    (d / "meta.json").write_text(json.dumps(job, indent=1))
+    (d / "meta.json").write_text(json.dumps(job, indent=1), encoding="utf-8")
 
 
 def prune_jobs() -> None:
@@ -275,7 +275,7 @@ def get_job(job_id: str) -> dict:
         meta = JOBS / job_id / "meta.json"
         if not meta.is_file():
             raise web.HTTPNotFound()
-        job = json.loads(meta.read_text())
+        job = json.loads(meta.read_text(encoding="utf-8"))
         jobs[job_id] = job
     return job
 
@@ -309,7 +309,7 @@ def build_datadir(job_dir: Path, picks: dict, edits: dict, filaments: list | Non
         if t == "filament" and filaments and COLOUR.match(str(filaments[0].get("colour") or "")):
             flat["filament_colour"] = [filaments[0]["colour"]]
         f = d / f"{name}.json"
-        f.write_text(json.dumps(flat, indent=4))
+        f.write_text(json.dumps(flat, indent=4), encoding="utf-8")
         files[t] = f
     files["filaments"] = [files["filament"]]
     for k, slot in enumerate((filaments or [])[1:], start=2):
@@ -318,7 +318,7 @@ def build_datadir(job_dir: Path, picks: dict, edits: dict, filaments: list | Non
         flat.update(compatible_printers=[], compatible_printers_condition="", compatible_prints=[], compatible_prints_condition="")
         flat.pop("post_process", None)
         f = dd / "user" / "default" / "filament" / f"filament {k}.json"
-        f.write_text(json.dumps(flat, indent=4))
+        f.write_text(json.dumps(flat, indent=4), encoding="utf-8")
         files["filaments"].append(f)
     return dd, files
 
@@ -518,7 +518,7 @@ async def run_slice(job: dict, form: dict) -> None:
         tj = job_dir / "thumbs.json"
         if tj.is_file():
             try:
-                thumbs = json.loads(tj.read_text())
+                thumbs = json.loads(tj.read_text(encoding="utf-8"))
                 for g in out.glob("plate_*.gcode"):
                     await asyncio.to_thread(inject_thumbnails, g, thumbs if isinstance(thumbs, dict) else {})
             except (ValueError, OSError):
@@ -526,14 +526,14 @@ async def run_slice(job: dict, form: dict) -> None:
         result = {}
         rj = out / "result.json"
         if rj.is_file():
-            result = json.loads(rj.read_text())
+            result = json.loads(rj.read_text(encoding="utf-8"))
         plates = []
         for g in sorted(out.glob("plate_*.gcode"), key=lambda x: int(re.findall(r"\d+", x.stem)[0])):
             n = int(re.findall(r"\d+", g.stem)[0])
             stats = {}
             sf = out / f"plate_{n}.statistics.json"
             if sf.is_file():
-                stats = json.loads(sf.read_text()).get("summary", {})
+                stats = json.loads(sf.read_text(encoding="utf-8")).get("summary", {})
             plates.append({"plate": n, "file": g.name, "time_s": stats.get("time"),
                            "weight_g": stats.get("weight"), "layers": stats.get("layer_count"),
                            "cost": stats.get("filament_cost"), "filament_mm": gcode_filament_mm(g), **gcode_multi_stats(g),
@@ -635,7 +635,7 @@ async def api_bed_type(request):
     allowed = BED_TYPES
     f = orca["dir"] / "catalog.json" if orca["dir"] else None
     if f and f.is_file():
-        allowed = tuple(json.loads(f.read_text())["options"].get("curr_bed_type", {}).get("enum_values") or BED_TYPES)
+        allowed = tuple(json.loads(f.read_text(encoding="utf-8"))["options"].get("curr_bed_type", {}).get("enum_values") or BED_TYPES)
     if bed not in allowed:
         raise web.HTTPBadRequest(text="Unknown plate type")
     st = load_settings()
@@ -655,10 +655,10 @@ async def api_catalog(_):
     sc = f.parent / "scopes.json"
     key = (str(f), f.stat().st_mtime, sc.stat().st_mtime if sc.is_file() else 0)
     if _catalog_cache.get("key") != key:
-        cat = json.loads(f.read_text())
+        cat = json.loads(f.read_text(encoding="utf-8"))
         part = []
         if sc.is_file():
-            scopes = json.loads(sc.read_text())
+            scopes = json.loads(sc.read_text(encoding="utf-8"))
             allowed = set(scopes.get("object", [])) | set(scopes.get("region", []))
             part = [k for k in cat.get("type_options", {}).get("process", []) if k in allowed and k in cat["options"]]
             # OrcaSlicer's named rows (e.g. "Cool Plate" = first-layer + other-layers bed temperature)
@@ -1481,7 +1481,7 @@ def project_dir(pid: str) -> Path:
 
 def project_summary(d: Path) -> dict | None:
     try:
-        j = json.loads((d / "project.json").read_text())
+        j = json.loads((d / "project.json").read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None
     return {"id": d.name, "name": j.get("name") or "Untitled", "created": j.get("created"), "updated": j.get("updated"),
@@ -1556,13 +1556,13 @@ async def api_project_save(request):
         prev = {}
         if (old / "project.json").is_file():
             try:
-                prev = json.loads((old / "project.json").read_text())
+                prev = json.loads((old / "project.json").read_text(encoding="utf-8"))
             except ValueError:
                 pass
         now = time.time()
         meta.update(id=pid, name=str(meta.get("name") or "Untitled").strip()[:120] or "Untitled",
                     created=prev.get("created") or now, updated=now, version=1)
-        (tmp / "project.json").write_text(json.dumps(meta))
+        (tmp / "project.json").write_text(json.dumps(meta), encoding="utf-8")
         if old.exists():
             trash = PROJECTS / f".old-{uuid.uuid4().hex}"
             old.rename(trash)
@@ -1588,10 +1588,10 @@ async def api_project_rename(request):
     name = str(body.get("name") or "").strip()[:120]
     if not name:
         raise web.HTTPBadRequest(text="Give the project a name")
-    j = json.loads(f.read_text())
+    j = json.loads(f.read_text(encoding="utf-8"))
     j["name"] = name
     j["updated"] = time.time()
-    f.write_text(json.dumps(j))
+    f.write_text(json.dumps(j), encoding="utf-8")
     return web.json_response(project_summary(d))
 
 
@@ -1682,10 +1682,10 @@ def main():
     # jobs that were mid-slice when the container stopped can't finish
     for meta in JOBS.glob("*/meta.json"):
         try:
-            j = json.loads(meta.read_text())
+            j = json.loads(meta.read_text(encoding="utf-8"))
             if j.get("status") in ("queued", "slicing"):
                 j.update(status="error", error="Interrupted by a restart; slice again")
-                meta.write_text(json.dumps(j, indent=1))
+                meta.write_text(json.dumps(j, indent=1), encoding="utf-8")
         except (OSError, ValueError):
             pass
     app = web.Application(client_max_size=MAX_UPLOAD_MB * 1024 * 1024, middlewares=[ingress_paths, static_revalidate, errors_as_text])

@@ -87,7 +87,7 @@ def fetch(root: Path, version: str, progress=lambda done, total: None) -> Path:
         inner[0].rmdir()
     if not (tmp / EXE[key.split("-")[0]]).is_file():
         raise RuntimeError("The OrcaSlicer download doesn't contain its program.")
-    (tmp / ".complete").write_text(f"{name}\n{sha}\n")
+    (tmp / ".complete").write_text(f"{name}\n{sha}\n", encoding="utf-8")
     shutil.rmtree(dest, ignore_errors=True)
     tmp.rename(dest)
     part.unlink(missing_ok=True)

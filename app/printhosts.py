@@ -52,13 +52,13 @@ class Store:
         self.data = {"printers": [], "active": None}
         if path.is_file():
             try:
-                self.data = json.loads(path.read_text())
+                self.data = json.loads(path.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 pass
 
     def save(self) -> None:
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(self.data, indent=1))
+        tmp.write_text(json.dumps(self.data, indent=1), encoding="utf-8")
         os.chmod(tmp, 0o600)
         tmp.replace(self.path)
 

@@ -50,13 +50,13 @@ def log(msg: str) -> None:
 
 def load_config() -> dict:
     try:
-        return {"port": 8000, "lan": False, **json.loads(CONFIG.read_text())}
+        return {"port": 8000, "lan": False, **json.loads(CONFIG.read_text(encoding="utf-8"))}
     except (OSError, ValueError):
         return {"port": 8000, "lan": False}
 
 
 def save_config(c: dict) -> None:
-    CONFIG.write_text(json.dumps(c, indent=1))
+    CONFIG.write_text(json.dumps(c, indent=1), encoding="utf-8")
 
 
 def port_free(port: int) -> bool:
@@ -110,7 +110,8 @@ class Server:
                     break
         env = {**os.environ, "DATA_DIR": str(DATA), "ORCA_FETCH": "1", "ORCA_VERSION": ORCA_VERSION,
                "ORCA_APP_DIR": str(BASE / "orca"), "PORT": str(self.cfg["port"]),
-               "HOST": "0.0.0.0" if self.cfg.get("lan") else "127.0.0.1", "PYTHONUNBUFFERED": "1"}
+               "HOST": "0.0.0.0" if self.cfg.get("lan") else "127.0.0.1", "PYTHONUNBUFFERED": "1",
+               "PYTHONUTF8": "1"}            # Windows' default text encoding isn't UTF-8
         DATA.mkdir(parents=True, exist_ok=True)
         log(f"starting the server on {env['HOST']}:{env['PORT']}")
         self.proc = subprocess.Popen([str(PYTHON), str(APP / "server.py")], cwd=str(APP), env=env,

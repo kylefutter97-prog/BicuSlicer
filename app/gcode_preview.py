@@ -76,7 +76,7 @@ def _list(v: str | None, sep=",") -> list[str]:
 def _feature_stats(stats: Path | None) -> dict:
     """Time, volume and weight per line type, from OrcaSlicer's statistics."""
     try:
-        f = json.loads(stats.read_text()).get("summary", {}).get("features", {}) if stats and stats.is_file() else {}
+        f = json.loads(stats.read_text(encoding="utf-8")).get("summary", {}).get("features", {}) if stats and stats.is_file() else {}
         return {k: {kk: float(v.get(kk) or 0) for kk in ("time", "volume", "weight")} for k, v in f.items() if isinstance(v, dict)}
     except (ValueError, OSError, AttributeError, TypeError):
         return {}
@@ -87,7 +87,7 @@ def _layer_times(stats: Path | None, z_list: list[float]) -> tuple[list[float] |
     if not stats or not stats.is_file():
         return None, None
     try:
-        d = json.loads(stats.read_text())
+        d = json.loads(stats.read_text(encoding="utf-8"))
         layers = [(float(x.get("z", 0)), float(x.get("time", 0))) for x in d.get("layers", [])]
         total = d.get("summary", {}).get("time")
     except (ValueError, OSError, TypeError, AttributeError):
