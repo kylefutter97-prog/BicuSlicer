@@ -620,6 +620,16 @@ async def api_state(_):
     })
 
 
+@routes.post("/api/setup/retry")
+async def api_setup_retry(request):
+    """Try OrcaSlicer's first-time setup again after it failed (a download that didn't work), without a restart."""
+    if orca["status"] != "failed":
+        return web.json_response({"orca": {k: orca[k] for k in ("tag", "status", "error", "progress")}})
+    orca.update(status="starting", error=None, progress=None)
+    request.app["orca_task"] = asyncio.get_running_loop().create_task(ensure_orca_data())
+    return web.json_response({"orca": {k: orca[k] for k in ("tag", "status", "error", "progress")}})
+
+
 BED_TYPES = ("Cool Plate", "Engineering Plate", "High Temp Plate", "Textured PEI Plate", "Textured Cool Plate", "Supertack Plate")
 
 

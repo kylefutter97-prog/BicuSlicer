@@ -266,7 +266,7 @@ your own build of the same interface (point `OCCT_URL` at it and update the chec
 
 The Windows installer contains Python 3.12 (python.org's embeddable build; Python Software Foundation License) and
 these packages, each under its own licence: aiohttp, aiohappyeyeballs, aiosignal, frozenlist, multidict, propcache
-and yarl (Apache-2.0), attrs and idna (MIT / BSD-3-Clause), six (MIT), Pillow (MIT-CMU) and pystray (LGPL-3.0, used
+and yarl (Apache-2.0), attrs and idna (MIT / BSD-3-Clause), six (MIT), truststore (MIT), Pillow (MIT-CMU) and pystray (LGPL-3.0, used
 unmodified as a separate Python package). Their licence files are in the installed `python\Lib\site-packages`.
 OrcaSlicer is not in the installer: the app downloads OrcaSlicer's official Windows build on first start.
 

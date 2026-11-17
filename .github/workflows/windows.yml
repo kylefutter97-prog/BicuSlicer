@@ -31,6 +31,12 @@ jobs:
       - name: Build
         shell: pwsh
         run: windows\build.ps1 -Version ${{ steps.v.outputs.version }}
+      - name: HTTPS is checked by Windows itself (truststore, for downloads behind company proxies etc.)
+        shell: pwsh
+        run: |
+          $m = build\BicuSlicer\python\python.exe -c "import ssl; print(type(ssl.create_default_context()).__module__)"
+          Write-Host "SSL context from: $m"
+          if ($m -notlike "truststore*") { Write-Output "::error title=truststore::the app's Python isn't using Windows' certificate checks ($m)"; exit 1 }
       - name: The launcher starts the server (self-test)
         shell: pwsh
         run: |

@@ -736,15 +736,24 @@ export function setupStatus(o = S.state?.orca) {
   if (!o || o.status === "ready") return "";
   if (o.status === "installing") return `Setting up for the first time: downloading OrcaSlicer${o.progress != null ? ` (${Math.round(o.progress * 100)}% of about 200 MB)` : ""}. This only happens once.`;
   if (o.status === "downloading") return "Setting up: downloading OrcaSlicer's printer library (about 25 MB)…";
-  if (o.status === "failed") return `Setup failed: ${o.error || "unknown error"}. Check the internet connection and restart BicuSlicer.`;
+  if (o.status === "failed") return `Setup failed: ${String(o.error || "unknown error").replace(/[.\s]+$/, "")}. Check the internet connection, then try again.`;
   return "Starting OrcaSlicer…";
 }
 function showSetupStatus() {
   const el = $("wiz-status"), t = setupStatus();
   if (!el) return;
   el.hidden = !t;
-  el.textContent = t;
-  el.classList.toggle("err", S.state?.orca?.status === "failed");
+  const failed = S.state?.orca?.status === "failed";
+  el.innerHTML = esc(t) + (failed ? ` <button class="link" type="button" id="wiz-retry">Try again</button>` : "");
+  el.classList.toggle("err", failed);
+  if (failed) $("wiz-retry").onclick = async () => {
+    try {
+      await postJson("/api/setup/retry", {});
+      S.state.orca.status = "starting";
+      showSetupStatus();
+      await loadCatalog();
+    } catch (e) { toast(e.message, "err"); }
+  };
 }
 
 async function loadCatalog() {

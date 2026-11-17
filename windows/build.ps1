@@ -41,6 +41,8 @@ if ($LASTEXITCODE -ne 0) { throw "pip failed" }
 Copy-Item -Recurse "$root\app" "$dist\app"
 Get-ChildItem "$dist\app" -Recurse -Directory -Filter "__pycache__" | Remove-Item -Recurse -Force
 Copy-Item "$root\windows\launcher.pyw" "$dist\launcher.pyw"
+# every process in the app checks HTTPS certificates with Windows itself (see the file)
+Copy-Item "$root\windows\sitecustomize.py" "$dist\python\Lib\site-packages\sitecustomize.py"
 Copy-Item "$root\windows\bicuslicer.ico" "$dist\icon.ico"
 Copy-Item "$root\app\static\brand\icon-192.png" "$dist\icon.png"
 Copy-Item "$root\LICENSE" "$dist\LICENSE.txt"
