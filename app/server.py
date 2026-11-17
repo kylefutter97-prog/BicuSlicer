@@ -853,6 +853,10 @@ async def api_setup(request):
         except P.PresetError as e:
             raise web.HTTPBadRequest(text=str(e))
         created = name
+    # setup is only finished once there's a printer to slice for: a chosen one, a custom one, or presets of your own
+    has_printer = bool(st["machines"] or created or L.user["machine"] or L.orca["machine"])
+    if body.get("done", True) and not has_printer:
+        raise web.HTTPBadRequest(text="Choose at least one printer (or describe a custom one)")
     if body.get("done", True):
         st["setup_done"] = True
     save_settings(st)

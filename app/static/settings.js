@@ -675,6 +675,7 @@ async function loadVendors() {
 }
 
 function renderVendors() {
+  $("wiz-vendor-done").disabled = !W.chosen.size;          // nothing chosen: nothing to finish with
   const f = W.filter.toLowerCase();
   const html = W.vendors.map((v) => {
     const models = v.models.filter((m) => !f || `${v.name} ${m.model}`.toLowerCase().includes(f));
@@ -710,6 +711,7 @@ function wireWizard() {
     if (!p) return;
     if (e.target.checked) W.chosen.add(p); else W.chosen.delete(p);
     $("wiz-count").textContent = W.chosen.size ? `${W.chosen.size} printer preset${W.chosen.size === 1 ? "" : "s"} chosen` : "";
+    $("wiz-vendor-done").disabled = !W.chosen.size;
   });
   $("wiz-vendor-done").addEventListener("click", () => wizFinish({ machines: [...W.chosen], done: true }));
   $("wiz-custom-form").addEventListener("submit", (e) => {
@@ -801,7 +803,8 @@ export async function initSettings(changeCb) {
   S.state = S.state || await apiJson("/api/state");
   if (!S.state.setup_done) openWizard(false);
   await catalog;
-  if (!S.state.setup_done && !$("wiz").open) openWizard(false);
+  // no printer to slice for (setup never finished, or finished with none): offer the library again
+  if ((!S.state.setup_done || !S.lists.machine?.length) && !$("wiz").open) openWizard(false);
 }
 
 export function machineValues() {

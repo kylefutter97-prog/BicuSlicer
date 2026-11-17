@@ -44,6 +44,17 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; Flags: unchecked
 [Run]
 Filename: "{app}\python\pythonw.exe"; Parameters: """{app}\launcher.pyw"""; WorkingDir: "{app}"; Description: "Start BicuSlicer now"; Flags: postinstall nowait skipifsilent
 
+[Code]
+// Stop a running BicuSlicer before its files are replaced (its launcher and server run on the Python in {app}),
+// so an update doesn't leave the old server holding the port.
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  Code: Integer;
+begin
+  Exec('powershell.exe', '-NoProfile -ExecutionPolicy Bypass -Command "Get-Process python,pythonw -ErrorAction SilentlyContinue | Where-Object { $_.Path -like ''' + ExpandConstant('{app}') + '\*'' } | Stop-Process -Force"', '', SW_HIDE, ewWaitUntilTerminated, Code);
+  Result := '';
+end;
+
 [UninstallRun]
 ; stop a running BicuSlicer: only the Python processes that run from this install folder
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -Command ""Get-Process python,pythonw -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -like '{app}\*' }} | Stop-Process -Force"""; Flags: runhidden; RunOnceId: "StopBicuSlicer"
