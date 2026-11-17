@@ -1,0 +1,77 @@
+# Builds the BicuSlicer Windows app (windows/build.ps1) and tests it before publishing: the built app's own Python
+# runs the server the way the launcher does, which downloads OrcaSlicer for Windows on first start, and
+# tools/smoke_test.py then slices for real and checks the G-code. Only if that passes is the installer attached to
+# the GitHub release for the tag. Started by hand (Actions tab), it builds and tests without publishing: the installer
+# is kept as a workflow artifact to try.
+name: Windows app
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Version
+        id: v
+        shell: pwsh
+        run: |
+          $v = if ("${{ github.ref_type }}" -eq "tag") { "${{ github.ref_name }}".TrimStart("v") } else { "0.0.0-test.${{ github.run_number }}" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+      - name: Build
+        shell: pwsh
+        run: windows\build.ps1 -Version ${{ steps.v.outputs.version }}
+      - name: The launcher starts the server (self-test)
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = "$env:RUNNER_TEMP\appdata"
+          build\BicuSlicer\python\python.exe build\BicuSlicer\launcher.pyw --selftest
+          if ($LASTEXITCODE -ne 0) { Get-Content "$env:LOCALAPPDATA\BicuSlicer\bicuslicer.log" -Tail 80; throw "launcher self-test failed" }
+      - name: Start the built app's server (downloads OrcaSlicer for Windows)
+        shell: pwsh
+        run: |
+          $data = "$env:RUNNER_TEMP\data"
+          New-Item -ItemType Directory -Force $data | Out-Null
+          $env:DATA_DIR = $data; $env:ORCA_FETCH = "1"; $env:ORCA_VERSION = "2.5.1"; $env:ORCA_APP_DIR = "$env:RUNNER_TEMP\orca"
+          $env:HOST = "127.0.0.1"; $env:PORT = "8000"; $env:PYTHONUNBUFFERED = "1"
+          Start-Process -FilePath build\BicuSlicer\python\python.exe -ArgumentList "build\BicuSlicer\app\server.py" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err" -NoNewWindow
+          $deadline = (Get-Date).AddMinutes(25)
+          do {
+            Start-Sleep 10
+            try { $s = Invoke-RestMethod http://127.0.0.1:8000/api/state; Write-Host "OrcaSlicer: $($s.orca.status) $($s.orca.progress) $($s.orca.error)" } catch { Write-Host "not answering yet" }
+          } until (($s.orca.status -eq "ready") -or ($s.orca.status -eq "failed") -or ((Get-Date) -gt $deadline))
+          if ($s.orca.status -ne "ready") { Get-Content "$env:RUNNER_TEMP\server.log","$env:RUNNER_TEMP\server.err" -Tail 80; throw "OrcaSlicer setup didn't finish: $($s.orca.error)" }
+      - name: Smoke test (real slices with OrcaSlicer for Windows)
+        shell: pwsh
+        run: python tools\smoke_test.py --url http://127.0.0.1:8000 --report "$env:RUNNER_TEMP\smoke.md"
+      - name: Report
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:RUNNER_TEMP\smoke.md") { Get-Content "$env:RUNNER_TEMP\smoke.md" >> $env:GITHUB_STEP_SUMMARY }
+          if (Test-Path "$env:RUNNER_TEMP\server.log") { Copy-Item "$env:RUNNER_TEMP\server.log","$env:RUNNER_TEMP\server.err" build\ -ErrorAction SilentlyContinue }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: BicuSlicer-Windows-${{ steps.v.outputs.version }}
+          path: |
+            build/BicuSlicer-Setup-*.exe
+            build/server.log
+            build/server.err
+          if-no-files-found: warn
+      - name: Attach the installer to the release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: build/BicuSlicer-Setup-*.exe

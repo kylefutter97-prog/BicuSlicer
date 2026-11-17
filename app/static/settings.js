@@ -664,7 +664,7 @@ function wizStep(step) {
 
 async function loadVendors() {
   if (S.state?.orca?.status !== "ready") {
-    $("wiz-vendors").innerHTML = `<p class="muted">The vendor library is still downloading (${esc(S.state?.orca?.status || "")}). Try again in a minute.</p>`;
+    $("wiz-vendors").innerHTML = `<p class="muted">${esc(setupStatus() || "The vendor library is still downloading.")} Try again in a minute.</p>`;
     return;
   }
   if (!W.vendors) {
@@ -731,12 +731,29 @@ function setMode(m) {
   if ($("pm").open) PM.editor.render();
 }
 
+/** What first-time setup is doing, for people waiting on it (the Windows app downloads OrcaSlicer itself first). */
+export function setupStatus(o = S.state?.orca) {
+  if (!o || o.status === "ready") return "";
+  if (o.status === "installing") return `Setting up for the first time: downloading OrcaSlicer${o.progress != null ? ` (${Math.round(o.progress * 100)}% of about 200 MB)` : ""}. This only happens once.`;
+  if (o.status === "downloading") return "Setting up: downloading OrcaSlicer's printer library (about 25 MB)…";
+  if (o.status === "failed") return `Setup failed: ${o.error || "unknown error"}. Check the internet connection and restart BicuSlicer.`;
+  return "Starting OrcaSlicer…";
+}
+function showSetupStatus() {
+  const el = $("wiz-status"), t = setupStatus();
+  if (!el) return;
+  el.hidden = !t;
+  el.textContent = t;
+  el.classList.toggle("err", S.state?.orca?.status === "failed");
+}
+
 async function loadCatalog() {
   for (let i = 0; ; i++) {
     S.state = await apiJson("/api/state");
+    showSetupStatus();
     if (S.state.orca.status === "ready" || S.state.orca.status === "failed") break;
     processEditor?.render();
-    await new Promise((r) => setTimeout(r, Math.min(2000 + i * 1000, 8000)));
+    await new Promise((r) => setTimeout(r, S.state.orca.status === "installing" ? 1500 : Math.min(2000 + i * 1000, 8000)));
   }
   if (S.state.orca.status === "ready") {
     [S.catalog, S.defaults] = await Promise.all([apiJson("/api/catalog"), apiJson("/api/defaults")]);

@@ -58,13 +58,23 @@ What the page shows is what gets sliced. The page bakes every placed part into o
 
 ## Requirements
 
-- Docker on an x86-64 or ARM64 host (e.g. a Raspberry Pi 5), or Docker Desktop on Windows or macOS. The image is about 1.8 GB and contains OrcaSlicer's slicing engine: no separate OrcaSlicer install is needed.
+- Windows 10/11 (the Windows app), or Docker on an x86-64 or ARM64 host (e.g. a Raspberry Pi 5), or Docker Desktop on macOS. The image is about 1.8 GB and contains OrcaSlicer's slicing engine: no separate OrcaSlicer install is needed.
 - Optional: an OrcaSlicer desktop data folder, if you want its user presets available. For example, the linuxserver/orcaslicer desktop container's `/config/.config/OrcaSlicer`. Without one, start from the vendor library or a custom printer.
 - Internet access on first start, to fetch OrcaSlicer's settings catalogue and vendor profiles (see below).
 - A Klipper printer with Moonraker, reachable from the container.
 - About 1–2 GB of RAM while a slice runs. Jobs are sliced one at a time.
 
 ## Quick start
+
+### On Windows (no Docker needed)
+
+1. Download **BicuSlicer-Setup-x.y.z.exe** from the [latest release](https://github.com/kylefutter97-prog/BicuSlicer/releases/latest) and run it. It installs for your user only (no administrator rights).
+2. BicuSlicer starts and opens in your browser. On the first start it downloads OrcaSlicer's official Windows build (about 200 MB, checked against a pinned fingerprint) and its printer library (about 25 MB); the setup window shows the progress.
+3. It runs in the background with an icon in the system tray: **Open BicuSlicer**, **Let phones on my Wi-Fi use it** (then open the address it shows on your phone; allow it if Windows asks about the firewall), **Start with Windows**, the data folder and the log.
+
+Your printers, presets and projects are in `%LOCALAPPDATA%\BicuSlicer\data` (the same layout as the Docker image's `/data`), and uninstalling keeps them. Windows 10/11, 64-bit (Windows on ARM runs it too). How it's built: [docs/WINDOWS.md](docs/WINDOWS.md).
+
+### With Docker
 
 You need [Docker](https://docs.docker.com/engine/install/) with the Compose plugin. On most Linux systems, `curl -fsSL https://get.docker.com | sudo sh` installs both.
 

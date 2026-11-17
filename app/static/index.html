@@ -346,6 +346,7 @@
   <div class="sheet-head"><b>Set up your printers</b><button class="btn icon" id="wiz-close" type="button" aria-label="Close">✕</button></div>
   <div class="wiz-body">
     <div data-step="intro">
+      <p class="msg small" id="wiz-status" hidden></p>
       <p>BicuSlicer slices with OrcaSlicer's engine. Pick your printer from OrcaSlicer's library of 70+ brands, or describe a custom one. You can add more later under <b>Profiles</b>.</p>
       <div class="wiz-choices">
         <button class="choice" type="button" data-go="vendor"><b>Choose from the library</b><span class="muted small">Voron, Prusa, Bambu Lab, Creality, Sovol, Elegoo, …</span></button>
@@ -717,6 +718,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=50"></script>
+<script type="module" src="/static/app.js?v=51"></script>
 </body>
 </html>

@@ -1,0 +1,14 @@
+# The Windows app's Python packages (Python 3.12, 64-bit Windows), pinned by version and wheel hash.
+# Used by build.ps1: pip install --require-hashes --only-binary=:all: --platform win_amd64 --python-version 3.12
+aiohttp==3.11.18 --hash=sha256:364329f319c499128fd5cd2d1c31c44f234c58f9b96cc57f743d16ec4f3238c8
+aiohappyeyeballs==2.6.1 --hash=sha256:f349ba8f4b75cb25c99c5c2d84e997e485204d2902a9597802b0371f09331fb8
+aiosignal==1.3.2 --hash=sha256:45cde58e409a301715980c2b01d0c28bdde3770d8290b5eb2173759d9acb31a5
+attrs==25.3.0 --hash=sha256:427318ce031701fea540783410126f03899a97ffc6f61596ad581ac2e40e3bc3
+frozenlist==1.6.0 --hash=sha256:2bdfe2d7e6c9281c6e55523acd6c2bf77963cb422fdc7d142fb0cb6621b66878
+idna==3.10 --hash=sha256:946d195a0d259cbba61165e88e65941f16e9b36ea6ddb97f00452bae8b1287d3
+multidict==6.4.3 --hash=sha256:11990b5c757d956cd1db7cb140be50a63216af32cd6506329c2c59d732d802db
+propcache==0.3.1 --hash=sha256:88c423efef9d7a59dae0614eaed718449c09a5ac79a5f224a8b9664d603f04a3
+yarl==1.20.0 --hash=sha256:3d7dbbe44b443b0c4aa0971cb07dcb2c2060e4a9bf8d1301140a33a93c98e18c
+pystray==0.19.5 --hash=sha256:a0c2229d02cf87207297c22d86ffc57c86c227517b038c0d3c59df79295ac617
+pillow==11.2.1 --hash=sha256:14e33b28bf17c7a38eede290f77db7c664e4eb01f7869e37fa98a5aa95978941
+six==1.17.0 --hash=sha256:4721f391ed90541fddacab5acf947aa0d3dc7d27b2e1e8eda2be8970586c3274

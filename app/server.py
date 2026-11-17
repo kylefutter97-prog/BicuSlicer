@@ -23,13 +23,30 @@ import aiohttp
 from aiohttp import web
 
 import gcode_preview
+import orca_app
 import presets as P
 import printhosts as H
 
 ORCA_BIN = os.environ.get("ORCA_BIN") or next(
     (p for p in ("/opt/orcaslicer/AppRun", "/opt/orcaslicer/bin/orca-slicer") if os.path.exists(p)), "orca-slicer")
+# The Windows app: OrcaSlicer is downloaded on first start (orca_app.py) into ORCA_APP_DIR, this version
+ORCA_FETCH = os.environ.get("ORCA_FETCH", "") == "1"
+ORCA_VERSION = os.environ.get("ORCA_VERSION", "2.5.1")
+HOST = os.environ.get("HOST", "0.0.0.0")
+WINDOWS = sys.platform == "win32"
+# child processes without a console window popping up (Windows)
+NOWIN = {"creationflags": 0x08000000} if WINDOWS else {}
+
+
+def orca_env(home: Path) -> dict:
+    """The environment OrcaSlicer runs in: its own home folder per job (OrcaSlicer writes caches and logs there)."""
+    env = {**os.environ, "HOME": str(home)}
+    if WINDOWS:
+        env.update(USERPROFILE=str(home), APPDATA=str(home), LOCALAPPDATA=str(home))
+    return env
 ORCA_DIR = Path(os.environ.get("ORCA_DIR", "/orca"))           # OrcaSlicer data dir (read-only)
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
+ORCA_APP_DIR = Path(os.environ.get("ORCA_APP_DIR", str(DATA_DIR / "orca-app")))
 # Older single-printer settings: on first start they become a saved printer connection (see printhosts.migrate)
 MOONRAKER = os.environ.get("MOONRAKER_URL", "").rstrip("/")
 PRINTER_UI_URL = os.environ.get("PRINTER_UI_URL", "")
@@ -62,7 +79,7 @@ jobs: dict[str, dict] = {}   # in-memory job state; results are also written to 
 
 # ---------------------------------------------------------------- orca data, settings, presets
 
-orca = {"tag": None, "status": "starting", "error": None, "dir": None}
+orca = {"tag": None, "status": "starting", "error": None, "dir": None, "progress": None}
 lib: P.Library | None = None
 
 
@@ -70,11 +87,29 @@ def orca_tag() -> str:
     """'v2.5.1' from the CLI's banner ('OrcaSlicer-2.5.1:')."""
     import subprocess
     try:
-        out = subprocess.run([ORCA_BIN, "--help"], capture_output=True, text=True, timeout=60).stdout
+        out = subprocess.run([ORCA_BIN, "--help"], capture_output=True, text=True, timeout=60, **NOWIN).stdout
         m = re.search(r"OrcaSlicer-([\d.]+)", out)
-        return "v" + m.group(1) if m else "unknown"
+        if m:
+            return "v" + m.group(1)
     except Exception:
-        return "unknown"
+        pass
+    # the Windows program may not print its banner to a pipe: the version it was fetched as
+    return "v" + ORCA_VERSION if ORCA_FETCH or os.environ.get("ORCA_VERSION") else "unknown"
+
+
+async def ensure_orca_program() -> None:
+    """The Windows app: download OrcaSlicer itself the first time (about 200 MB), with progress for the page."""
+    global ORCA_BIN
+    if not ORCA_FETCH:
+        return
+    have = orca_app.installed(ORCA_APP_DIR, ORCA_VERSION)
+    if not have:
+        orca["status"] = "installing"
+        def progress(done, total):
+            orca["progress"] = round(done / total, 3) if total else None
+        have = await asyncio.to_thread(orca_app.fetch, ORCA_APP_DIR, ORCA_VERSION, progress)
+        orca["progress"] = None
+    ORCA_BIN = str(have)
 
 
 def load_settings() -> dict:
@@ -96,6 +131,11 @@ def build_library() -> None:
 
 async def ensure_orca_data() -> None:
     """Fetch Orca's settings catalogue + vendor profiles for this slicer version (once), and its defaults."""
+    try:
+        await ensure_orca_program()
+    except Exception as e:
+        orca.update(status="failed", error=f"Couldn't download OrcaSlicer: {str(e)[:250]}", progress=None)
+        return
     tag = await asyncio.to_thread(orca_tag)
     d = DATA_DIR / "orca" / tag
     orca.update(tag=tag, dir=d)
@@ -105,7 +145,7 @@ async def ensure_orca_data() -> None:
             proc = await asyncio.create_subprocess_exec(
                 sys.executable or "python3",
                 str(TOOLS / "orca_data.py"), "--tag", tag, "--out", str(d),
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **NOWIN)
             out, _ = await proc.communicate()
             if proc.returncode != 0:
                 raise RuntimeError(out.decode("utf-8", "replace").strip().splitlines()[-1:] or "download failed")
@@ -118,15 +158,15 @@ async def ensure_orca_data() -> None:
             # which settings may be set per part (OrcaSlicer's object/region config classes)
             proc = await asyncio.create_subprocess_exec(sys.executable or "python3", str(TOOLS / "orca_scopes.py"), "--tag", tag,
                                                         "--out", str(d), stdout=asyncio.subprocess.DEVNULL,
-                                                        stderr=asyncio.subprocess.DEVNULL)
+                                                        stderr=asyncio.subprocess.DEVNULL, **NOWIN)
             await proc.wait()       # optional: without it the page just can't offer per-part settings
         if not (d / "defaults.json").is_file():
             work = DATA_DIR / "tmp" / uuid.uuid4().hex
             work.mkdir(parents=True)
             try:
                 p = await asyncio.create_subprocess_exec(ORCA_BIN, "--export-settings", str(work / "defaults.json"),
-                                                         cwd=str(work), env={**os.environ, "HOME": str(work)},
-                                                         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                                                         cwd=str(work), env=orca_env(work),
+                                                         stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, **NOWIN)
                 await p.wait()
                 if (work / "defaults.json").is_file():
                     shutil.move(str(work / "defaults.json"), d / "defaults.json")
@@ -458,9 +498,9 @@ async def run_slice(job: dict, form: dict) -> None:
                     raise ValueError("Scale must be between 1% and 2000%")
                 cmd += ["--scale", f"{scale:g}"]
             cmd += ["--slice", "0", "--export-statistics", "--outputdir", str(out), str(job_dir / job["model"])]
-            env = {**os.environ, "HOME": str(job_dir)}
+            env = orca_env(job_dir)
             proc = await asyncio.create_subprocess_exec(*cmd, cwd=str(dd), env=env,
-                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+                                                        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **NOWIN)
             try:
                 log, _ = await asyncio.wait_for(proc.communicate(), SLICE_TIMEOUT)
             except asyncio.TimeoutError:
@@ -569,7 +609,7 @@ async def index(_):
 async def api_state(_):
     st = load_settings()
     return web.json_response({
-        "orca": {k: orca[k] for k in ("tag", "status", "error")},
+        "orca": {k: orca[k] for k in ("tag", "status", "error", "progress")},
         "setup_done": bool(st.get("setup_done")),
         "has_orca_presets": bool(lib and any(lib.orca[t] for t in KINDS)),
         "has_user_presets": bool(lib and any(lib.user[t] for t in KINDS)),
@@ -1228,7 +1268,7 @@ async def read_single_upload(request: web.Request, allowed: set[str], workdir: P
 async def run_orca_tool(workdir: Path, args: list[str], timeout: int = 180) -> str:
     async with tool_lock:
         proc = await asyncio.create_subprocess_exec(
-            ORCA_BIN, *args, cwd=str(workdir), env={**os.environ, "HOME": str(workdir)},
+            ORCA_BIN, *args, cwd=str(workdir), env=orca_env(workdir), **NOWIN,
             stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
         try:
             out, _ = await asyncio.wait_for(proc.communicate(), timeout)
@@ -1608,7 +1648,7 @@ def main():
     app.add_routes(routes)
     app.on_startup.append(on_startup)
     app.router.add_static("/static/", STATIC, append_version=False)
-    web.run_app(app, host="0.0.0.0", port=int(os.environ.get("PORT", "8000")), access_log=None)
+    web.run_app(app, host=HOST, port=int(os.environ.get("PORT", "8000")), access_log=None)
 
 
 if __name__ == "__main__":
