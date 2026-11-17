@@ -2080,6 +2080,7 @@ const moreItems = () => [
   { label: "Center on the bed", run: centerSelected, disabled: !selected },
   { label: "Printable", check: selected?.printable !== false, run: togglePrintable, disabled: !selected },
   { label: "Fix model", run: fixSelected, disabled: !selected },
+  { label: "Replace with STL…", run: replaceSelected, disabled: !selected || selection().length > 1 },
   { label: "Convert from inches (×25.4)", run: () => convertUnits(25.4), disabled: !selected },
   { label: "Convert to inches (÷25.4)", run: () => convertUnits(1 / 25.4), disabled: !selected },
   { sep: true },
@@ -2118,6 +2119,7 @@ function partMenu() {
     { label: "Printable", check: selected?.printable !== false, run: togglePrintable },
     { sep: true },
     { label: "Fix model", run: fixSelected, disabled: many },
+    { label: "Replace with STL…", run: replaceSelected, disabled: many },
     { label: "Export as STL", run: exportPartStl, disabled: many },
     { label: many ? "Remove parts" : "Remove", key: "Del", run: () => $("obj-delete").click() },
   ];
@@ -2510,6 +2512,32 @@ function closeSimplify(apply) {
 $("simp-keep").addEventListener("input", runSimplify);
 $("simp-err").addEventListener("change", runSimplify);
 $("simplify-dlg").addEventListener("close", () => closeSimplify($("simplify-dlg").returnValue === "ok"));
+
+/** Replace a part's mesh with another file's (a new version of it), keeping where it is, its turn and scale, its settings and modifiers. */
+function replaceSelected() {
+  const m = selected;
+  if (!m || selection().length > 1) return;
+  const i = $("replace-input");
+  i.value = "";
+  i.onchange = async () => {
+    const f = i.files[0];
+    if (!f || !models.includes(m)) return;
+    busy(`Loading ${f.name}…`);
+    try {
+      const geo = await parseFile(f);
+      centered(geo);
+      const before = m.size.clone();
+      m.geo = geo;
+      m.paint = null; m.paintRaw = null; m.text = null; m.vlh = null;
+      if (m.overrides.brim_type === "painted") { delete m.overrides.brim_type; m.ears = null; }
+      for (const x of m.meshes) x.geometry = geo;
+      updateBox(m);
+      settle(m.meshes);
+      flash(`Replaced ${m.name}'s mesh with ${f.name} (${fmtMm(before.x)}×${fmtMm(before.y)}×${fmtMm(before.z)} → ${fmtMm(m.size.x)}×${fmtMm(m.size.y)}×${fmtMm(m.size.z)} mm). Its settings and modifiers stay; painting was cleared.`, "ok");
+    } catch (e) { flash(`Couldn't replace it: ${e.message}`, "err"); } finally { busy(null); }
+  };
+  i.click();
+}
 
 async function fixSelected() {
   const m = selected;
@@ -2975,7 +3003,9 @@ function readCut() {
   const num = (id, d) => { const v = parseFloat($(id).value); return Number.isFinite(v) ? v : d; };
   return { height: num("cut-h", 0), tiltX: num("cut-tx", 0), tiltY: num("cut-ty", 0), keep: $("cut-keep").value, faceDown: $("cut-face").checked,
     conn: { type: $("cut-conn").value, shape: $("cut-shape").value, size: Math.max(1, num("cut-size", 5)), depth: Math.max(1, num("cut-depth", 6)),
-      tol: Math.max(0, num("cut-tol", 0.15)), count: Math.max(1, Math.min(12, Math.round(num("cut-count", 2)))) } };
+      tol: Math.max(0, num("cut-tol", 0.15)), count: Math.max(1, Math.min(12, Math.round(num("cut-count", 2)))) },
+    dove: { width: Math.max(1, num("dv-width", 10)), depth: Math.max(0.5, num("dv-depth", 5)), angle: Math.max(0, Math.min(45, num("dv-angle", 15))),
+      dir: num("dv-dir", 0), tol: Math.max(0, num("dv-tol", 0.2)) } };
 }
 
 /** Cross-section of the part on the cut plane: its cap triangles (2D, plane frame) and outline edges. */
@@ -2997,6 +3027,35 @@ function cutSection(m, P) {
   }
   const edges = [...count.values()].filter((e) => e.n === 1).map((e) => [e.a, e.b]);
   return { tris, edges };
+}
+
+/** The middle of the cross-section's area (plane frame), or null. */
+function sectionCentre(sec) {
+  let a = 0, x = 0, y = 0;
+  for (const t of sec.tris) {
+    const ar = Math.abs((t[2] - t[0]) * (t[5] - t[1]) - (t[4] - t[0]) * (t[3] - t[1])) / 2;
+    a += ar; x += ar * (t[0] + t[2] + t[4]) / 3; y += ar * (t[1] + t[3] + t[5]) / 3;
+  }
+  return a > 0 ? [+(x / a).toFixed(2), +(y / a).toFixed(2)] : null;
+}
+
+/**
+ * A dovetail's prism in the plane frame: a trapezoid across the groove (width at the cut plane, widening by `angle`
+ * on each side going up), z from z0 to z1, grown by tol on every side, running `len` mm along the groove's direction.
+ */
+function dovetailPrism(D, [cu, cv], len, tol, z0, z1) {
+  const k = Math.tan(THREE.MathUtils.degToRad(D.angle));
+  const half = (z) => D.width / 2 + Math.max(0, z) * k + tol;
+  const shape = new THREE.Shape([new THREE.Vector2(-half(z0), z0), new THREE.Vector2(half(z0), z0), new THREE.Vector2(half(z1), z1), new THREE.Vector2(-half(z1), z1)]);
+  const g = new THREE.ExtrudeGeometry(shape, { depth: len, bevelEnabled: false });
+  g.translate(0, 0, -len / 2);
+  g.rotateX(Math.PI / 2);                        // (x, y, z) -> (x, -z, y): the trapezoid stands up, the groove runs along y
+  g.rotateZ(THREE.MathUtils.degToRad(D.dir));
+  g.translate(cu, cv, 0);
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", g.toNonIndexed().getAttribute("position").clone());
+  g.dispose();
+  return out;
 }
 
 /** Spread n connector spots over the cross-section: as far from its outline and from each other as possible. */
@@ -3050,17 +3109,25 @@ function cutPreview() {
   const toPlate = new THREE.Matrix4().makeTranslation(cut.copy.position.x, cut.copy.position.y, -m.local.z0).multiply(inv);
   cut.plane.matrix.copy(toPlate);
   cut.markers.matrix.copy(toPlate);
-  const pts = cut.points.length ? cut.points : P.conn.type !== "none" ? autoConnectors(cutSection(m, P), P.conn.count, P.conn.size) : [];
+  const dove = P.conn.type === "dovetail";
+  const pts = dove ? (cut.points.length ? cut.points.slice(-1) : [sectionCentre(cutSection(m, P))].filter(Boolean))
+    : cut.points.length ? cut.points : P.conn.type !== "none" ? autoConnectors(cutSection(m, P), P.conn.count, P.conn.size) : [];
   cut.auto = cut.points.length ? null : pts;
   while (cut.markers.children.length) { const c = cut.markers.children.pop(); c.geometry.dispose(); }
-  if (P.conn.type !== "none") for (const [u, v] of pts) {
+  if (dove && pts.length) {
+    const mk = new THREE.Mesh(dovetailPrism(P.dove, pts[0], Math.max(m.size.x, m.size.y, m.size.z) * 1.5 + 10, 0, -0.5, P.dove.depth), view.mats.modifierSel);
+    cut.markers.add(mk);
+  }
+  if (P.conn.type !== "none" && !dove) for (const [u, v] of pts) {
     const g = connectorShape(P.conn.shape, P.conn.size, P.conn.depth * 2);
     const mk = new THREE.Mesh(g, view.mats.modifierSel);
     mk.position.set(u, v, 0);
     cut.markers.add(mk);
   }
-  $("cut-conn-opts").hidden = P.conn.type === "none";
-  $("cut-points").textContent = P.conn.type === "none" ? "" : cut.points.length
+  $("cut-conn-opts").hidden = P.conn.type === "none" || dove;
+  $("cut-dove-opts").hidden = !dove;
+  $("cut-points").textContent = P.conn.type === "none" ? "" : dove ? "The bottom part gets a tongue, the top a matching groove: slide them together. Tap the cut plane to move it."
+    : cut.points.length
     ? `${cut.points.length} placed by tapping. Tap the plane to add more.` : `${pts.length} placed automatically${pts.length < P.conn.count ? " (that's all that fit)" : ""}. Or tap the cut plane to place them yourself.`;
   $("cut-clear-points").hidden = !cut.points.length;
 }
@@ -3117,13 +3184,22 @@ function cutTap(e) {
 function doCut(m, P, pts) {
   if (!models.includes(m) || !(P.height > 0) || !(P.height < m.size.z)) { flash("Pick a height inside the part.", "warn"); return; }
   busy("Cutting…");
-  setTimeout(() => {
+  setTimeout(async () => {
     try {
       const { M, inv } = cutFrame(m, P.height, P.tiltX, P.tiltY);
-      const { top, bottom, openLoops } = MO.cutAtZ(MO.bake(bakedGeo(m), M), 0, { capTop: true, capBottom: true });
+      const whole = MO.bake(bakedGeo(m), M);
+      let { top, bottom, openLoops } = MO.cutAtZ(whole, 0, { capTop: true, capBottom: true });
       if (!top || !bottom) throw new Error("the plane misses the part");
       const base = cut?.copy?.position?.clone() || selectedCopy().position.clone();
-      const C = P.conn, conn = C.type === "none" ? [] : pts;
+      const C = P.conn, conn = C.type === "none" || C.type === "dovetail" ? [] : pts;
+      if (C.type === "dovetail" && pts.length) {
+        // the tongue (the part where the prism is) joins the bottom; the top gets the prism, plus tolerance, cut out
+        const len = Math.max(m.size.x, m.size.y, m.size.z) * 2 + 20;
+        const at = pts[pts.length - 1];       // the last tap moves it
+        const tongue = await MT.boolean("intersect", [whole, dovetailPrism(P.dove, at, len, 0, -0.5, P.dove.depth)]);
+        bottom = await MT.boolean("union", [bottom, tongue]);
+        top = await MT.boolean("subtract", [top, dovetailPrism(P.dove, at, len, P.dove.tol, -0.5, P.dove.depth + P.dove.tol)]);
+      }
       // connector pieces in the plane frame: [geometry, kind] for the bottom and top halves
       const vols = { bottom: [], top: [] }, dowels = [];
       const at = (g, u, v, z0, z1) => MO.bake(g, new THREE.Matrix4().makeTranslation(u, v, (z0 + z1) / 2));
@@ -3186,7 +3262,7 @@ function doCut(m, P, pts) {
       }
       selected = made[0] || null; multi.clear(); selectedVolume = null;
       settle(made.flatMap((x) => x.meshes));
-      const what = conn.length ? ` with ${conn.length} ${C.type === "plug" ? "plug" : "dowel"}${conn.length === 1 ? "" : "s"}` : "";
+      const what = C.type === "dovetail" && pts.length ? " with a dovetail" : conn.length ? ` with ${conn.length} ${C.type === "plug" ? "plug" : "dowel"}${conn.length === 1 ? "" : "s"}` : "";
       flash(openLoops ? `Cut${what}, but ${openLoops} cut outline(s) weren't closed (the model has holes): try Fix model first.` : `Cut${what}.`, openLoops ? "warn" : "ok");
     } catch (e) { flash(`Couldn't cut: ${e.message}`, "err"); } finally { busy(null); }
   }, 20);

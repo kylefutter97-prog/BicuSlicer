@@ -453,7 +453,14 @@
     </div>
     <label class="check-inline"><input type="checkbox" id="cut-face" checked> Lay the top part on its cut face</label>
     <div class="cut-conn">
-      <label>Connectors <select id="cut-conn"><option value="none">None</option><option value="plug">Plugs (a peg and a hole)</option><option value="dowel">Dowels (holes, and separate dowels)</option></select></label>
+      <label>Connectors <select id="cut-conn"><option value="none">None</option><option value="plug">Plugs (a peg and a hole)</option><option value="dowel">Dowels (holes, and separate dowels)</option><option value="dovetail">Dovetail (a sliding joint)</option></select></label>
+      <div id="cut-dove-opts" class="calib-fields" hidden>
+        <label>Width <span class="muted">(mm, narrow end)</span> <input type="number" id="dv-width" value="10" min="1" step="any" inputmode="decimal"></label>
+        <label>Depth <span class="muted">(mm)</span> <input type="number" id="dv-depth" value="5" min="1" step="any" inputmode="decimal"></label>
+        <label>Angle <span class="muted">(°)</span> <input type="number" id="dv-angle" value="15" min="0" max="45" step="any" inputmode="decimal"></label>
+        <label>Direction <span class="muted">(°)</span> <input type="number" id="dv-dir" value="0" step="any" inputmode="decimal"></label>
+        <label>Tolerance <span class="muted">(mm)</span> <input type="number" id="dv-tol" value="0.2" min="0" step="any" inputmode="decimal"></label>
+      </div>
       <div id="cut-conn-opts" class="calib-fields" hidden>
         <label>Shape <select id="cut-shape"><option value="round">Round</option><option value="square">Square</option><option value="hex">Hexagon</option></select></label>
         <label>Size <span class="muted">(mm)</span> <input type="number" id="cut-size" value="5" min="1" step="any" inputmode="decimal"></label>
@@ -548,6 +555,7 @@
       <label>Line spacing <span class="muted">(×)</span> <input id="tx-line" type="number" step="any" min="0.5" inputmode="decimal"></label>
     </div>
     <input type="file" id="tx-font-file" accept=".ttf,.otf,.woff" hidden>
+    <input type="file" id="replace-input" accept=".stl,.obj,.3mf,.step,.stp,.iges,.igs" hidden>
     <div class="imp-group" id="tx-kind-wrap">
       <label class="check-inline"><input type="radio" name="tx-kind" value="object"> A new part on the plate</label>
       <label class="check-inline"><input type="radio" name="tx-kind" value="part"> Raised on the selected part</label>
@@ -681,6 +689,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=47"></script>
+<script type="module" src="/static/app.js?v=48"></script>
 </body>
 </html>
