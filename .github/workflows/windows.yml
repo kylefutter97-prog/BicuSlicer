@@ -47,6 +47,9 @@ jobs:
       # that step ends.
       - name: Start the built app's server (downloads OrcaSlicer for Windows) and smoke test it (real slices)
         shell: pwsh
+        env:
+          # the first start reads OrcaSlicer's file list from GitHub's API: shared runners hit the anonymous rate limit
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           $data = "$env:RUNNER_TEMP\data"
           New-Item -ItemType Directory -Force $data | Out-Null
