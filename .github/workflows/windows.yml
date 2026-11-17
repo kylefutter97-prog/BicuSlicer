@@ -37,38 +37,42 @@ jobs:
           $env:LOCALAPPDATA = "$env:RUNNER_TEMP\appdata"
           build\BicuSlicer\python\python.exe build\BicuSlicer\launcher.pyw --selftest
           if ($LASTEXITCODE -ne 0) { Get-Content "$env:LOCALAPPDATA\BicuSlicer\bicuslicer.log" -Tail 80; throw "launcher self-test failed" }
-      - name: Start the built app's server (downloads OrcaSlicer for Windows)
+      # One step for the server and the smoke test: on Windows runners a process started in a step is stopped when
+      # that step ends.
+      - name: Start the built app's server (downloads OrcaSlicer for Windows) and smoke test it (real slices)
         shell: pwsh
         run: |
           $data = "$env:RUNNER_TEMP\data"
           New-Item -ItemType Directory -Force $data | Out-Null
           $env:DATA_DIR = $data; $env:ORCA_FETCH = "1"; $env:ORCA_VERSION = "2.5.1"; $env:ORCA_APP_DIR = "$env:RUNNER_TEMP\orca"
           $env:HOST = "127.0.0.1"; $env:PORT = "8000"; $env:PYTHONUNBUFFERED = "1"
-          Start-Process -FilePath build\BicuSlicer\python\python.exe -ArgumentList "build\BicuSlicer\app\server.py" `
-            -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err" -NoNewWindow
+          $server = Start-Process -FilePath build\BicuSlicer\python\python.exe -ArgumentList "build\BicuSlicer\app\server.py" `
+            -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err" -NoNewWindow -PassThru
           $deadline = (Get-Date).AddMinutes(25)
           do {
             Start-Sleep 10
             try { $s = Invoke-RestMethod http://127.0.0.1:8000/api/state; Write-Host "OrcaSlicer: $($s.orca.status) $($s.orca.progress) $($s.orca.error)" } catch { Write-Host "not answering yet" }
-          } until (($s.orca.status -eq "ready") -or ($s.orca.status -eq "failed") -or ((Get-Date) -gt $deadline))
-          if ($s.orca.status -ne "ready") { Get-Content "$env:RUNNER_TEMP\server.log","$env:RUNNER_TEMP\server.err" -Tail 80; throw "OrcaSlicer setup didn't finish: $($s.orca.error)" }
-      - name: Smoke test (real slices with OrcaSlicer for Windows)
-        shell: pwsh
-        run: |
-          python tools\smoke_test.py --url http://127.0.0.1:8000 --report "$env:RUNNER_TEMP\smoke.md" 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\smoke.out"
+          } until (($s.orca.status -eq "ready") -or ($s.orca.status -eq "failed") -or ((Get-Date) -gt $deadline) -or $server.HasExited)
+          if ($s.orca.status -ne "ready") {
+            $srv = (Get-Content "$env:RUNNER_TEMP\server.log","$env:RUNNER_TEMP\server.err" -Tail 25 -ErrorAction SilentlyContinue) -join " / "
+            Write-Output "::error title=OrcaSlicer setup::$($s.orca.status) $($s.orca.error) | server exited: $($server.HasExited) | $srv"
+            exit 1
+          }
+          python tools\smoke_test.py --url http://127.0.0.1:8000 --wait 300 --report "$env:RUNNER_TEMP\smoke.md" 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\smoke.out"
           $code = $LASTEXITCODE
           # failures as annotations: public on the run page and through GitHub's API, unlike the log
           Get-Content "$env:RUNNER_TEMP\smoke.out" | Where-Object { $_ -like "FAIL *" } | Select-Object -First 15 | ForEach-Object { Write-Output "::error title=Smoke test::$($_ -replace '[\r\n]', ' ')" }
           if ($code -ne 0) {
-            Get-ChildItem "$env:RUNNER_TEMP\data\jobs\*\meta.json" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
+            Get-ChildItem "$data\jobs\*\meta.json" -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 3 | ForEach-Object {
               $m = Get-Content $_ -Raw | ConvertFrom-Json
               $log = Join-Path $_.DirectoryName "slice.log"
               $tail = if (Test-Path $log) { (Get-Content $log -Tail 12) -join " / " } else { "(no slice.log)" }
               Write-Output "::error title=Job $($m.id) $($m.status)::error: $($m.error) | slice.log: $tail"
             }
             $srv = (Get-Content "$env:RUNNER_TEMP\server.log","$env:RUNNER_TEMP\server.err" -Tail 25 -ErrorAction SilentlyContinue) -join " / "
-            Write-Output "::error title=Server log::$srv"
+            Write-Output "::error title=Server log::server exited: $($server.HasExited) | $srv"
           }
+          Stop-Process -Id $server.Id -Force -ErrorAction SilentlyContinue
           exit $code
       - name: Report
         if: always()

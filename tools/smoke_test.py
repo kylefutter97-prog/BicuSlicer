@@ -186,17 +186,19 @@ def run(url: str, wait: int) -> None:
 
     # 1. OrcaSlicer data downloaded and parsed
     deadline = time.time() + wait
-    state = {}
+    state, last = {}, "no answer yet"
     while time.time() < deadline:
         try:
             st, state = api.json("GET", "/api/state")
+            last = f"HTTP {st}"
             if st == 200 and state.get("orca", {}).get("status") in ("ready", "failed"):
                 break
-        except OSError:
-            pass
+        except OSError as e:
+            last = f"{type(e).__name__}: {e}"
         time.sleep(5)
-    orca = state.get("orca", {})
-    if not check(orca.get("status") == "ready", "OrcaSlicer data downloaded", f"{orca.get('tag')} {orca.get('status')} {orca.get('error') or ''}".strip()):
+    orca = state.get("orca", {}) if isinstance(state, dict) else {}
+    if not check(orca.get("status") == "ready", "OrcaSlicer data downloaded",
+                 f"{orca.get('tag')} {orca.get('status')} {orca.get('error') or ''}".strip() if orca else f"the server didn't answer ({last})"):
         return
     st, cat = api.json("GET", "/api/catalog")
     opts = cat.get("options", {}) if st == 200 else {}
