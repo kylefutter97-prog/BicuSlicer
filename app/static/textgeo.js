@@ -128,3 +128,72 @@ export function placementMatrix(point, normal, kind, depth) {
   m.premultiply(new THREE.Matrix4().makeTranslation(...point));
   return m;
 }
+
+/* ---- SVG (OrcaSlicer's SVG tool): a drawing's filled shapes extruded, placed like text */
+
+let svgMod = null;
+const svgLoader = () => (svgMod ||= import("three/addons/loaders/SVGLoader.js"));
+
+/** The filled shapes of an SVG drawing, y up (SVG's y points down), in the drawing's units. */
+async function svgOutlines(svgText) {
+  const { SVGLoader } = await svgLoader();
+  let data;
+  try { data = new SVGLoader().parse(String(svgText)); } catch (e) { throw new Error("that isn't an SVG drawing this can read"); }
+  const out = [];
+  let strokeOnly = 0;
+  for (const path of data.paths) {
+    const fill = path.userData?.style?.fill;
+    if (!fill || fill === "none" || fill === "transparent") { strokeOnly++; continue; }
+    for (const s of SVGLoader.createShapes(path)) {
+      const flip = (pts) => pts.map((p) => new THREE.Vector2(p.x, -p.y));
+      const shape = new THREE.Shape(flip(s.getPoints(16)));
+      shape.holes = s.holes.map((h) => new THREE.Path(flip(h.getPoints(16))));
+      out.push(shape);
+    }
+  }
+  if (!out.length) throw new Error(strokeOnly ? "this drawing only has outlines (strokes), no filled shapes: fill them in your editor, or use a filled version"
+    : "there are no shapes in this SVG");
+  return out;
+}
+
+/**
+ * An SVG drawing as a mesh lying in the XY plane, `width` mm wide (its height in proportion), extruded from z = 0 to
+ * z = depth, centred on x and y. Returns a non-indexed BufferGeometry (positions only).
+ */
+export async function svgGeometry(svgText, p) {
+  const shapes = await svgOutlines(svgText);
+  const box = new THREE.Box2();
+  for (const s of shapes) for (const v of s.getPoints()) box.expandByPoint(v);
+  const w = box.max.x - box.min.x, h = box.max.y - box.min.y;
+  if (!(w > 0) || !(h > 0)) throw new Error("this drawing has no size");
+  const k = Math.max(1, +p.width || 30) / w;
+  const scaled = shapes.map((s) => {
+    const f = (pts) => pts.map((v) => new THREE.Vector2((v.x - box.min.x) * k, (v.y - box.min.y) * k));
+    const n = new THREE.Shape(f(s.getPoints()));
+    n.holes = s.holes.map((hh) => new THREE.Path(f(hh.getPoints())));
+    return n;
+  });
+  let g = new THREE.ExtrudeGeometry(scaled, { depth: Math.max(0.2, +p.depth || 1.5), bevelEnabled: false, curveSegments: 1 });
+  g = g.toNonIndexed();
+  const out = new THREE.BufferGeometry();
+  out.setAttribute("position", g.getAttribute("position").clone());
+  g.dispose();
+  out.computeBoundingBox();
+  const bb = out.boundingBox;
+  out.translate(-(bb.min.x + bb.max.x) / 2, -(bb.min.y + bb.max.y) / 2, -bb.min.z);
+  return out;
+}
+
+/** The drawing's size at a width (for the dialog). */
+export async function svgAspect(svgText) {
+  const shapes = await svgOutlines(svgText);
+  const box = new THREE.Box2();
+  for (const s of shapes) for (const v of s.getPoints()) box.expandByPoint(v);
+  return (box.max.y - box.min.y) / (box.max.x - box.min.x || 1);
+}
+
+/** A preview of an SVG file as an image (images never run a drawing's scripts). */
+export function svgImage(svgText) {
+  const b64 = btoa(unescape(encodeURIComponent(String(svgText))));
+  return `<img alt="" src="data:image/svg+xml;base64,${b64}">`;
+}

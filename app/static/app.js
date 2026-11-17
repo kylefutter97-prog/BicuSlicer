@@ -14,7 +14,7 @@ import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
 import * as CAL from "./calibration.js";
 import { readStep } from "./step.js";
-import { BUNDLED_FONTS, loadFont, textGeometry, previewSvg, placementMatrix } from "./textgeo.js";
+import { BUNDLED_FONTS, loadFont, textGeometry, previewSvg, placementMatrix, svgGeometry, svgAspect, svgImage } from "./textgeo.js";
 import { initPrinters, printerStatus, refreshPrinter, openPrinters, openPrinterView } from "./printers.js";
 
 const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
@@ -1618,6 +1618,7 @@ function refresh() {
     if (partEditor.model !== selected) { partEditor.model = selected; partEditor.render(); }
     renderLayerPanel();
     $("obj-edit-text").hidden = !selected.text;
+    $("obj-edit-text").textContent = selected.text?.svg ? "Edit SVG…" : "Edit text…";
     fillFilamentSelect($("obj-filament"), partSlot(selected), false);
     const n = Object.keys(selected.overrides).length;
     $("part-count").textContent = n ? `· ${n}` : "";
@@ -2065,6 +2066,7 @@ function partMenu() {
     { label: "Add a copy", key: "+", run: () => $("copy-plus").click() },
     { label: "Auto-orient", run: () => selected && autoOrient(selected) },
     { label: "Add text on it…", run: addText },
+    { label: "Add an SVG on it…", run: addSvg },
     { label: "Pick face down", key: "F", run: () => setPickMode(true) },
     { label: "Center on the bed", run: centerSelected },
     ...plates.map((p, i) => (i === cur ? null : { label: `Move to plate ${i + 1}${p.name ? ` · ${p.name}` : ""}`, run: () => moveToPlate(i) })),
@@ -2119,7 +2121,7 @@ $("plate-toolbar").addEventListener("click", (e) => {
   ({
     shape: () => at(shapeItems()), arrange, "orient-all": orientAll, split: splitSelected, merge: mergeSelected, cut: openCut,
     mirror: () => at(mirrorItems()), volume: () => at(volumeItems()), ears: toggleEars,
-    measure: () => setMeasure(!measure.on), boolean: () => at(booleanItems()), simplify: openSimplify,
+    svg: addSvg, measure: () => setMeasure(!measure.on), boolean: () => at(booleanItems()), simplify: openSimplify,
     paint: () => (paint.on ? stopPaint() : at(paintItems())), more: () => at(moreItems()), calib: () => at(calibItems()), face: () => setPickMode(!pickMode), text: addText,
   })[b.dataset.tool]?.();
 });
@@ -2409,6 +2411,7 @@ function renderVolumePanel() {
   $("vol-kind").textContent = { negative: "Negative part: cut away from the part", modifier: "Modifier: these settings apply inside it",
     part: "Raised part: printed as part of it" }[v.kind] || "";
   $("vol-edit-text").hidden = !v.text;
+  $("vol-edit-text").textContent = v.text?.svg ? "Edit SVG…" : "Edit text…";
   fillFilamentSelect($("vol-filament"), slotOf(v.overrides), true, v.kind === "negative");
   const set = (id, val) => { if (!focusedInput(id)) $(id).value = +val.toFixed(2); };
   set("v-sx", v.size.x); set("v-sy", v.size.y); set("v-sz", v.size.z);
@@ -2621,28 +2624,82 @@ async function addText() {
 
 function cancelTextPlace() { if (textPlace) { textPlace = null; showHint(""); } }
 
+/* ---- SVG drawings: the same as text, from a drawing's filled shapes (p.svg holds the file's text) */
+
+const embossName = (p) => (p.svg ? `SVG "${shortText(p.svgName || "drawing")}"` : `Text "${shortText(p.text)}"`);
+async function embossGeometry(p) { return p.svg ? svgGeometry(p.svg, p) : textGeometry(await loadFont(fontUrl(p.font)), p); }
+
+function svgDialog(init, fixedKind = null) {
+  const dlg = $("svg-dlg");
+  const p = { svg: "", svgName: "", width: 30, depth: 1.5, kind: selected ? "part" : "object", ...(init || {}) };
+  $("svg-title").textContent = fixedKind ? "Edit the SVG" : "Add an SVG drawing";
+  $("svg-width").value = p.width; $("svg-depth").value = p.depth;
+  $("svg-kind-wrap").hidden = !!fixedKind;
+  for (const r of dlg.querySelectorAll("input[name=svg-kind]")) { r.checked = r.value === p.kind; r.disabled = r.value !== "object" && !selected; }
+  $("svg-note").textContent = selected || fixedKind ? "" : "Select a part first to put the drawing on it.";
+  let src = p.svg, name = p.svgName, aspect = null, seq = 0;
+  const kind = () => fixedKind || dlg.querySelector("input[name=svg-kind]:checked")?.value || "object";
+  const update = async () => {
+    $("svg-ok").textContent = fixedKind ? "Save" : kind() === "object" ? "Add" : "Place it…";
+    $("svg-file").textContent = name || "No file chosen";
+    $("svg-preview").innerHTML = src ? svgImage(src) : "";
+    const n = ++seq;
+    if (!src) { $("svg-size").textContent = ""; $("svg-ok").disabled = true; return; }
+    try {
+      aspect = await svgAspect(src);
+      if (n !== seq) return;
+      $("svg-size").textContent = `${(+$("svg-width").value || 0).toFixed(1)} × ${((+$("svg-width").value || 0) * aspect).toFixed(1)} mm`;
+      $("svg-ok").disabled = false;
+    } catch (e) { if (n === seq) { $("svg-size").textContent = e.message; $("svg-ok").disabled = true; } }
+  };
+  $("svg-choose").onclick = () => { const i = $("svg-input"); i.value = ""; i.click(); };
+  $("svg-input").onchange = async () => {
+    const f = $("svg-input").files[0];
+    if (!f) return;
+    if (f.size > 4e6) { $("svg-size").textContent = "That file is over 4 MB: too big for a drawing to emboss."; return; }
+    src = await f.text(); name = f.name.replace(/\.svg$/i, "");
+    update();
+  };
+  dlg.oninput = update;
+  update();
+  dlg.returnValue = "";
+  dlg.showModal();
+  return new Promise((resolve) => dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok" && src
+    ? { svg: src, svgName: name, width: +$("svg-width").value || 30, depth: +$("svg-depth").value || 1.5, kind: kind() } : null), { once: true }));
+}
+
+async function addSvg() {
+  const p = await svgDialog(null);
+  if (!p) return;
+  if (p.kind === "object") { await makeTextPart(p); return; }
+  if (!selected) { flash("Select a part to put the drawing on.", "warn"); return; }
+  if (paint.on) stopPaint();
+  setPickMode(false);
+  if (measure.on) setMeasure(false);
+  textPlace = { params: p, model: selected };
+  showHint(`Tap where the drawing goes on ${selected.name}. Esc to cancel.`);
+}
+
 async function makeTextPart(p) {
-  busy("Making the text…");
+  busy(p.svg ? "Making the drawing…" : "Making the text…");
   try {
-    const font = await loadFont(fontUrl(p.font));
-    const geo = textGeometry(font, p);
+    const geo = await embossGeometry(p);
     centered(geo);
     if (!view.renderer) initViewer();
-    const m = newModelRecord(`Text "${shortText(p.text)}"`, geo);
+    const m = newModelRecord(embossName(p), geo);
     m.text = p;
     models.push(m);
     setCopies(m, 1);
     updateBox(m);
     selected = m; multi.clear(); selectedVolume = null;
     settle(m.meshes);
-  } catch (e) { flash(`Couldn't make the text: ${e.message}`, "err"); } finally { busy(null); }
+  } catch (e) { flash(`Couldn't make ${p.svg ? "the drawing" : "the text"}: ${e.message}`, "err"); } finally { busy(null); }
 }
 
 /** (Re)build a text volume's mesh from its parameters: anchor (x, y from the copy's centre, z above the bed) and face normal. */
 async function buildTextVolume(v) {
   const t = v.text;
-  const font = await loadFont(fontUrl(t.font));
-  const g = textGeometry(font, { ...t, depth: t.depth + 0.3 });       // 0.3 mm into the part (raised) or above it (engraved)
+  const g = await embossGeometry({ ...t, depth: t.depth + 0.3 });       // 0.3 mm into the part (raised) or above it (engraved)
   g.applyMatrix4(placementMatrix(t.anchor, t.normal, v.kind, t.depth));
   const vc = centered(g);
   g.computeBoundingBox();
@@ -2657,7 +2714,7 @@ async function placeText(hit) {
   const copy = hit.object;
   const n = hit.face.normal.clone().applyMatrix3(new THREE.Matrix3().getNormalMatrix(copy.matrixWorld)).normalize();
   const anchor = [hit.point.x - copy.position.x, hit.point.y - copy.position.y, hit.point.z];
-  const v = { id: nextId++, kind: p.kind, shape: "mesh", name: `Text "${shortText(p.text)}"`, overrides: {},
+  const v = { id: nextId++, kind: p.kind, shape: "mesh", name: embossName(p), overrides: {},
     text: { ...p, anchor, normal: n.toArray() } };
   busy("Making the text…");
   try {
@@ -2666,33 +2723,33 @@ async function placeText(hit) {
     selected = m; selectedVolume = v;
     plateChanged();
     refresh();
-    flash(p.kind === "part" ? "Raised text added: it prints as part of the part." : p.kind === "negative" ? "Engraved text added: it's cut into the part."
-      : "Text modifier added: give it its own settings below.", "ok");
-  } catch (e) { flash(`Couldn't make the text: ${e.message}`, "err"); } finally { busy(null); }
+    const what = p.svg ? "drawing" : "text";
+    flash(p.kind === "part" ? `Raised ${what} added: it prints as part of the part.` : p.kind === "negative" ? `Engraved ${what} added: it's cut into the part.`
+      : `${p.svg ? "Drawing" : "Text"} modifier added: give it its own settings below.`, "ok");
+  } catch (e) { flash(`Couldn't make the ${p.svg ? "drawing" : "text"}: ${e.message}`, "err"); } finally { busy(null); }
 }
 
 async function editText() {
   const v = selectedVolume, m = selected;
   if (v?.text) {
-    const p = await textDialog(v.text, v.kind);
+    const p = await (v.text.svg ? svgDialog(v.text, v.kind) : textDialog(v.text, v.kind));
     if (!p || !m.volumes.includes(v)) return;
     v.text = { ...v.text, ...p, kind: undefined };
-    v.name = `Text "${shortText(p.text)}"`;
+    v.name = embossName(v.text);
     busy("Making the text…");
     try { await buildTextVolume(v); plateChanged(); refresh(); } catch (e) { flash(e.message, "err"); } finally { busy(null); }
     return;
   }
   if (!m?.text) return;
-  const p = await textDialog(m.text, "object");
+  const p = await (m.text.svg ? svgDialog(m.text, "object") : textDialog(m.text, "object"));
   if (!p || !models.includes(m)) return;
   busy("Making the text…");
   try {
-    const font = await loadFont(fontUrl(p.font));
     // keep the part's rotation and scale: bake them in, as replaceGeo expects plate axes
-    const g = MO.bake(textGeometry(font, p), new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, m.scale));
+    const g = MO.bake(await embossGeometry(p), new THREE.Matrix4().compose(new THREE.Vector3(), m.quat, m.scale));
     replaceGeo(m, g);
     m.text = p;
-    m.name = `Text "${shortText(p.text)}"`;
+    m.name = embossName(p);
     plateChanged();
     refresh();
   } catch (e) { flash(e.message, "err"); } finally { busy(null); }
