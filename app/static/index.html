@@ -14,7 +14,7 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-title" content="BicuSlicer">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="stylesheet" href="/static/style.css?v=35">
+<link rel="stylesheet" href="/static/style.css?v=36">
 <script type="importmap">
 { "imports": { "three": "/static/vendor/three.module.min.js", "three/addons/": "/static/vendor/addons/" } }
 </script>
@@ -97,7 +97,10 @@
           <button type="button" data-view="model"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-box"/></svg>Model</button>
           <button type="button" data-view="preview"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-layers"/></svg>Layers</button>
         </div>
-        <label class="check-inline"><input type="checkbox" id="show-travel"> Travel</label>
+        <div class="pv-opts">
+          <label class="pv-mode"><span class="sr-only">Colour by</span><select id="color-mode" aria-label="Colour by" title="Colour the lines by"></select></label>
+          <label class="check-inline"><input type="checkbox" id="show-travel"> Travel</label>
+        </div>
       </div>
       <div class="pv-layers" id="pv-layers">
         <button class="btn icon" id="layer-down" type="button" aria-label="Previous layer">−</button>
@@ -110,6 +113,7 @@
         <button class="btn small-btn" id="lg-custom" type="button" title="Run your own G-code before this layer"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-code"/></svg>G-code…</button>
         <button class="btn small-btn" id="lg-filament" type="button" hidden title="Print with another filament from this layer on (a manual swap on one nozzle)">Change filament…</button></div>
       <div class="lg-list" id="lg-list" hidden></div>
+      <div class="mode-legend" id="mode-legend" hidden></div>
       <div class="legend" id="legend"></div>
     </div>
     <p id="plate-msg" class="msg warn" hidden></p>
@@ -617,6 +621,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=38"></script>
+<script type="module" src="/static/app.js?v=40"></script>
 </body>
 </html>

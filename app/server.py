@@ -1262,14 +1262,14 @@ async def api_preview(request):
     job = get_job(request.match_info["id"])
     pl = plate_of(job, request.match_info["n"])
     out = JOBS / job["id"] / "out"
-    bin_path = out / f"plate_{pl['plate']}.preview"
-    gz_path = out / f"plate_{pl['plate']}.preview.gz"
+    bin_path = out / f"plate_{pl['plate']}.preview2"            # version 2 (with the colour-mode attributes)
+    gz_path = out / f"plate_{pl['plate']}.preview2.gz"
     if not gz_path.is_file():
         async with preview_lock:
             if not gz_path.is_file():
                 def make():
                     import gzip
-                    gcode_preview.build(out / pl["file"], bin_path)
+                    gcode_preview.build(out / pl["file"], bin_path, out / f"plate_{pl['plate']}.statistics.json")
                     tmp = gz_path.with_suffix(".tmp")
                     tmp.write_bytes(gzip.compress(bin_path.read_bytes(), 6))
                     tmp.replace(gz_path)

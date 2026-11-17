@@ -7,7 +7,7 @@ import { zipSync, unzipSync, strToU8 } from "three/addons/libs/fflate.module.js"
 import { readProject3mf, paintState, projectPlateOrigin, transformPositions } from "./project3mf.js";
 import { $, esc, api, apiJson, postJson, confirmBox, ask, toast, saveBlob } from "./util.js";
 import { initSettings, S, bedChoices, projectSettingsDiff, applyProcessEdits, applyFilamentEdits, filamentValue, filamentSlots, setFilamentSlots, machineValues, createPartEditor, pickPartSetting, processValue, partOptionsAvailable, applyProjectPresets } from "./settings.js";
-import { Preview } from "./preview.js";
+import { Preview, RANGE_CSS } from "./preview.js";
 import * as MO from "./meshops.js";
 import * as LH from "./layerheight.js";
 import * as CAL from "./calibration.js";
@@ -100,6 +100,7 @@ function initViewer() {
   wirePointer();
   wireContextMenu();
   view.preview = new Preview(scene);
+  try { view.preview.wanted = localStorage.getItem("bs-colour-mode") || "feature"; } catch {}
   resize();
 }
 
@@ -590,23 +591,70 @@ function usedFilaments(pi, withLayerChanges = true) {
 }
 
 /** Where plate pi's prime tower goes (plate mm, lower-left corner), when it uses several filaments and the print settings want one. */
+/**
+ * The prime tower's footprint, like OrcaSlicer 2.5's (WipeTower2): with the default "rib" walls the tower is a square
+ * (prime_tower_width is ignored) sized by the purge per layer, its ribs reach out further on tall prints, and it has a
+ * brim. The tower position (wipe_tower_x/y) is the footprint's front-left corner inside the brim. The purge area was
+ * measured from real slices (≈940 mm² at 0.2 mm for one change per layer, ≈+260 mm² per extra filament), with room
+ * to spare. Returns { x, y (the tower position), fx0..fy1 (footprint, plate coordinates), w, d } or { none }.
+ */
+function towerFootprint(pi) {
+  const raw = (k) => { const v = processValue(k); return Array.isArray(v) ? v[0] : v; };
+  const n = usedFilaments(pi).size;
+  const lh = Math.max(0.04, parseFloat(raw("layer_height")) || 0.2);
+  const H = Math.max(1, ...modelsOn(pi).map((m) => m.size.z));
+  const area = (940 + 260 * Math.max(0, n - 2)) * (0.2 / lh) * 1.15;
+  const type = String(raw("wipe_tower_wall_type") || "rib");
+  let brim = parseFloat(raw("prime_tower_brim_width"));
+  if (!Number.isFinite(brim)) brim = 3;
+  if (brim < 0) brim = Math.min(8, H / 100 * 8);
+  brim += 1;                                   // the brim's real width rounds up to whole loops
+  // the height-based minimum depth (WipeTower::min_depth_per_height)
+  const pts = [[5, 5], [100, 20], [250, 40], [350, 60]];
+  let minD = pts[pts.length - 1][1];
+  for (let i = 0; i < pts.length; i++) {
+    if (H <= pts[i][0]) { minD = i === 0 ? pts[0][1] : pts[i - 1][1] + (H - pts[i - 1][0]) / (pts[i][0] - pts[i - 1][0]) * (pts[i][1] - pts[i - 1][1]); break; }
+  }
+  if (type === "rib") {
+    const side = Math.sqrt(area);
+    // ribs run the diagonals; below the minimum depth they're lengthened (to minD·√2) instead of the body
+    const ribW = Math.min(parseFloat(raw("wipe_tower_rib_width")) || 8, side / 2);
+    const extra = Math.max(0, parseFloat(raw("wipe_tower_extra_rib_length")) || 0);
+    const diag = side * Math.SQRT2, ribLen = Math.max(diag, (side < minD ? minD * Math.SQRT2 : diag) + extra);
+    const per = ((ribLen - diag) / 2 + ribW / 2) / Math.SQRT2;
+    const f = side + 2 * per;
+    return { w: Math.ceil(side), d: Math.ceil(side), fx0: -brim, fy0: -brim, fx1: f + brim, fy1: f + brim };
+  }
+  const w = Math.max(10, parseFloat(raw("prime_tower_width")) || 60), d = area / w;
+  let fx0 = -brim, fy0 = -brim, fx1 = w + brim, fy1 = d + brim;
+  const angle = parseFloat(raw("wipe_tower_cone_angle"));
+  if (type === "cone" && angle > 0) {                // the stabilising cone's base (an ellipse round the centre)
+    const R = Math.tan(angle / 2 * Math.PI / 180) * H;
+    fx0 = Math.min(fx0, w / 2 - R - brim); fx1 = Math.max(fx1, w / 2 + R + brim);
+    fy0 = Math.min(fy0, d / 2 - R - brim); fy1 = Math.max(fy1, d / 2 + R + brim);
+  }
+  return { w: Math.ceil(w), d: Math.ceil(d), fx0, fy0, fx1, fy1 };
+}
+
 function towerSpot(pi) {
   if (usedFilaments(pi).size < 2) return null;
   const raw = (k) => { const v = processValue(k); return Array.isArray(v) ? v[0] : v; };
   if (!/^(1|true)$/.test(String(raw("enable_prime_tower") ?? "1"))) return null;
-  const w = Math.max(10, parseFloat(raw("prime_tower_width")) || 60), d = 25 + 8 * Math.max(0, usedFilaments(pi).size - 2), margin = 6;
+  const t = towerFootprint(pi), margin = 4, edge = 1;
   const ox = plateX(pi), rects = [];
   for (const m of models) for (const x of m.meshes) if (plateOf(x) === pi && m.local) {
     const f = footprint(m, x);
     rects.push([f.x0 - ox - margin, f.y0 - margin, f.x1 - ox + margin, f.y1 + margin]);
   }
   let best = null;
-  for (let y = bed.d - d - margin; y >= margin; y -= 2) for (let x = bed.w - w - margin; x >= margin; x -= 2) {
-    if (rects.some((r) => x < r[2] && r[0] < x + w && y < r[3] && r[1] < y + d)) continue;
+  const W = t.fx1 - t.fx0, D = t.fy1 - t.fy0;
+  for (let y = bed.d - edge - t.fy1; y + t.fy0 >= edge; y -= 2) for (let x = bed.w - edge - t.fx1; x + t.fx0 >= edge; x -= 2) {
+    const a = [x + t.fx0, y + t.fy0, x + t.fx1, y + t.fy1];
+    if (rects.some((r) => a[0] < r[2] && r[0] < a[2] && a[1] < r[3] && r[1] < a[3])) continue;
     const score = x + y * 1.2;           // OrcaSlicer-like: back right when there's room
-    if (!best || score > best.score) best = { x, y, w, d, score };
+    if (!best || score > best.score) best = { ...t, x: Math.floor(x), y: Math.floor(y), score };
   }
-  return best || { none: true, w, d };
+  return best || { none: true, w: Math.ceil(W), d: Math.ceil(D) };
 }
 
 let towerMeshes = [];
@@ -618,8 +666,10 @@ function drawTowers() {
     const t = towerSpot(i);
     if (!t || t.none) return;
     const h = Math.max(1, ...modelsOn(i).map((m) => m.size.z)) ;
-    const mesh = new THREE.Mesh(new THREE.BoxGeometry(t.w, t.d, h), view.mats.ghost);
-    mesh.position.set(plateX(i) + t.x + t.w / 2, t.y + t.d / 2, h / 2);
+    // the whole footprint (ribs and brim included), so what you see is the room it takes
+    const fw = t.fx1 - t.fx0, fd = t.fy1 - t.fy0;
+    const mesh = new THREE.Mesh(new THREE.BoxGeometry(fw, fd, h), view.mats.ghost);
+    mesh.position.set(plateX(i) + t.x + t.fx0 + fw / 2, t.y + t.fy0 + fd / 2, h / 2);
     mesh.userData.tower = true;
     view.scene.add(mesh);
     towerMeshes.push(mesh);
@@ -942,7 +992,8 @@ function renderLayerInfo() {
   if (!p.loaded) return;
   $("layer").max = p.layers;
   $("layer").value = p.layer + 1;
-  $("layer-text").textContent = `Layer ${p.layer + 1} of ${p.layers} · Z ${p.data.z[p.layer].toFixed(2)} mm`;
+  const lt = p.layerTime();
+  $("layer-text").textContent = `Layer ${p.layer + 1} of ${p.layers} · Z ${p.data.z[p.layer].toFixed(2)} mm${lt ? ` · ${lt}` : ""}`;
   renderLayerGcodes();
 }
 
@@ -987,8 +1038,28 @@ async function addLayerGcode(type, extruder = 0) {
 }
 
 function renderLegend() {
-  $("legend").innerHTML = view.preview.legend().map((f) =>
+  const p = view.preview;
+  $("legend").innerHTML = p.legend().map((f) =>
     `<label class="lg${f.visible ? "" : " off"}"><input type="checkbox" data-feat="${f.i}" ${f.visible ? "checked" : ""}><span class="sw" style="background:${esc(f.color)}"></span>${esc(f.name)}</label>`).join("");
+  // line types keep their colours only in "Line type"; in other modes they're just show/hide switches
+  $("legend").classList.toggle("plain", p.mode !== "feature");
+  const sel = $("color-mode"), modes = p.modes();
+  sel.innerHTML = modes.map((m) => `<option value="${m.id}">${esc(m.label)}</option>`).join("");
+  sel.value = p.mode;
+  sel.disabled = modes.length < 2;
+  sel.title = modes.length < 2 ? "Slice again to colour by speed, width, fan, temperature…" : "Colour the lines by";
+  const ml = p.modeLegend();
+  $("mode-legend").hidden = !ml;
+  if (!ml) return;
+  if (ml.kind === "filament") {
+    const slots = filamentSlots();
+    $("mode-legend").innerHTML = `<div class="fil-row">${ml.items.map((f) => `<span class="fil-item"><span class="sw" style="background:${esc(f.color)}"></span>Filament ${f.n}${slots[f.n - 1]?.preset ? ` · ${esc(slots[f.n - 1].preset)}` : ""}</span>`).join("")}</div>`;
+  } else if (ml.single) {
+    $("mode-legend").innerHTML = `<div>${esc(ml.label)}: ${esc(ml.single)} throughout</div>`;
+  } else {
+    $("mode-legend").innerHTML = `<div class="scale-bar" style="background:linear-gradient(to right, ${RANGE_CSS.join(", ")})"></div>
+      <div class="scale-ticks">${ml.ticks.map((t) => `<span>${esc(t)}</span>`).join("")}</div>`;
+  }
 }
 
 async function showPreview(job, plate) {
@@ -3165,6 +3236,11 @@ $("layer").addEventListener("input", (e) => { view.preview.setLayer(Number(e.tar
 $("layer-down").addEventListener("click", () => { view.preview.setLayer(view.preview.layer - 1); renderLayerInfo(); });
 $("layer-up").addEventListener("click", () => { view.preview.setLayer(view.preview.layer + 1); renderLayerInfo(); });
 $("show-travel").addEventListener("change", (e) => { view.preview.showTravel = e.target.checked; view.preview.setLayer(view.preview.layer); });
+$("color-mode").addEventListener("change", (e) => {
+  view.preview.setMode(e.target.value);
+  try { localStorage.setItem("bs-colour-mode", view.preview.wanted); } catch {}
+  renderLegend();
+});
 $("legend").addEventListener("change", (e) => {
   const i = e.target.dataset.feat;
   if (i === undefined) return;

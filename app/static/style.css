@@ -308,6 +308,16 @@ dialog.sheet[open] { display: flex; flex-direction: column; }
 .pv-info { display: flex; justify-content: space-between; gap: 10px; font-size: 13px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .stale { color: var(--warn); }
 .legend { display: flex; flex-wrap: wrap; gap: 6px; }
+.pv-opts { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.pv-mode select { min-height: 34px; max-width: 46vw; font-size: 14px; }
+.mode-legend { display: grid; gap: 4px; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.mode-legend .scale-bar { height: 12px; border-radius: 6px; border: 1px solid var(--line); }
+.mode-legend .scale-ticks { display: flex; justify-content: space-between; gap: 4px; }
+.mode-legend .scale-ticks span { white-space: nowrap; }
+.mode-legend .fil-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.mode-legend .fil-item { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 6px; border: 1px solid var(--line); border-radius: 999px; color: var(--fg, inherit); }
+.mode-legend .fil-item .sw { width: 11px; height: 11px; border-radius: 3px; border: 1px solid rgba(127,127,127,.5); }
+.legend.plain .lg .sw { display: none; }
 .lg { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px 3px 6px; border: 1px solid var(--line); border-radius: 999px; font-size: 12.5px; cursor: pointer; user-select: none; }
 .lg input { position: absolute; opacity: 0; width: 0; height: 0; }
 .lg .sw { width: 11px; height: 11px; border-radius: 3px; flex: none; }
