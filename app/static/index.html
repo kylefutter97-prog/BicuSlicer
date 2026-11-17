@@ -48,7 +48,7 @@
       <button class="tb" type="button" id="tb-undo" title="Undo (Ctrl+Z)" aria-label="Undo" disabled><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-undo-2"/></svg></button>
       <button class="tb" type="button" id="tb-redo" title="Redo (Ctrl+Shift+Z or Ctrl+Y)" aria-label="Redo" disabled><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-redo-2"/></svg></button>
       <span class="tb-sep"></span>
-      <label class="tb file-btn" title="Add models (Ctrl+I)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-file-plus"/></svg>Add<input class="file-input" type="file" accept=".stl,.3mf,.obj,.step,.stp,.iges,.igs" multiple></label>
+      <label class="tb file-btn" title="Add models (Ctrl+I)"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-file-plus"/></svg>Add<input class="file-input" type="file" accept=".stl,.3mf,.obj,.step,.stp,.iges,.igs,.gcode,.gco,.g" multiple></label>
       <button class="tb" type="button" data-tool="shape" title="Add a box, cylinder, sphere or cone"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-shapes"/></svg>Shape ▾</button>
       <button class="tb" type="button" data-tool="text" title="Add text: a new part, or raised / engraved on a part"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-type"/></svg>Text</button>
       <button class="tb" type="button" data-tool="svg" title="Add an SVG drawing (a logo, an icon): a new part, or raised / engraved on a part"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-image-plus"/></svg>SVG</button>
@@ -77,10 +77,10 @@
       <pre class="gcode-lines" id="gcode-lines" hidden></pre>
       <div id="empty" class="empty">
         <label class="primary file-btn">
-          <input class="file-input" type="file" accept=".stl,.3mf,.obj,.step,.stp,.iges,.igs" multiple>
+          <input class="file-input" type="file" accept=".stl,.3mf,.obj,.step,.stp,.iges,.igs,.gcode,.gco,.g" multiple>
           Add a model
         </label>
-        <span class="muted small">STL, 3MF, OBJ or STEP · add as many as you like</span>
+        <span class="muted small">STL, 3MF, OBJ or STEP · or a G-code file to look through and print</span>
         <button class="btn" id="empty-calib" type="button"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-flask-conical"/></svg>Or print a calibration test ▾</button>
       </div>
       <div id="hint" class="hint" hidden></div>
@@ -137,7 +137,7 @@
     <p id="plate-flash" class="msg" hidden></p>
     <div class="toolbar" id="plate-tools" hidden>
       <label class="btn file-btn">
-        <input class="file-input" type="file" accept=".stl,.3mf,.obj,.step,.stp,.iges,.igs" multiple>
+        <input class="file-input" type="file" accept=".stl,.3mf,.obj,.step,.stp,.iges,.igs,.gcode,.gco,.g" multiple>
         <svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-plus"/></svg>Add
       </label>
       <button class="btn" id="save-project" type="button"><svg class="ic" aria-hidden="true"><use href="/static/icons.svg#i-save"/></svg>Save</button>
@@ -718,6 +718,6 @@
 <div id="toast" class="toast" role="status" hidden></div>
 <div id="drop-overlay" class="drop-overlay" hidden><div>Drop STL, 3MF or OBJ files to add them to the plate</div></div>
 
-<script type="module" src="/static/app.js?v=51"></script>
+<script type="module" src="/static/app.js?v=52"></script>
 </body>
 </html>

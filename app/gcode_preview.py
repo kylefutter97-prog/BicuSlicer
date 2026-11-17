@@ -103,6 +103,19 @@ def _layer_times(stats: Path | None, z_list: list[float]) -> tuple[list[float] |
     return out, total
 
 
+def _has_layer_markers(gcode: Path) -> bool:
+    """Whether the slicer marked its layers (OrcaSlicer, PrusaSlicer, Bambu Studio: ;LAYER_CHANGE; Cura: ;LAYER:n)."""
+    tail = b""
+    with gcode.open("rb") as fh:
+        while True:
+            chunk = fh.read(1 << 20)
+            if not chunk:
+                return False
+            if b";LAYER_CHANGE" in tail + chunk or b";LAYER:" in tail + chunk:
+                return True
+            tail = chunk[-16:]
+
+
 def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
     features: list[str] = []
     feat_index: dict[str, int] = {}
@@ -167,6 +180,7 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
             trav.extend((_q(x1), _q(y1), _q(x2), _q(y2)))
             t_off.append(cur_off)
 
+    markers = _has_layer_markers(gcode)
     with gcode.open("rb") as fh:
         pos = 0
         for raw in fh:
@@ -194,8 +208,8 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
                         tool = int(line[22:].split()[0])
                     except (ValueError, IndexError):
                         pass
-                elif line.startswith(";LAYER_CHANGE"):
-                    layer_z_pending = -1.0
+                elif line.startswith(";LAYER_CHANGE") or line.startswith(";LAYER:"):
+                    layer_z_pending = -1.0          # the layer's Z: ;Z: next (OrcaSlicer, PrusaSlicer), else the next move
                 elif line.startswith(";Z:") and layer_z_pending is not None:
                     try:
                         new_layer(float(line[3:]))
@@ -216,9 +230,6 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
                 continue
             head = code.split(None, 1)[0]
             if head in ("G1", "G0", "G2", "G3"):
-                if layer_z_pending is not None:           # ;LAYER_CHANGE without ;Z:
-                    new_layer(z)
-                    layer_z_pending = None
                 w = dict(_WORD.findall(code))
                 if "F" in w:
                     feed = float(w["F"])
@@ -226,6 +237,10 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
                 ny = float(w["Y"]) + (y if rel_xyz else 0) if "Y" in w else y
                 if "Z" in w:
                     z = float(w["Z"]) + (z if rel_xyz else 0)
+                if layer_z_pending is not None:           # a layer marker without ;Z: (Cura): the Z it moves to
+                    if "Z" in w or "X" in w or "Y" in w:
+                        new_layer(z)
+                        layer_z_pending = None
                 de = 0.0
                 if "E" in w:
                     ev = float(w["E"])
@@ -235,6 +250,8 @@ def build(gcode: Path, out: Path, stats: Path | None = None) -> dict:
                         de = ev - e_abs
                         e_abs = ev
                 extruding = de > 1e-6
+                if extruding and not markers and (not z_list or z > z_list[-1] + 1e-4):
+                    new_layer(z)                          # no layer markers at all: a new layer when it prints higher
                 if head in ("G2", "G3") and ("I" in w or "J" in w):
                     cx, cy = x + float(w.get("I", 0)), y + float(w.get("J", 0))
                     r = math.hypot(x - cx, y - cy)

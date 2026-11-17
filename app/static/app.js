@@ -42,7 +42,8 @@ let settingsVersion = 0;      // bumped when presets or setting edits change: ev
 let nextPlateId = 1;
 function newPlate() {
   // gcodes: G-code at chosen heights [{ z, type: "pause" | "custom", gcode, note }]; calib: the calibration test it holds
-  return { id: nextPlateId++, name: "", bedType: "", seq: "", spiral: "", gcodes: [], calib: null, job: null, jobKey: null };
+  // gcodeFile: the plate shows a G-code file that was opened (not sliced here)
+  return { id: nextPlateId++, name: "", bedType: "", seq: "", spiral: "", gcodes: [], calib: null, job: null, jobKey: null, gcodeFile: false };
 }
 const plates = [newPlate()];
 let cur = 0;                  // the current plate (index)
@@ -241,9 +242,14 @@ async function parseFile(f) {
 async function addFiles(files) {
   if (!files.length) return;
   if (!view.renderer) initViewer();
+  // G-code sliced before (here or elsewhere), and sliced Bambu / MakerWorld .gcode.3mf: opened for its layers and to print
+  const gfiles = files.filter((x) => /\.(gcode|gco|g|bgcode)$|\.gcode\.3mf$/i.test(x.name));
+  files = files.filter((x) => !gfiles.includes(x));
+  for (const f of gfiles) await openGcodeFile(f);
+  if (!files.length) return;
   const problems = [], added = [];
   const ok = /\.(stl|3mf|obj|step|stp|iges|igs)$/i;
-  for (const f of files.filter((x) => !ok.test(x.name))) problems.push(`${f.name}: use an STL, 3MF, OBJ or STEP file`);
+  for (const f of files.filter((x) => !ok.test(x.name))) problems.push(`${f.name}: use an STL, 3MF, OBJ, STEP or G-code file`);
   const notes = [];
   files = files.filter((x) => ok.test(x.name));
   const projects = [];
@@ -282,6 +288,30 @@ async function addFiles(files) {
   if (problems.length) flash(problems.join(" · "), "err");
   else if (notes.length) flash(notes.join(" · "), "ok");
   for (const [name, proj] of projects) await openProject3mf(name, proj);
+}
+
+/** Open a G-code file on a plate of its own: its layers, its print time and filament, and Send / Print. */
+async function openGcodeFile(f) {
+  busy(`Opening ${f.name}…`);
+  try {
+    const fd = new FormData();
+    fd.append("file", f, f.name);
+    const job = await apiJson("/api/gcode-file", { method: "POST", body: fd });
+    let pi = cur;
+    if (meshesOn(cur).length || plates[cur].job || plates[cur].gcodeFile) { plates.push(newPlate()); pi = plates.length - 1; }
+    Object.assign(plates[pi], { name: job.name, gcodeFile: true, job });
+    plates[pi].jobKey = plateKey(pi);
+    drawBed();
+    if (pi !== cur) setCurrentPlate(pi);
+    refresh();
+    showPlateResult();
+    await showPreview(job, job.plates[0].plate);
+    const p = job.plates[0];
+    flash(`Opened ${f.name}${job.generator ? `, sliced with ${job.generator}` : ""}${job.plates.length > 1 ? ` (${job.plates.length} plates; this shows plate ${p.plate})` : ""}.`
+      + (job.machine ? "" : " It names no printer set up here: check it's for your printer before printing."), "ok");
+  } catch (e) {
+    flash(`Couldn't open ${f.name}: ${e.message}`, "err");
+  } finally { busy(null); }
 }
 
 /* ---- OrcaSlicer / Bambu Studio / MakerWorld projects */
@@ -837,7 +867,7 @@ function takeSnapshot() {
   const keepOrCopy = (cur, old) => (!cur ? null : sameBytes(cur, old) ? old : cur.slice());
   const snap = {
     sel: selected?.id ?? null, selVol: selectedVolume?.id ?? null, multi: [...multi].map((m) => m.id), cur,
-    plates: plates.map((p) => ({ id: p.id, name: p.name, bedType: p.bedType, seq: p.seq, spiral: p.spiral, gcodes: JSON.stringify(p.gcodes || []), calib: JSON.stringify(p.calib || null) })),
+    plates: plates.map((p) => ({ id: p.id, name: p.name, bedType: p.bedType, seq: p.seq, spiral: p.spiral, gcodes: JSON.stringify(p.gcodes || []), calib: JSON.stringify(p.calib || null), gcodeFile: !!p.gcodeFile })),
     models: models.map((m) => {
       const op = prevPaint.get(m.id);
       return {
@@ -995,7 +1025,7 @@ function setViewMode(mode) {
   else if (view.preview?.loaded) renderLegend();
   renderMoves();
   $("layer-text").hidden = mode !== "preview";
-  $("lg-row").hidden = mode !== "preview";
+  $("lg-row").hidden = mode !== "preview" || !!plates[cur]?.gcodeFile;      // an opened G-code can't take pauses (it isn't sliced here)
   $("lg-filament").hidden = !multiColour();
   if (mode !== "preview") $("lg-list").hidden = true; else renderLayerGcodes();
   if (mode === "preview") { setPickMode(false); if (measure.on) setMeasure(false); if (ears.on) stopEars(); }
@@ -1597,10 +1627,11 @@ const fmtMm = (v) => v.toFixed(v < 100 ? 1 : 0);
 
 function refresh() {
   const has = models.length > 0;
+  const gplate = !!plates[cur]?.gcodeFile;          // an opened G-code file: its layers, no parts needed
   if (ears.on && (!models.includes(ears.m) || selected !== ears.m)) { ears.on = false; ears.m = null; $("ears-panel").hidden = true; showHint(""); }
   drawEars();
-  $("empty").hidden = has;
-  if (!has) $("preview-controls").hidden = true;      // nothing on the plates (e.g. after undo): no layers to show
+  $("empty").hidden = has || gplate;
+  if (!has && !gplate) $("preview-controls").hidden = true;      // nothing on the plates (e.g. after undo): no layers to show
   $("plate-tools").hidden = !has;
   $("tip").hidden = !has;
   $("parts-card").hidden = !has;
@@ -1619,7 +1650,7 @@ function refresh() {
     syncVolumes(m);
   }
   $("plate-toolbar").hidden = false;      // always: Add, Shape and Calibrate make parts; the rest wait for some
-  $("plate-tabs").hidden = !has && plates.length < 2;
+  $("plate-tabs").hidden = !has && !gplate && plates.length < 2;
   updateToolbar();
   updatePlateTabs();
   drawTowers();
@@ -1780,6 +1811,7 @@ function plateName(pi = cur) {
 function plateKey(pi) {
   const p = plates[pi];
   if (!p) return "";
+  if (p.gcodeFile && !meshesOn(pi).length) return `gcode:${p.job?.id}`;      // an opened G-code: current until parts are added
   const ox = plateX(pi);
   return JSON.stringify([settingsVersion, S.bedType, p.bedType, p.seq, p.spiral, p.gcodes, multiColour() ? filamentSlots() : 0, models.map((m) => {
     if (m.printable === false) return null;
