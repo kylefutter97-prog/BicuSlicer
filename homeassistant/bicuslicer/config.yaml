@@ -2,7 +2,7 @@
 # sidebar. The image is ghcr.io/kylefutter97-prog/bicuslicer-ha:<version>, built by .github/workflows/docker.yml for
 # every release tag; keep this version the same as the release (see docs/UPDATING.md).
 name: BicuSlicer
-version: "0.6.0"
+version: "0.6.2"
 slug: bicuslicer
 description: Slice for your 3D printer in the browser, with OrcaSlicer's engine. Phone-friendly, sends to Klipper.
 url: https://github.com/kylefutter97-prog/BicuSlicer
