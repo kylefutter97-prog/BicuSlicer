@@ -195,11 +195,12 @@ async def ensure_orca_data() -> None:
                     shutil.move(str(work / "defaults.json"), d / "defaults.json")
             finally:
                 shutil.rmtree(work, ignore_errors=True)
-        orca["status"] = "ready"
         prune_orca_data(d)
+        await asyncio.to_thread(build_library)      # loaded before saying ready: the page asks for printers straight away
+        orca["status"] = "ready"
     except Exception as e:
         orca.update(status="failed", error=str(e)[:300])
-    await asyncio.to_thread(build_library)
+        await asyncio.to_thread(build_library)
 
 
 def prune_orca_data(current: Path) -> None:
