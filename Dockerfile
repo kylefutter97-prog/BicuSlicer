@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # BicuSlicer: one self-contained image with OrcaSlicer's slicing engine and the web front end.
 #
 # OrcaSlicer comes from its official Linux AppImage for ORCA_VERSION, unpacked at build time
@@ -40,9 +41,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       libdbus-1-3 libfontconfig1 libmspack0 libsm6 libice6 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=orca /opt/orcaslicer /opt/orcaslicer
+# OrcaSlicer's settings list and printer library for this version, built in so the first start has nothing to download
+# (the server copies them into /data). Only the downloader scripts are copied first, so code changes don't redo this.
+# A GitHub token (build secret "github_token") avoids GitHub's API rate limit; it isn't kept in the image.
+COPY app/tools/orca_data.py app/tools/orca_scopes.py /opt/orca-tools/
+RUN --mount=type=secret,id=github_token \
+    set -eux; v="v${ORCA_VERSION}"; out="/opt/orca-data/$v"; \
+    GITHUB_TOKEN="$(cat /run/secrets/github_token 2>/dev/null || true)"; export GITHUB_TOKEN; \
+    python3 /opt/orca-tools/orca_data.py --tag "$v" --out "$out"; \
+    python3 /opt/orca-tools/orca_scopes.py --tag "$v" --out "$out" || true; \
+    mkdir -p /tmp/orcahome; \
+    (cd /tmp/orcahome && HOME=/tmp/orcahome timeout 300 /opt/orcaslicer/AppRun --export-settings "$out/defaults.json" >/dev/null 2>&1) || true; \
+    rm -rf /tmp/orcahome /opt/orca-tools; chmod -R a+rX /opt/orca-data; \
+    test -f "$out/catalog.json" && test -d "$out/profiles"
 COPY app /app
 
 ENV ORCA_BIN=/opt/orcaslicer/AppRun \
+    ORCA_DATA_SEED=/opt/orca-data \
     DATA_DIR=/data \
     PYTHONUNBUFFERED=1 \
     ORCA_VERSION=${ORCA_VERSION}

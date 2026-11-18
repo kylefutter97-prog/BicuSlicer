@@ -64,7 +64,10 @@ jobs:
 
       - name: Build BicuSlicer with OrcaSlicer ${{ steps.v.outputs.target }}
         if: steps.v.outputs.skip == ''
-        run: docker build --build-arg ORCA_VERSION=${{ steps.v.outputs.target }} -t bicuslicer:candidate .
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DOCKER_BUILDKIT: "1"
+        run: docker build --secret id=github_token,env=GITHUB_TOKEN --build-arg ORCA_VERSION=${{ steps.v.outputs.target }} -t bicuslicer:candidate .
 
       - name: Start it
         if: steps.v.outputs.skip == ''

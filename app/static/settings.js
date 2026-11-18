@@ -653,6 +653,7 @@ export async function openWizard(adding = false) {
   W.adding = adding;
   W.chosen = new Set(adding ? S.state?.machines_enabled || [] : []);
   wizStep("intro");
+  showSetupStatus();
   $("wiz-skip").hidden = !(S.state?.has_orca_presets || S.state?.has_user_presets);
   $("wiz").showModal();
 }
@@ -736,8 +737,9 @@ function setMode(m) {
 /** What first-time setup is doing, for people waiting on it (the Windows app downloads OrcaSlicer itself first). */
 export function setupStatus(o = S.state?.orca) {
   if (!o || o.status === "ready") return "";
-  if (o.status === "installing") return `Setting up for the first time: downloading OrcaSlicer${o.progress != null ? ` (${Math.round(o.progress * 100)}% of about 200 MB)` : ""}. This only happens once.`;
-  if (o.status === "downloading") return "Setting up: downloading OrcaSlicer's printer library (about 25 MB)…";
+  if (o.status === "installing") return `Step 1 of 2: downloading OrcaSlicer (about 200 MB)${o.progress != null ? `, ${Math.round(o.progress * 100)}%` : "…"}. This only happens once.`;
+  if (o.status === "downloading") return `Downloading OrcaSlicer's printer library${o.progress != null ? `, ${Math.round(o.progress * 100)}%` : "…"}. This only happens once.`;
+  if (o.status === "copying") return "Unpacking OrcaSlicer's printer library…";
   if (o.status === "failed") return `Setup failed: ${String(o.error || "unknown error").replace(/[.\s]+$/, "")}. Check the internet connection, then try again.`;
   return "Starting OrcaSlicer…";
 }
@@ -746,8 +748,14 @@ function showSetupStatus() {
   if (!el) return;
   el.hidden = !t;
   const failed = S.state?.orca?.status === "failed";
-  el.innerHTML = esc(t) + (failed ? ` <button class="link" type="button" id="wiz-retry">Try again</button>` : "");
+  const o = S.state?.orca || {};
+  const busy = !!t && !failed;
+  el.innerHTML = esc(t) + (failed ? ` <button class="link" type="button" id="wiz-retry">Try again</button>` : "")
+    + (busy ? `<progress class="wiz-progress"${o.progress != null ? ` value="${o.progress}" max="1"` : ""}></progress>` : "");
   el.classList.toggle("err", failed);
+  // the printer choices need OrcaSlicer's library: locked until it's ready
+  for (const b of document.querySelectorAll("#wiz .wiz-choices .choice")) b.disabled = !!t;
+  $("wiz").classList.toggle("setting-up", !!t);
   if (failed) $("wiz-retry").onclick = async () => {
     try {
       await postJson("/api/setup/retry", {});

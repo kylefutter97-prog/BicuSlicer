@@ -49,6 +49,9 @@ def orca_env(home: Path) -> dict:
 ORCA_DIR = Path(os.environ.get("ORCA_DIR", "/orca"))           # OrcaSlicer data dir (read-only)
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 ORCA_APP_DIR = Path(os.environ.get("ORCA_APP_DIR", str(DATA_DIR / "orca-app")))
+# OrcaSlicer's settings list and printer library built into the image (Docker, Home Assistant): copied into DATA_DIR
+# on first start instead of downloading them
+ORCA_DATA_SEED = Path(os.environ.get("ORCA_DATA_SEED", "/opt/orca-data"))
 # Older single-printer settings: on first start they become a saved printer connection (see printhosts.migrate)
 MOONRAKER = os.environ.get("MOONRAKER_URL", "").rstrip("/")
 PRINTER_UI_URL = os.environ.get("PRINTER_UI_URL", "")
@@ -142,15 +145,33 @@ async def ensure_orca_data() -> None:
     d = DATA_DIR / "orca" / tag
     orca.update(tag=tag, dir=d)
     try:
+        seed = ORCA_DATA_SEED / tag
+        if (not (d / "catalog.json").is_file() or not (d / "profiles").is_dir()) and (seed / "catalog.json").is_file():
+            orca["status"] = "copying"
+            def copy_seed():
+                tmp = d.with_name(d.name + ".tmp")
+                shutil.rmtree(tmp, ignore_errors=True)
+                shutil.copytree(seed, tmp)
+                shutil.rmtree(d, ignore_errors=True)
+                tmp.rename(d)
+            await asyncio.to_thread(copy_seed)
         if not (d / "catalog.json").is_file() or not (d / "profiles").is_dir():
-            orca["status"] = "downloading"
+            orca.update(status="downloading", progress=None)
             proc = await asyncio.create_subprocess_exec(
                 sys.executable or "python3",
                 str(TOOLS / "orca_data.py"), "--tag", tag, "--out", str(d),
                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, **NOWIN)
-            out, _ = await proc.communicate()
+            tail = []
+            async for raw in proc.stdout:             # "  412/2380 files, 3.1 MiB" as it goes
+                line = raw.decode("utf-8", "replace").strip()
+                tail = (tail + [line])[-5:]
+                m = re.search(r"(\d+)/(\d+) files", line)
+                if m and int(m.group(2)):
+                    orca["progress"] = round(int(m.group(1)) / int(m.group(2)), 3)
+            await proc.wait()
+            orca["progress"] = None
             if proc.returncode != 0:
-                raise RuntimeError(out.decode("utf-8", "replace").strip().splitlines()[-1:] or "download failed")
+                raise RuntimeError(tail[-1:] or "download failed")
         def scopes_ok():
             try:
                 return "lines" in json.loads((d / "scopes.json").read_text(encoding="utf-8"))

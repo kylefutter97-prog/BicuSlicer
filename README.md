@@ -103,7 +103,7 @@ docker compose up -d --build
 ```
 
 Open `http://<host>:8000`.
-- **First start:** BicuSlicer downloads OrcaSlicer's settings list and vendor profiles (about 25 MB, a few minutes). A setup window then asks for your printer.
+- **First start:** OrcaSlicer's settings list and printer library are built into the image, so a setup window asks for your printer straight away (images before 0.6.1 downloaded them on first start, a few minutes).
 - **Connect your printer:** add it under **Printers**.
 - **Your data:** it lives in the `bicuslicer-data` Docker volume, so it survives updates.
 - **Updating:** run `docker compose pull && docker compose up -d`. New OrcaSlicer versions are tested automatically and proposed as pull requests; see [docs/UPDATING.md](docs/UPDATING.md).
