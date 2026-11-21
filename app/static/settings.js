@@ -73,7 +73,7 @@ class Editor {
         const opts = g.options.filter((k) => {
           const o = S.catalog.options[k];
           if (!o || NOT_EDITABLE_HERE.has(k)) return false;
-          if (q) return (`${o.label || ""} ${o.full_label || ""} ${k} ${g.title} ${p.page}`).toLowerCase().includes(q);
+          if (q) return (`${o.label || ""} ${o.full_label || ""} ${standaloneLabel(k)} ${k} ${g.title} ${p.page}`).toLowerCase().includes(q);
           return (MODE_RANK[o.mode] ?? 1) <= rank;
         });
         if (opts.length) groups.push({ title: unlisted ? "Settings OrcaSlicer doesn't show" : g.title, options: opts });
@@ -175,8 +175,9 @@ class Editor {
   field(key) {
     const p = this.parts(key);
     const help = p.o.tooltip ? `<button type="button" class="help" aria-label="About this setting">?</button>` : "";
+    // on its own (not inside its named row), a setting gets a name that says what it is
     return `<div class="opt${p.wide ? " wide" : ""}${p.unsaved ? " unsaved" : p.own ? " own" : ""}" data-opt="${key}">
-      <label for="${p.id}" class="opt-label">${p.label}${help}</label>
+      <label for="${p.id}" class="opt-label">${esc(standaloneLabel(key))}${help}</label>
       <div class="ctl">${p.ctl}</div>
       ${p.o.tooltip ? `<p class="tip-text" hidden>${esc(p.o.tooltip)}<br><code>${key}</code></p>` : ""}
     </div>`;
@@ -186,7 +187,7 @@ class Editor {
   sub(key) {
     const p = this.parts(key);
     return `<div class="sub${p.unsaved ? " unsaved" : p.own ? " own" : ""}" data-opt="${key}">
-      <label for="${p.id}" class="sub-label">${p.label}</label><div class="ctl">${p.ctl}</div></div>`;
+      <label for="${p.id}" class="sub-label">${SUB_LABELS[key] || p.label}</label><div class="ctl">${p.ctl}</div></div>`;
   }
 
   // OrcaSlicer's named rows (e.g. "Cool Plate": first layer + other layers): one label, controls side by side.
@@ -870,12 +871,12 @@ export function pickPartSetting(exclude = []) {
           const keys = g.options.filter((k) => {
             const o = S.catalog.options[k];
             if (!o || !allowed.has(k) || skip.has(k)) return false;
-            if (q) return `${o.label || ""} ${o.full_label || ""} ${k} ${g.title} ${p.page}`.toLowerCase().includes(q);
+            if (q) return `${o.label || ""} ${o.full_label || ""} ${standaloneLabel(k)} ${k} ${g.title} ${p.page}`.toLowerCase().includes(q);
             return (MODE_RANK[o.mode] ?? 1) <= rank;
           });
           if (!keys.length) continue;
           html.push(`<li class="pp-head">${esc(p.page)} › ${esc(g.title)}</li>` + keys.map((k) =>
-            `<li><button type="button" class="pp-item" data-key="${k}">${esc(S.catalog.options[k].label || S.catalog.options[k].full_label || k)}</button></li>`).join(""));
+            `<li><button type="button" class="pp-item" data-key="${k}">${esc(standaloneLabel(k))}</button></li>`).join(""));
         }
       }
       list.innerHTML = html.join("") || `<li class="muted small">${q ? "No per-part settings match." : "Nothing in this mode: try Advanced or Expert, or search."}</li>`;
@@ -969,6 +970,35 @@ export function applyProcessEdits(changes) {
   renderPickers();
   processEditor?.render();
   onChange("edits");
+}
+
+/**
+ * Clearer names for settings shown on their own (not in their named row) whose OrcaSlicer label is ambiguous: e.g.
+ * two "Layer time" settings on the Cooling page, which OrcaSlicer only tells apart by the row each sits in.
+ */
+const CLEAR_LABELS = {
+  fan_cooling_layer_time: "Fan up below layer time",
+  slow_down_layer_time: "Minimum layer time",
+  fan_min_speed: "Min fan speed",
+  fan_max_speed: "Max fan speed",
+  tree_support_branch_distance_organic: "Tree support branch distance (organic)",
+  tree_support_branch_diameter_organic: "Tree support branch diameter (organic)",
+  tree_support_branch_angle_organic: "Tree support branch angle (organic)",
+  filament_flush_temp_fast: "Flush temperature (fast purge)",
+  input_shaping_freq_x: "Input shaping frequency X", input_shaping_freq_y: "Input shaping frequency Y",
+  input_shaping_damp_x: "Input shaping damping X", input_shaping_damp_y: "Input shaping damping Y",
+};
+/** A setting's label on its own: a clearer name, or its row's name in front of its short label. */
+// inside a row: the two "Layer time" boxes of the fan speed thresholds say which is which
+const SUB_LABELS = {
+  fan_cooling_layer_time: "Fan up below layer time",
+  slow_down_layer_time: "Minimum layer time (slows down)",
+};
+export function standaloneLabel(k) {
+  const o = S.catalog?.options?.[k] || {};
+  if (CLEAR_LABELS[k]) return CLEAR_LABELS[k];
+  const l = o.label || o.full_label || k;
+  return o.line && o.line !== l ? `${o.line}: ${l}` : l;
 }
 
 export const settingLabel = (k) => S.catalog?.options?.[k]?.full_label || S.catalog?.options?.[k]?.label || k;
