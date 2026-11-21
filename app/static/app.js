@@ -218,10 +218,25 @@ function mergeToGeometry(obj) {
   return geo;
 }
 
+/** STL and OBJ carry no units. A mesh under 1 mm on every side was almost surely saved in metres (as OrcaSlicer
+ *  suspects on import): scale it ×1000 into millimetres and say so. Convert to metres (More menu) undoes it. */
+function fromMetres(geo, name) {
+  geo.computeBoundingBox();
+  const s = geo.boundingBox.getSize(new THREE.Vector3());
+  const big = Math.max(s.x, s.y, s.z);
+  if (!(big > 0 && big < 1)) return geo;
+  geo.scale(1000, 1000, 1000);
+  geo.computeBoundingBox();
+  geo.computeBoundingSphere();
+  s.multiplyScalar(1000);
+  geo.userData.note = `${name} looked like it was saved in metres: scaled to millimetres (${fmtMm(s.x)}×${fmtMm(s.y)}×${fmtMm(s.z)} mm). Undo with More → Convert to metres.`;
+  return geo;
+}
+
 async function parseFile(f) {
   const ext = f.name.split(".").pop().toLowerCase();
-  if (ext === "stl") return mergeToGeometry(new THREE.Mesh(new STLLoader().parse(await f.arrayBuffer())));
-  if (ext === "obj") return mergeToGeometry(new OBJLoader().parse(await f.text()));
+  if (ext === "stl") return fromMetres(mergeToGeometry(new THREE.Mesh(new STLLoader().parse(await f.arrayBuffer()))), f.name);
+  if (ext === "obj") return fromMetres(mergeToGeometry(new OBJLoader().parse(await f.text())), f.name);
   if (ext === "3mf") return mergeToGeometry(new ThreeMFLoader().parse(await f.arrayBuffer()));
   if (["step", "stp", "iges", "igs"].includes(ext)) {
     // CAD files: OpenCascade turns them into a mesh in the browser; several bodies come in as one part (Split separates them)
@@ -2135,6 +2150,8 @@ const moreItems = () => [
   { label: "Replace with STL…", run: replaceSelected, disabled: !selected || selection().length > 1 },
   { label: "Convert from inches (×25.4)", run: () => convertUnits(25.4), disabled: !selected },
   { label: "Convert to inches (÷25.4)", run: () => convertUnits(1 / 25.4), disabled: !selected },
+  { label: "Convert from metres (×1000)", run: () => convertUnits(1000), disabled: !selected },
+  { label: "Convert to metres (÷1000)", run: () => convertUnits(1 / 1000), disabled: !selected },
   { sep: true },
   { label: "Export part as STL", run: exportPartStl, disabled: !selected },
   { label: "Export plate as 3MF", run: exportPlate3mf, disabled: !models.length },
