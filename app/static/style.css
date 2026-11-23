@@ -267,6 +267,13 @@ dialog.sheet[open] { display: flex; flex-direction: column; }
 .pm-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
 .pm-actions .btn { min-height: 36px; font-size: 14px; flex: 0 1 auto; }
 .pm-status { min-height: 1.2em; margin: 8px 0; }
+/* save state of the process bar and the Profiles window: Saving… / Saved / Couldn't save */
+.process-bar[data-state="saving"] { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+.process-bar[data-state="ok"] { background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.process-bar[data-state="err"] { background: color-mix(in srgb, var(--bad) 16%, transparent); }
+.pm-status[data-state="saving"] { color: var(--accent); }
+.pm-status[data-state="ok"] { color: var(--ok); }
+.pm-status[data-state="err"] { color: var(--bad); }
 @media (max-width: 760px) {
   dialog.sheet { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; margin: 0; border: 0; }
   .pm-body { grid-template-columns: minmax(0, 1fr); }

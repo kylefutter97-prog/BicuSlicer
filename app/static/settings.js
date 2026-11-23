@@ -330,12 +330,20 @@ function renderPickers() {
     $(`mod-${t}`).textContent = n ? `${n} unsaved` : "";
     $(`mod-${t}`).hidden = !n;
   }
-  const n = editsCount("process");
-  $("process-bar").hidden = !n;
-  if (n) {
-    $("process-bar-text").textContent = `${n} unsaved change${n === 1 ? "" : "s"} · used when you slice`;
-    $("process-save").disabled = !S.detail.process?.editable;
-  }
+  const n = editsCount("process"), st = saving.process, busy = st === "post";
+  if (barNote?.kind === "err" && !n) setBarNote(null);    // nothing left to save: the failure no longer applies
+  const bar = $("process-bar");
+  bar.hidden = !n && !st && !barNote;
+  bar.dataset.state = busy ? "saving" : barNote?.kind || "";
+  const unsaved = `${n} unsaved change${n === 1 ? "" : "s"}`;
+  $("process-bar-text").textContent = busy ? `Saving ${unsaved}…`
+    : barNote?.kind === "err" ? `${barNote.text} · ${unsaved}, not saved`
+    : barNote ? (n ? `${barNote.text} · ${unsaved} made since` : `${barNote.text} ✓`)
+    : `${unsaved} · used when you slice`;
+  $("process-save").textContent = busy ? "Saving…" : "Save";
+  $("process-save").disabled = !!st || !n || !S.detail.process?.editable;
+  $("process-saveas").disabled = !!st || !S.detail.process;
+  $("process-discard").disabled = !!st || !n;
 }
 
 async function choose(t, name) {
@@ -349,23 +357,61 @@ async function choose(t, name) {
   else { await loadDetail(t); renderPickers(); renderBed(); if (t === "process") processEditor.render(); remember(); onChange("presets"); }
 }
 
+// One save at a time per editor. `saving[t]` is "ask" while the name dialog is open and "post" while the save runs;
+// the Save buttons are disabled for both. `barNote` is the bar's last outcome (Saved / Couldn't save).
+const saving = { machine: null, process: null, filament: null };
+let barNote = null, barNoteTimer;
+
+const sameValue = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+
+/** After a save went through: drop the edits that were sent (unless changed again while saving); later edits stay. */
+function dropSent(edits, sent) {
+  for (const [k, v] of Object.entries(sent)) if (k in edits && sameValue(edits[k], v)) delete edits[k];
+}
+
+function setBarNote(text, kind) {
+  clearTimeout(barNoteTimer);
+  barNote = text ? { text, kind } : null;
+  if (kind === "ok") barNoteTimer = setTimeout(() => { barNote = null; renderPickers(); }, 3000);
+}
+
 async function saveEdits(t, asNew) {
-  const d = S.detail[t];
-  const values = { ...d.values, ...S.edits[t] };
-  let name = d.name, inherits = d.inherits, replace = d.name;
-  if (asNew || !d.editable) {
-    name = await ask(`Save ${TYPE_LABEL[t].toLowerCase()} preset as`, d.editable ? `${d.name} copy` : `${d.name} (mine)`, "Save");
-    if (!name) return;
-    inherits = d.editable ? d.inherits : d.name;   // a copy of someone else's preset inherits from it, like OrcaSlicer
-    replace = undefined;
-  }
+  if (saving[t]) return;                    // a second click while saving would race the first (and could save stale values)
+  saving[t] = "ask";
   try {
-    await postJson(`/api/presets/${t}`, { name, inherits, values, replace });
-    toast(`Saved "${name}"`);
+    const d = S.detail[t];
+    let name = d.name, inherits = d.inherits, replace = d.name;
+    if (asNew || !d.editable) {
+      renderPickers();
+      name = await ask(`Save ${TYPE_LABEL[t].toLowerCase()} preset as`, d.editable ? `${d.name} copy` : `${d.name} (mine)`, "Save");
+      if (!name) return;
+      inherits = d.editable ? d.inherits : d.name;   // a copy of someone else's preset inherits from it, like OrcaSlicer
+      replace = undefined;
+    }
+    const sent = { ...S.edits[t] };
+    const values = { ...d.values, ...sent };
+    saving[t] = "post";
+    if (t === "process") setBarNote(null);
+    renderPickers();
+    try {
+      await postJson(`/api/presets/${t}`, { name, inherits, values, replace });
+    } catch (e) {
+      if (t === "process") setBarNote(`Couldn't save: ${e.message}`, "err");
+      toast(`Couldn't save: ${e.message}`, "err");
+      return;
+    }
+    // The server now holds `values`: take them as the preset's values before anything else awaits, so nothing
+    // (another save, slicing) can see the old values with the sent edits already gone.
+    S.detail[t] = { ...d, name, inherits, values, editable: true, own: [...new Set([...(d.own || []), ...Object.keys(sent)])] };
     S.selected[t] = name;
-    S.edits[t] = {};
-    await refreshLists();
-  } catch (e) { toast(e.message, "err"); }
+    dropSent(S.edits[t], sent);
+    if (t === "process") setBarNote(`Saved "${name}"`, "ok");
+    toast(`Saved "${name}"`);
+    try { await refreshLists(true); } catch (e) { toast(e.message, "err"); }
+  } finally {
+    saving[t] = null;
+    renderPickers();
+  }
 }
 
 /* ================================================================ plate type */
@@ -443,7 +489,8 @@ async function changeBed() {
 
 /* ================================================================ profile manager */
 
-const PM = { type: "machine", name: null, detail: null, edits: {}, editor: null, list: [], filter: "", view: "list" };
+const PM = { type: "machine", name: null, detail: null, edits: {}, editor: null, list: [], filter: "", view: "list",
+  saving: null, note: null };   // saving: "ask" | "post" while a save is under way; note: its outcome (Saved / Couldn't save)
 
 function pmSetType(type) {
   // one place that switches the window to a preset type: the tabs, the list and the settings editor together
@@ -489,9 +536,11 @@ function pmRenderList() {
 }
 
 async function pmSelect(name) {
+  if (PM.saving) { toast("Still saving: wait a moment.", "warn"); return; }
   if (Object.keys(PM.edits).length && !(await confirmBox("Discard your unsaved changes to this preset?", "Discard"))) return;
   PM.name = name;
   PM.edits = {};
+  PM.note = null;
   PM.detail = name ? await apiJson(presetUrl(PM.type, name)) : null;
   pmRenderList();
   pmRenderDetail();
@@ -502,34 +551,64 @@ function pmRenderDetail() {
   const d = PM.detail;
   $("pm-title").textContent = d ? d.name : "";
   $("pm-sub").textContent = d ? `${SOURCE_LABEL[d.source]}${d.vendor ? " · " + d.vendor : ""}${d.inherits ? " · inherits " + d.inherits : ""}` : "";
-  const n = Object.keys(PM.edits).length;
-  $("pm-save").disabled = !d || !d.editable || !n;
-  $("pm-saveas").disabled = !d;
+  const n = Object.keys(PM.edits).length, st = PM.saving, busy = st === "post";
+  if (PM.note?.kind === "err" && !n) PM.note = null;
+  $("pm-save").textContent = busy ? "Saving…" : "Save";
+  $("pm-save").disabled = !!st || !d || !d.editable || !n;
+  $("pm-saveas").disabled = !!st || !d;
   $("pm-rename").hidden = $("pm-delete").hidden = !d?.editable;
   $("pm-export").disabled = !d;
   $("pm-use").disabled = !d || d.name === S.selected[PM.type];
-  $("pm-status").textContent = d && !d.editable ? "Read-only: save a copy to change it." : n ? `${n} unsaved change${n === 1 ? "" : "s"}` : "";
+  const unsaved = `${n} unsaved change${n === 1 ? "" : "s"}`;
+  $("pm-status").textContent = busy ? `Saving ${unsaved}…`
+    : PM.note?.kind === "err" ? `${PM.note.text} · ${unsaved}, not saved`
+    : PM.note ? (n ? `${PM.note.text} · ${unsaved} made since` : `${PM.note.text} ✓`)
+    : d && !d.editable ? "Read-only: save a copy to change it." : n ? unsaved : "";
+  $("pm-status").dataset.state = busy ? "saving" : PM.note?.kind || "";
   PM.editor.render();
 }
 
 async function pmSave(asNew) {
-  const d = PM.detail;
-  const values = { ...d.values, ...PM.edits };
-  let name = d.name, inherits = d.inherits, replace = d.name;
-  if (asNew) {
-    name = await ask(`New ${TYPE_LABEL[PM.type].toLowerCase()} preset name`, d.editable ? `${d.name} copy` : `${d.name} (mine)`, "Save");
-    if (!name) return;
-    inherits = d.editable ? d.inherits : d.name;
-    replace = undefined;
-  }
+  if (PM.saving) return;                    // one save at a time: a second click could save stale values over the first
+  PM.saving = "ask";
+  const t = PM.type;
   try {
-    await postJson(`/api/presets/${PM.type}`, { name, inherits, values, replace });
+    const d = PM.detail;
+    let name = d.name, inherits = d.inherits, replace = d.name;
+    if (asNew) {
+      pmRenderDetail();
+      name = await ask(`New ${TYPE_LABEL[t].toLowerCase()} preset name`, d.editable ? `${d.name} copy` : `${d.name} (mine)`, "Save");
+      if (!name) return;
+      inherits = d.editable ? d.inherits : d.name;
+      replace = undefined;
+    }
+    const sent = { ...PM.edits };
+    const values = { ...d.values, ...sent };
+    PM.saving = "post";
+    PM.note = null;
+    pmRenderDetail();
+    try {
+      await postJson(`/api/presets/${t}`, { name, inherits, values, replace });
+    } catch (e) {
+      PM.note = { text: `Couldn't save: ${e.message}`, kind: "err" };
+      toast(`Couldn't save: ${e.message}`, "err");
+      return;
+    }
+    // Take the saved values now, before anything else awaits (see saveEdits); edits made while saving stay.
+    PM.name = name;
+    PM.detail = { ...d, name, inherits, values, editable: true, source: "user", own: [...new Set([...(d.own || []), ...Object.keys(sent)])] };
+    dropSent(PM.edits, sent);
+    PM.note = { text: `Saved "${name}"`, kind: "ok" };
     toast(`Saved "${name}"`);
-    PM.edits = {};
-    await pmLoadList();
-    await pmSelect(name);
-    await refreshLists(true);
-  } catch (e) { toast(e.message, "err"); }
+    try {
+      await pmLoadList();
+      if (PM.type === t && PM.name === name) { PM.detail = await apiJson(presetUrl(t, name)); pmRenderList(); }
+      await refreshLists(true);
+    } catch (e) { toast(e.message, "err"); }
+  } finally {
+    PM.saving = null;
+    if (PM.type === t) pmRenderDetail();
+  }
 }
 
 async function pmNew() {
@@ -618,6 +697,7 @@ function wirePM() {
   });
   for (const b of document.querySelectorAll("#pm [data-pm-type]")) {
     b.addEventListener("click", async () => {
+      if (PM.saving) { toast("Still saving: wait a moment.", "warn"); return; }
       if (Object.keys(PM.edits).length && !(await confirmBox("Discard your unsaved changes to this preset?", "Discard"))) return;
       PM.edits = {};
       pmSetType(b.dataset.pmType);
@@ -799,7 +879,10 @@ export async function initSettings(changeCb) {
   $("bed-info").addEventListener("click", (e) => { if (e.target.closest("#bed-change")) changeBed(); });
   $("process-save").addEventListener("click", () => saveEdits("process", false));
   $("process-saveas").addEventListener("click", () => saveEdits("process", true));
-  $("process-discard").addEventListener("click", () => { S.edits.process = {}; renderPickers(); processEditor.render(); onChange("edits"); });
+  $("process-discard").addEventListener("click", () => {
+    if (saving.process) return;
+    S.edits.process = {}; setBarNote(null); renderPickers(); processEditor.render(); onChange("edits");
+  });
   for (const b of document.querySelectorAll("[data-mode]")) b.addEventListener("click", () => setMode(b.dataset.mode));
   $("open-profiles").addEventListener("click", () => pmOpen(S.selected.machine ? "machine" : "machine").catch((e) => toast(e.message, "err")));
   wirePM();
