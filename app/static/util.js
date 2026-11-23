@@ -72,13 +72,22 @@ export function saveBlob(blob, filename) {
 }
 
 let toastTimer = null;
+// Open dialogs (showModal) sit in the browser's top layer, above any z-index, so a plain toast would be hidden under
+// them. As a popover the toast joins the top layer too, and showing it again puts it above whatever is open now.
+// Browsers without popovers keep the old behaviour.
 export function toast(text, kind = "ok") {
   const el = $("toast");
+  const pop = typeof el.showPopover === "function";
+  if (pop && !el.popover) el.popover = "manual";
   el.className = `toast ${kind}`;
   el.textContent = text;
   el.hidden = false;
+  if (pop) try { if (el.matches(":popover-open")) el.hidePopover(); el.showPopover(); } catch { /* not connected */ }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, kind === "err" ? 9000 : 4000);
+  toastTimer = setTimeout(() => {
+    el.hidden = true;
+    if (pop) try { el.hidePopover(); } catch { /* already closed */ }
+  }, kind === "err" ? 9000 : 4000);
 }
 
 // Ask for a line of text in a small dialog (prompt() is ugly and blocked in some webviews).

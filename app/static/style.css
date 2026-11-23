@@ -307,6 +307,8 @@ dialog.sheet[open] { display: flex; flex-direction: column; }
 /* ================================================================ toast */
 .toast { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(86px + env(safe-area-inset-bottom)); z-index: 50; max-width: min(92vw, 560px);
   padding: 10px 14px; border-radius: 10px; background: var(--card); border: 1px solid var(--line); box-shadow: 0 6px 20px rgba(0,0,0,.25); font-size: 14px; }
+/* the toast is shown as a popover (above open dialogs): undo the browser's popover defaults (centred, inset 0) */
+.toast { top: auto; right: auto; margin: 0; color: var(--text); overflow: visible; width: max-content; height: auto; }
 .toast.err { border-color: var(--bad); } .toast.warn { border-color: var(--warn); } .toast.ok { border-color: var(--ok); }
 @media (min-width: 1280px) { .toast { bottom: 24px; } }
 
