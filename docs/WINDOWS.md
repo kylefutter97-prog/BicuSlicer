@@ -20,7 +20,7 @@ use it without Docker. It's built and tested by GitHub Actions (`.github/workflo
 |---|---|
 | The app | `%LOCALAPPDATA%\Programs\BicuSlicer` (per user, no administrator rights) |
 | Your printers, presets, projects, slices | `%LOCALAPPDATA%\BicuSlicer\data` (same layout as Docker's `/data`) |
-| OrcaSlicer | `%LOCALAPPDATA%\BicuSlicer\orca\2.5.1` |
+| OrcaSlicer | `%LOCALAPPDATA%\BicuSlicer\orca\2.5.2` |
 | Launcher settings (port, phones on/off) | `%LOCALAPPDATA%\BicuSlicer\launcher.json` |
 | Log | `%LOCALAPPDATA%\BicuSlicer\bicuslicer.log` (tray: Show log) |
 
@@ -46,4 +46,6 @@ and `build\BicuSlicer-Setup-0.0.0-dev.exe`.
 
 Bump the version and the two Windows downloads' sizes and SHA-256s in `app/orca_app.py` (`PINNED`), and
 `ORCA_VERSION` in `windows/launcher.pyw`. The Windows workflow's smoke test slices with the new version before an
-installer is published.
+installer is published. The [OrcaSlicer update](../.github/workflows/orca-update.yml) workflow's pull request does
+this for you: it adds the new `PINNED` entry from the release's file sizes and SHA-256s (as GitHub lists them) and
+bumps the version in the launcher, the Windows workflow and this page.

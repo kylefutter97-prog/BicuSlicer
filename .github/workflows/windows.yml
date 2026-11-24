@@ -53,7 +53,7 @@ jobs:
         run: |
           $data = "$env:RUNNER_TEMP\data"
           New-Item -ItemType Directory -Force $data | Out-Null
-          $env:DATA_DIR = $data; $env:ORCA_FETCH = "1"; $env:ORCA_VERSION = "2.5.1"; $env:ORCA_APP_DIR = "$env:RUNNER_TEMP\orca"
+          $env:DATA_DIR = $data; $env:ORCA_FETCH = "1"; $env:ORCA_VERSION = "2.5.2"; $env:ORCA_APP_DIR = "$env:RUNNER_TEMP\orca"
           $env:HOST = "127.0.0.1"; $env:PORT = "8000"; $env:PYTHONUNBUFFERED = "1"; $env:PYTHONUTF8 = "1"
           $server = Start-Process -FilePath build\BicuSlicer\python\python.exe -ArgumentList "build\BicuSlicer\app\server.py" `
             -RedirectStandardOutput "$env:RUNNER_TEMP\server.log" -RedirectStandardError "$env:RUNNER_TEMP\server.err" -NoNewWindow -PassThru

@@ -19,6 +19,12 @@ from pathlib import Path
 
 # OrcaSlicer version -> platform -> (file, size in bytes, SHA-256), from github.com/OrcaSlicer/OrcaSlicer/releases
 PINNED = {
+    "2.5.2": {
+        "windows-x64": ("OrcaSlicer_Windows_V2.5.2_x64_portable.zip", 201919243,
+                        "730892ef174b0197e896234b8ade9df184966d2bec80cc83c8522715a25df54f"),
+        "windows-arm64": ("OrcaSlicer_Windows_V2.5.2_arm64_portable.zip", 184418618,
+                          "af17953d1735f8081abf8f65feb14a0439f97f4b6a63bc9f68b40b1ac3efd6cd"),
+    },
     "2.5.1": {
         "windows-x64": ("OrcaSlicer_Windows_V2.5.1_x64_portable.zip", 201859696,
                         "f73194789c9a114974e3587f646bb627fa69c7686d949bf040fdb710c41515e8"),

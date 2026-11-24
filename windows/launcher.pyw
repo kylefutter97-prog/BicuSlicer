@@ -34,7 +34,7 @@ BASE = Path(os.environ.get("LOCALAPPDATA") or Path.home()) / "BicuSlicer"
 DATA = BASE / "data"
 CONFIG = BASE / "launcher.json"
 LOG = BASE / "bicuslicer.log"
-ORCA_VERSION = "2.5.1"
+ORCA_VERSION = "2.5.2"
 NO_WINDOW = 0x08000000
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 

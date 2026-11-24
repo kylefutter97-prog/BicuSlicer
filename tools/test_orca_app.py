@@ -59,7 +59,7 @@ except RuntimeError as e:
 # no download for this computer
 O.platform_key = lambda: None
 try:
-    O.fetch(work / "orca", "2.5.1")
+    O.fetch(work / "orca", "2.5.2")
     check("a computer without a download says so", False)
 except RuntimeError as e:
     check("a computer without a download says so", "No OrcaSlicer" in str(e), str(e))

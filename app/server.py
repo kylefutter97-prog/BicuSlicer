@@ -31,7 +31,7 @@ ORCA_BIN = os.environ.get("ORCA_BIN") or next(
     (p for p in ("/opt/orcaslicer/AppRun", "/opt/orcaslicer/bin/orca-slicer") if os.path.exists(p)), "orca-slicer")
 # The Windows app: OrcaSlicer is downloaded on first start (orca_app.py) into ORCA_APP_DIR, this version
 ORCA_FETCH = os.environ.get("ORCA_FETCH", "") == "1"
-ORCA_VERSION = os.environ.get("ORCA_VERSION", "2.5.1")
+ORCA_VERSION = os.environ.get("ORCA_VERSION", "2.5.2")
 HOST = os.environ.get("HOST", "0.0.0.0")
 # Home Assistant add-on: served in Home Assistant's sidebar ("ingress") under /api/hassio_ingress/<token>/
 INGRESS = os.environ.get("INGRESS", "") == "1"

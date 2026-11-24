@@ -122,12 +122,50 @@ jobs:
               if p.exists():
                   p.write_text(p.read_text().replace(cur, new))
           PY
+          # the Windows app: a PINNED entry for the new portable zips (sizes and SHA-256s as the release lists them),
+          # then the version in the launcher, the server's default, the Windows workflow and its docs
+          gh api "repos/OrcaSlicer/OrcaSlicer/releases/tags/v$NEW" > release.json
+          WIN_PINNED=$(python3 - "$NEW" <<'PY'
+          import json, pathlib, re, sys
+          new = sys.argv[1]
+          assets = {a["name"]: a for a in json.load(open("release.json"))["assets"]}
+          p = pathlib.Path("app/orca_app.py")
+          t = p.read_text()
+          if f'    "{new}": {{' in t:
+              print("already"); sys.exit()
+          rows = []
+          for key, arch in (("windows-x64", "x64"), ("windows-arm64", "arm64")):
+              a = assets.get(f"OrcaSlicer_Windows_V{new}_{arch}_portable.zip")
+              if not a or not (a.get("digest") or "").startswith("sha256:"):
+                  print("missing"); sys.exit()
+              pad = " " * (len(f'        "{key}": ('))
+              rows.append(f'        "{key}": ("{a["name"]}", {a["size"]},\n{pad}"{a["digest"][7:]}"),')
+          t, n = re.subn(r"^PINNED = \{\n", lambda m: m.group(0) + f'    "{new}": {{\n' + "\n".join(rows) + "\n    },\n", t, count=1, flags=re.M)
+          if n != 1:
+              print("missing"); sys.exit()
+          p.write_text(t)
+          print("added")
+          PY
+          )
+          rm -f release.json
+          if [ "$WIN_PINNED" != "missing" ]; then
+            sed -i "s/^ORCA_VERSION = \"$CUR\"/ORCA_VERSION = \"$NEW\"/" windows/launcher.pyw
+            sed -i "s/os.environ.get(\"ORCA_VERSION\", \"$CUR\")/os.environ.get(\"ORCA_VERSION\", \"$NEW\")/" app/server.py
+            sed -i "s/\$env:ORCA_VERSION = \"$CUR\"/\$env:ORCA_VERSION = \"$NEW\"/" .github/workflows/windows.yml
+            sed -i "s/orca\\\\$CUR/orca\\\\$NEW/" docs/WINDOWS.md
+          fi
           git commit -am "OrcaSlicer $CUR → $NEW"
           git push origin "orca-$NEW"
           {
             echo "Bumps the bundled OrcaSlicer from **$CUR** to **$NEW** ([release notes](https://github.com/OrcaSlicer/OrcaSlicer/releases/tag/v$NEW))."
             echo
             if [ "$SMOKE_OK" = "true" ]; then echo "The smoke test passed with the new version."; else echo "> ❌ **The smoke test failed**: see below and the workflow's artifacts before merging."; fi
+            echo
+            if [ "$WIN_PINNED" = "missing" ]; then
+              echo "> ⚠️ **The Windows app still uses OrcaSlicer $CUR**: the release doesn't list both Windows portable zips with SHA-256s. Add them to \`PINNED\` in \`app/orca_app.py\` by hand and bump \`windows/launcher.pyw\`, \`app/server.py\`, \`.github/workflows/windows.yml\` and \`docs/WINDOWS.md\` (see docs/WINDOWS.md)."
+            else
+              echo "The Windows app moves to $NEW too (portable zips pinned by the sizes and SHA-256s the release lists). Its own smoke test runs on the next tag (or start the Windows app workflow by hand on this branch)."
+            fi
             echo
             echo "**After merging:** tag a release (e.g. \`git tag -a v0.X.0 -m 'OrcaSlicer $NEW' && git push origin v0.X.0\`) to publish the image. See docs/UPDATING.md."
             echo
