@@ -272,10 +272,10 @@ OrcaSlicer is not in the installer: the app downloads OrcaSlicer's official Wind
 
 ## OrcaSlicer (in the Docker image, not in this repository)
 
-The Docker image built from this repository's `Dockerfile` contains an unmodified copy of OrcaSlicer, unpacked from its official Linux AppImage for the version set by the `ORCA_VERSION` build argument (default 2.5.1).
+The Docker image built from this repository's `Dockerfile` contains an unmodified copy of OrcaSlicer, unpacked from its official Linux AppImage for the version set by the `ORCA_VERSION` build argument (default 2.5.2).
 
 - Licence: GNU Affero General Public License v3.0. The full text ships inside the image with OrcaSlicer and is at https://github.com/OrcaSlicer/OrcaSlicer/blob/main/LICENSE.
-- Source for the exact version: https://github.com/OrcaSlicer/OrcaSlicer/tree/v2.5.1, or the tag matching `ORCA_VERSION`.
+- Source for the exact version: https://github.com/OrcaSlicer/OrcaSlicer/tree/v2.5.2, or the tag matching `ORCA_VERSION`.
 - BicuSlicer runs OrcaSlicer as a separate program, its command line, and does not link to or modify it.
 
 On first start, BicuSlicer also downloads OrcaSlicer's settings definitions and vendor profiles from that repository, for the same version, into its data folder (`DATA_DIR/orca/<tag>/`). These are OrcaSlicer's work under the same licence and are not part of this repository.

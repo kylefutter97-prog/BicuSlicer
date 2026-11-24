@@ -7,9 +7,9 @@
 # ever opens. OrcaSlicer is AGPL-3.0: see THIRD_PARTY_NOTICES.md.
 #
 #   docker build -t bicuslicer .
-#   docker build --build-arg ORCA_VERSION=2.5.1 -t bicuslicer .
+#   docker build --build-arg ORCA_VERSION=2.5.2 -t bicuslicer .
 
-ARG ORCA_VERSION=2.5.1
+ARG ORCA_VERSION=2.5.2
 
 # ---------------------------------------------------------------- stage 1: unpack OrcaSlicer
 FROM ubuntu:24.04 AS orca

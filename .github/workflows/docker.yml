@@ -8,7 +8,7 @@ on:
     inputs:
       orca_version:
         description: OrcaSlicer version to bundle
-        default: "2.5.1"
+        default: "2.5.2"
   push:
     tags: ["v*"]
 
@@ -35,12 +35,12 @@ jobs:
           tags: |
             type=semver,pattern={{version}}
             type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
-            type=raw,value=orca-${{ inputs.orca_version || '2.5.1' }}
+            type=raw,value=orca-${{ inputs.orca_version || '2.5.2' }}
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
-          build-args: ORCA_VERSION=${{ inputs.orca_version || '2.5.1' }}
+          build-args: ORCA_VERSION=${{ inputs.orca_version || '2.5.2' }}
           secrets: github_token=${{ secrets.GITHUB_TOKEN }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}

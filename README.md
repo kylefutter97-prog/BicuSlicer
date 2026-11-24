@@ -125,7 +125,7 @@ Open `http://<host>:8000`.
 | `OCCT_URL` | unpkg.com | Where the server fetches the STEP reader (occt-import-js 0.0.22) the first time a STEP file is opened. Files are checked against pinned checksums. |
 | `ALLOW_POST_PROCESS` | – | `1` lets print settings run their post-processing scripts. Off by default: OrcaSlicer runs them on the server, and presets and projects can come from anywhere. |
 
-The OrcaSlicer version is the `ORCA_VERSION` build argument (`docker compose build --build-arg ORCA_VERSION=2.5.1`). Build with the same version as any OrcaSlicer desktop install whose presets you import, so presets saved by one version load in the other.
+The OrcaSlicer version is the `ORCA_VERSION` build argument (`docker compose build --build-arg ORCA_VERSION=2.5.2`). Build with the same version as any OrcaSlicer desktop install whose presets you import, so presets saved by one version load in the other.
 
 ## Where the OrcaSlicer data comes from
 
